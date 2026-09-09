@@ -1,7 +1,7 @@
 import pytest
 from django.urls import reverse
 
-from submissions.models import SubmittedURL
+from submissions.models import Batch, SubmittedURL
 
 pytestmark = pytest.mark.django_db
 
@@ -37,7 +37,9 @@ def test_multi_line_submission_saved_and_listed(client, url):
 
 
 def test_listing_back_persists(client, url):
-    SubmittedURL.objects.create(url="https://persisted.example.com")
+    SubmittedURL.objects.create(
+        url="https://persisted.example.com", batch=Batch.objects.create()
+    )
     resp = client.get(url)
     assert "https://persisted.example.com" in resp.content.decode()
 
@@ -80,7 +82,9 @@ def test_mixed_valid_and_invalid(client, url):
 
 
 def test_duplicate_already_in_db_not_added_twice(client, url):
-    SubmittedURL.objects.create(url="https://dup.example.com")
+    SubmittedURL.objects.create(
+        url="https://dup.example.com", batch=Batch.objects.create()
+    )
     client.post(url, {"urls": "https://dup.example.com"}, follow=True)
     assert SubmittedURL.objects.filter(url="https://dup.example.com").count() == 1
 

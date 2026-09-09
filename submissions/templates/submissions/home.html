@@ -23,15 +23,32 @@
         <button type="submit">Submit</button>
     </form>
 
-    <h2>Submitted URLs</h2>
-    {% if submitted_urls %}
-    <ul class="submitted-urls">
-        {% for item in submitted_urls %}
-        <li>{{ item.url }}</li>
+    <h2>Batches</h2>
+    {% if batches %}
+    <ul class="batches">
+        {% for batch in batches %}
+        <li>
+            <a href="{% url 'submissions:batch_detail' batch.pk %}">Batch {{ batch.pk }}</a>
+            — {{ batch.created_at }} — {{ batch.url_count }} URL(s) —
+            status: {{ batch.overall_status }} ({{ batch.status_summary }})
+        </li>
         {% endfor %}
     </ul>
     {% else %}
     <p>No URLs submitted yet.</p>
+    {% endif %}
+
+    {% if latest_batch %}
+    <h2>Most recent batch</h2>
+    <p>
+        Batch {{ latest_batch.pk }} — {{ latest_batch.created_at }} —
+        status: {{ latest_batch.overall_status }} ({{ latest_batch.status_summary }})
+    </p>
+    <ul class="latest-batch-urls">
+        {% for item in latest_batch.urls.all %}
+        <li>{{ item.url }} — {{ item.status }}</li>
+        {% endfor %}
+    </ul>
     {% endif %}
 </body>
 </html>

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Batch {{ batch.pk }}</title>
+</head>
+<body>
+    <h1>Batch {{ batch.pk }}</h1>
+    <p><a href="{% url 'submissions:home' %}">Back to home</a></p>
+    <p>Created: {{ batch.created_at }}</p>
+    <p>URL count: {{ batch.url_count }}</p>
+    <p>Overall status: {{ batch.overall_status }} ({{ batch.status_summary }})</p>
+
+    <ul class="batch-urls">
+        {% for item in urls %}
+        <li>
+            {{ item.url }} — {{ item.status }}
+            {% if item.status == "failed" %} — {{ item.failure_reason }}{% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+</body>
+</html>
