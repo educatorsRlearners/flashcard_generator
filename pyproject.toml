@@ -7,6 +7,9 @@ dependencies = [
     "django>=5.0",
     "pytest>=8.0",
     "pytest-django>=4.8",
+    "trafilatura>=1.8",
+    "playwright>=1.40",
+    "responses>=0.24",
 ]
 
 [tool.pytest.ini_options]

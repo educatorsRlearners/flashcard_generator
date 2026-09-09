@@ -44,6 +44,11 @@ class SubmittedURL(models.Model):
         OK = "ok", "OK"
         FAILED = "failed", "Failed"
 
+    class ExtractionMethod(models.TextChoices):
+        NONE = "none", "None"
+        STATIC = "static", "Static"
+        BROWSER = "browser", "Browser"
+
     url = models.URLField(max_length=2000, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
     batch = models.ForeignKey(
@@ -53,6 +58,14 @@ class SubmittedURL(models.Model):
         max_length=16, choices=Status.choices, default=Status.PENDING
     )
     failure_reason = models.TextField(blank=True, default="")
+    extracted_text = models.TextField(blank=True, default="")
+    extracted_title = models.CharField(max_length=500, blank=True, default="")
+    extraction_method = models.CharField(
+        max_length=16,
+        choices=ExtractionMethod.choices,
+        default=ExtractionMethod.NONE,
+    )
+    extracted_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-created_at", "-id"]
