@@ -13,23 +13,25 @@
     <ul class="url-list">
         {% for item in urls %}
         <li class="url-list__item">
-            <span class="url-list__url">{{ item.url }}</span>
-            <span class="status status--{{ item.status }}">{{ item.status }}</span>
+            <div class="url-list__head">
+                <span class="url-list__url">{{ item.url }}</span>
+                <span class="status status--{{ item.status }}">{{ item.status }}</span>
+                <form
+                    method="post"
+                    action="{% url 'submissions:delete_url' batch.pk item.id %}"
+                    class="url-list__delete"
+                    onsubmit="return confirm('Delete &quot;{{ item.url|truncatechars:60|escapejs }}&quot; from Batch {{ batch.pk }}? This cannot be undone.');"
+                >
+                    {% csrf_token %}
+                    <button type="submit" class="button-link button-link--danger">Delete</button>
+                </form>
+            </div>
             {% if not item.originated_here %}
             <span class="url-list__origin">{% if item.origin_batch_id %}first requested in <a href="{% url 'submissions:batch_detail' item.origin_batch_id %}">Batch {{ item.origin_batch_id }}</a>{% else %}first requested in an earlier batch{% endif %}</span>
             {% endif %}
             {% if item.status == "failed" %}
             <span class="url-list__reason">{{ item.failure_reason }}</span>
             {% endif %}
-            <form
-                method="post"
-                action="{% url 'submissions:delete_url' batch.pk item.id %}"
-                class="url-list__delete"
-                onsubmit="return confirm('Delete this URL from Batch {{ batch.pk }}? This cannot be undone.');"
-            >
-                {% csrf_token %}
-                <button type="submit" class="button button--danger">Delete</button>
-            </form>
         </li>
         {% endfor %}
     </ul>

@@ -211,6 +211,52 @@ def test_url_count_matches_rendered_rows_after_delete(client):
     assert rendered_rows == batch.url_count == 2
 
 
+def test_delete_control_placement_and_emphasis_consistent(client):
+    """Delete sits in the row header on every row (plain, failed, cross-batch),
+    as a low-emphasis control - not a solid-red button."""
+    batch = Batch.objects.create()
+    _make_url("https://example.com/plain", batch)
+    _make_url(
+        "https://example.com/failed",
+        batch,
+        status="failed",
+        failure_reason="HTTP 403 Forbidden",
+    )
+
+    content = client.get(
+        reverse("submissions:batch_detail", args=[batch.pk])
+    ).content.decode()
+
+    # one row header per row, each containing a delete form
+    assert content.count('class="url-list__head"') == 2
+    for chunk in content.split('class="url-list__head"')[1:]:
+        head = chunk.split("</div>")[0]
+        assert "url-list__delete" in head
+    # low-emphasis control, no solid-red danger button
+    assert "button-link--danger" in content
+    assert "button--danger" not in content
+    # reason note sits outside the header
+    assert content.index('class="url-list__reason"') > content.index(
+        'class="url-list__head"'
+    )
+
+
+def test_confirm_message_names_url_and_batch(client):
+    batch = Batch.objects.create()
+    _make_url("https://example.com/foo", batch)
+
+    content = client.get(
+        reverse("submissions:batch_detail", args=[batch.pk])
+    ).content.decode()
+    assert "https://example.com/foo" in content.split("onsubmit=")[1].split(">")[0]
+    assert f"Batch {batch.pk}" in content.split("onsubmit=")[1].split(">")[0]
+
+
+def test_no_empty_messages_container(client):
+    content = client.get(reverse("submissions:home")).content.decode()
+    assert 'class="messages"' not in content
+
+
 def test_delete_control_rendered_on_both_pages(client):
     home = reverse("submissions:home")
     client.post(home, {"urls": "https://example.com/x"}, follow=True)

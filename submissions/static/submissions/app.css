@@ -86,7 +86,7 @@ a { color: var(--accent); }
     border-radius: 6px;
     resize: vertical;
 }
-.field-input:focus-visible, .button:focus-visible, a:focus-visible {
+.field-input:focus-visible, .button:focus-visible, .button-link:focus-visible, a:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
@@ -112,9 +112,38 @@ a { color: var(--accent); }
     cursor: pointer;
 }
 .button:hover { background: #2559c9; }
-.url-list__delete { display: inline; margin-left: 0.5rem; }
-.button--danger { margin-top: 0; padding: 0.3rem 0.7rem; background: #b3261e; }
-.button--danger:hover { background: #8c1d18; }
+.url-list__delete { display: inline; margin: 0; }
+
+/* Low-emphasis destructive control for routine per-row actions.
+   Solid --danger fill is reserved for a final confirm step, if any. */
+.button-link {
+    margin: 0;
+    padding: 0.3rem 0.55rem;
+    font: inherit;
+    font-weight: 600;
+    color: var(--accent);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.button-link--danger { color: var(--error-fg); }
+.button-link--danger:hover {
+    background: var(--error-bg);
+    border-color: var(--error-bd);
+}
+
+/* Row header: URL + status pill + delete action on one line, always in the
+   same place regardless of any reason/origin notes rendered below it. */
+.url-list__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+}
+.url-list__head .url-list__url { flex: 1 1 12rem; }
+.url-list__head .status { margin-top: 0; }
+.url-list__head .url-list__delete { margin-left: auto; }
 
 /* Lists */
 .batch-list, .url-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
@@ -126,7 +155,7 @@ a { color: var(--accent); }
 }
 .batch-meta { color: var(--muted); font-size: 0.9rem; display: block; margin-top: 0.2rem; }
 .url-list__url { display: block; overflow-wrap: anywhere; word-break: break-word; }
-.url-list__reason { display: block; color: var(--error-fg); font-size: 0.9rem; }
+.url-list__reason { display: block; color: var(--error-fg); font-size: 0.9rem; margin-top: 0.35rem; }
 .url-list__origin { display: block; color: var(--muted); font-size: 0.9rem; margin-top: 0.2rem; }
 .url-list__origin a { color: inherit; }
 

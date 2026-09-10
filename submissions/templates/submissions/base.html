@@ -9,8 +9,8 @@
 <body>
     <a class="skip-link" href="#main">Skip to content</a>
     <main id="main" class="main">
+        {% if messages %}
         <div class="messages" aria-live="polite" role="status">
-            {% if messages %}
             <ul class="message-list">
                 {% for message in messages %}
                 <li class="message message--{{ message.tags|default:'info' }}">
@@ -19,8 +19,8 @@
                 </li>
                 {% endfor %}
             </ul>
-            {% endif %}
         </div>
+        {% endif %}
         {% block content %}{% endblock %}
     </main>
     {% block scripts %}{% endblock %}
