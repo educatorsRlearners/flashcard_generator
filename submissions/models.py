@@ -117,6 +117,27 @@ class SubmittedURL(models.Model):
     )
     extracted_at = models.DateTimeField(null=True, blank=True)
 
+    class GenerationStatus(models.TextChoices):
+        """State of card generation (issue #6) for this URL.
+
+        The blank default ("") means "not attempted yet".
+        """
+
+        NOT_STARTED = "", "Not started"
+        OK = "ok", "Cards generated"
+        FAILED = "failed", "Failed to generate"
+
+    #: Set by ``submissions.generation`` / the ``generate_cards`` command.
+    generation_status = models.CharField(
+        max_length=16,
+        choices=GenerationStatus.choices,
+        blank=True,
+        default="",
+    )
+    #: One-line reason recorded when ``generation_status == "failed"`` (or the
+    #: skip reason for a URL that produced no cards). Cleared on success.
+    generation_error = models.TextField(blank=True, default="")
+
     #: Short human-readable forms of ``FailureKind`` for use in running
     #: prose (e.g. the batch by-kind breakdown). The full ``.label`` values
     #: are used verbatim for per-row display via ``get_failure_kind_display``.
@@ -151,6 +172,52 @@ class SubmittedURL(models.Model):
 
     def __str__(self):
         return self.url
+
+
+class Card(models.Model):
+    """An Anki-style flashcard generated from a ``SubmittedURL``'s
+    ``extracted_text`` (issue #6).
+
+    ``note_type`` is chosen per card by the generator, not per URL: one URL
+    can yield a mix of ``basic`` and ``cloze`` cards.
+
+    * ``basic``: ``front`` holds a term / question, ``back`` its definition.
+    * ``cloze``: ``front`` holds a sentence with Anki ``{{c1::...}}`` markers;
+      ``back`` may be blank or hold extra info.
+
+    ``batch`` is a convenience copy of ``submitted_url.batch`` (the URL's
+    originating batch, per the #15 ``BatchRequest`` model). It may be null
+    when the URL has no originating batch, or becomes null if that batch is
+    deleted; the authoritative link is always ``submitted_url``.
+    """
+
+    class NoteType(models.TextChoices):
+        BASIC = "basic", "Basic (Q&A)"
+        CLOZE = "cloze", "Cloze"
+
+    submitted_url = models.ForeignKey(
+        SubmittedURL, on_delete=models.CASCADE, related_name="cards"
+    )
+    batch = models.ForeignKey(
+        Batch,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="cards",
+    )
+    note_type = models.CharField(max_length=8, choices=NoteType.choices)
+    front = models.TextField()
+    back = models.TextField(blank=True, default="")
+    source_term = models.CharField(max_length=300)
+    #: JSON dict: {"source_url": ..., "date_added": <ISO date>, "topic": ...}.
+    tags = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["submitted_url_id", "id"]
+
+    def __str__(self):
+        return f"[{self.note_type}] {self.source_term}"
 
 
 class BatchRequest(models.Model):

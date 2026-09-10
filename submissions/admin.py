@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Batch, SubmittedURL
+from .models import Batch, Card, SubmittedURL
 
 
 class SubmittedURLInline(admin.TabularInline):
@@ -8,6 +8,14 @@ class SubmittedURLInline(admin.TabularInline):
     fields = ("url", "status", "failure_kind", "failure_reason")
     readonly_fields = ("url",)
     extra = 0
+
+
+class CardInline(admin.TabularInline):
+    model = Card
+    fields = ("note_type", "source_term", "front", "back", "created_at")
+    readonly_fields = ("created_at",)
+    extra = 0
+    show_change_link = True
 
 
 @admin.register(Batch)
@@ -26,9 +34,10 @@ class SubmittedURLAdmin(admin.ModelAdmin):
         "extraction_method",
         "extracted_title",
         "extracted_at",
+        "generation_status",
         "created_at",
     )
-    list_filter = ("status", "failure_kind", "extraction_method")
+    list_filter = ("status", "failure_kind", "extraction_method", "generation_status")
     list_editable = ("status",)
     fields = (
         "url",
@@ -40,6 +49,8 @@ class SubmittedURLAdmin(admin.ModelAdmin):
         "extracted_title",
         "extracted_at",
         "extracted_text",
+        "generation_status",
+        "generation_error",
         "created_at",
     )
     readonly_fields = (
@@ -48,5 +59,23 @@ class SubmittedURLAdmin(admin.ModelAdmin):
         "extracted_at",
         "failure_kind",
         "failure_reason",
+        "generation_status",
+        "generation_error",
     )
     search_fields = ("url",)
+    inlines = (CardInline,)
+
+
+@admin.register(Card)
+class CardAdmin(admin.ModelAdmin):
+    list_display = (
+        "note_type",
+        "source_term",
+        "submitted_url",
+        "batch",
+        "created_at",
+    )
+    list_filter = ("note_type", "batch")
+    search_fields = ("source_term", "front", "back", "submitted_url__url")
+    readonly_fields = ("created_at",)
+    list_select_related = ("submitted_url", "batch")

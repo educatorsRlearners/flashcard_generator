@@ -110,6 +110,55 @@ chosen keeps `extraction_method = none`. The no-selector run
 This is intentional - it is the way to retry transient failures - but it
 means a plain re-run is not idempotent for rows that keep failing.
 
+## Generate cards
+
+Turn the extracted text of a URL into Anki-style flashcards with the #5 LLM
+client:
+
+```
+uv run python manage.py generate_cards --url https://example.com/article
+uv run python manage.py generate_cards --id 42
+uv run python manage.py generate_cards --batch 1     # every extracted URL in a batch
+uv run python manage.py generate_cards              # all extracted, status=ok, no cards yet
+uv run python manage.py generate_cards --url ... --force   # delete this URL's cards and regenerate
+```
+
+One line is printed per URL: the number of cards created (by note type,
+plus any rejected), or the skip / failure reason.
+
+Each card is auto-classified **per card** (a single URL can yield a mix):
+
+- **basic** - a term with a standalone definition (`front` = term/question,
+  `back` = definition).
+- **cloze** - a term used in a reusable sentence; `front` holds that
+  sentence with Anki `{{c1::…}}` markers, `back` may be blank.
+
+The card count follows the density of the content - there is no fixed "N
+per URL". A per-URL upper bound (`MAX_CARDS_PER_URL` in
+`submissions/generation.py`, alongside the content threshold and
+prompt-size limits) is a safety cap only.
+
+Cards are saved in one transaction (`bulk_create`) - a mid-run LLM failure
+never leaves half-written cards. Every card is tagged with the source URL,
+an ISO date, and a topic when one can be inferred (blank otherwise). A
+card's `batch` is a copy of its `SubmittedURL`'s originating batch (may be
+null); `submitted_url` is the authoritative link.
+
+Behaviour on trouble:
+
+- `extracted_text` under the threshold (200 non-whitespace chars) - URL
+  skipped, reason `insufficient content for generation`, exit 0.
+- rate-limit / transient LLM error - that URL is marked
+  `generation_status = failed` with the reason, the run continues, exit 0.
+- auth error / provider config missing - the command stops with a non-zero
+  exit (it would fail for every URL).
+- refusal / truncation / malformed response, or every card rejected by
+  validation (`no valid cards produced`) - URL skipped/failed with the
+  reason, zero cards, run continues.
+
+`Card` rows are visible in the Django admin (filterable by note type and
+batch, and inline on the `SubmittedURL` page).
+
 ## LLM client
 
 `submissions/llm.py` is a thin, provider-agnostic client for text
