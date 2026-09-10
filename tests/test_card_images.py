@@ -350,3 +350,305 @@ def test_generation_still_succeeds_when_image_step_raises(monkeypatch):
 
     assert result.outcome == "created"
     assert su.cards.count() == 1
+
+
+# --- manual image replacement from the review grid (issue #26) ---------
+#
+# These tests exercise the review-grid endpoints (per-card POST / fetch),
+# reusing #12's discovery + Draw Things client with the same fakes as above.
+
+import json as _json
+
+from django.urls import reverse as _reverse
+
+from submissions.models import Batch as _Batch
+from submissions.models import BatchRequest as _BatchRequest
+from submissions.models import Feedback as _Feedback
+
+
+def _review_batch():
+    batch = _Batch.objects.create()
+    su = make_url(url=f"https://example.com/review-{batch.pk}")
+    _BatchRequest.objects.create(batch=batch, submitted_url=su)
+    return batch, su
+
+
+def _img_post(client, batch, card, action, data=None):
+    return client.post(
+        _reverse(f"submissions:card_review_image_{action}", args=[batch.pk, card.pk]),
+        data or {},
+        HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+    )
+
+
+def _review_url(batch):
+    return _reverse("submissions:card_review", args=[batch.pk])
+
+
+def _attach_bytes(card, data, source="source_page"):
+    card.image.save(f"card_{card.pk}.png", ContentFile(data), save=False)
+    card.image_source = source
+    card.save(update_fields=["image", "image_source"])
+    card.refresh_from_db()
+    return card
+
+
+from django.core.files.base import ContentFile  # noqa: E402
+
+
+def test_select_candidate_persists_and_is_reload_visible(client, fake_fetch):
+    batch, su = _review_batch()
+    card = make_card(su)
+    old_bytes = png_bytes(600, 600, color=(1, 2, 3))
+    _attach_bytes(card, old_bytes)
+    old_name = card.image.name
+
+    good_url = "https://example.com/review-good.png"
+    new_bytes = png_bytes(600, 600, color=(9, 9, 9))
+    fake_fetch({good_url: images.FetchedImage(new_bytes, "image/png")})
+
+    resp = _img_post(client, batch, card, "select", {"candidate_url": good_url})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["image_manually_set"] is True
+    assert payload["image_source"] == "source_page"
+
+    card.refresh_from_db()
+    assert card.image.name != old_name
+    assert card.image_manually_set is True
+    assert card.image_source == Card.ImageSource.SOURCE_PAGE
+    # original #12 pick retained for revert
+    assert card.original_image.name == old_name
+    assert card.original_image_source == "source_page"
+
+    page = client.get(_review_url(batch))
+    assert card.image.name.encode() in page.content
+
+
+def test_select_failing_candidate_keeps_old_image(client, fake_fetch):
+    import httpx as _httpx
+
+    batch, su = _review_batch()
+    card = make_card(su)
+    _attach_bytes(card, png_bytes(600, 600))
+    old_name = card.image.name
+
+    bad_url = "https://example.com/review-404.png"
+    fake_fetch({bad_url: _httpx.ConnectError("refused")})
+
+    resp = _img_post(client, batch, card, "select", {"candidate_url": bad_url})
+    assert resp.status_code == 400
+    assert "error" in resp.json()
+
+    card.refresh_from_db()
+    assert card.image.name == old_name
+    assert card.image_manually_set is False
+
+
+def test_select_unusable_candidate_keeps_old_image(client, fake_fetch):
+    batch, su = _review_batch()
+    card = make_card(su)
+    _attach_bytes(card, png_bytes(600, 600))
+    old_name = card.image.name
+
+    tiny_url = "https://example.com/review-tiny.png"
+    fake_fetch({tiny_url: images.FetchedImage(png_bytes(10, 10), "image/png")})
+
+    resp = _img_post(client, batch, card, "select", {"candidate_url": tiny_url})
+    assert resp.status_code == 400
+
+    card.refresh_from_db()
+    assert card.image.name == old_name
+
+
+def test_regenerate_replaces_image_and_marks_manual(client, monkeypatch):
+    batch, su = _review_batch()
+    card = make_card(su)
+    _attach_bytes(card, png_bytes(600, 600, color=(1, 2, 3)))
+    old_name = card.image.name
+    fresh = png_bytes(512, 512, color=(200, 1, 1))
+
+    class _DT:
+        def __init__(self, *a, **kw):
+            pass
+
+        def generate(self, prompt):
+            assert prompt  # same #12 prompt builder feeds the client
+            return fresh
+
+    monkeypatch.setattr(images, "DrawThingsClient", _DT)
+
+    resp = _img_post(client, batch, card, "regenerate")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["image_manually_set"] is True
+    assert payload["image_source"] == "draw_things"
+
+    card.refresh_from_db()
+    assert card.image.name != old_name
+    assert card.image_source == Card.ImageSource.DRAW_THINGS
+    assert card.image_manually_set is True
+    assert card.original_image.name == old_name  # original retained
+
+
+def test_failed_regenerate_keeps_old_image_with_message(client, monkeypatch):
+    batch, su = _review_batch()
+    card = make_card(su)
+    _attach_bytes(card, png_bytes(600, 600))
+    old_name = card.image.name
+
+    class _DT:
+        def __init__(self, *a, **kw):
+            pass
+
+        def generate(self, prompt):
+            return None  # unreachable / error / empty
+
+    monkeypatch.setattr(images, "DrawThingsClient", _DT)
+
+    resp = _img_post(client, batch, card, "regenerate")
+    assert resp.status_code == 400
+    assert "error" in resp.json()
+
+    card.refresh_from_db()
+    assert card.image.name == old_name
+    assert card.image_manually_set is False
+
+
+def test_regenerate_when_draw_things_disabled_reports_disabled(client, settings):
+    settings.DRAW_THINGS_ENABLED = False
+    batch, su = _review_batch()
+    card = make_card(su)
+
+    resp = _img_post(client, batch, card, "regenerate")
+    assert resp.status_code == 400
+    assert "disabled" in resp.json()["error"].lower()
+
+    card.refresh_from_db()
+    assert not card.image
+    assert card.image_manually_set is False
+
+
+def test_remove_then_revert_image(client):
+    batch, su = _review_batch()
+    card = make_card(su)
+    _attach_bytes(card, png_bytes(600, 600), source="draw_things")
+    old_name = card.image.name
+
+    resp = _img_post(client, batch, card, "remove")
+    assert resp.status_code == 200
+    assert resp.json()["image_source"] == "none"
+
+    card.refresh_from_db()
+    assert not card.image
+    assert card.image_source == Card.ImageSource.NONE
+    assert card.image_manually_set is True
+    assert card.original_image.name == old_name  # ref retained
+
+    resp = _img_post(client, batch, card, "revert")
+    assert resp.status_code == 200
+    assert resp.json()["image_manually_set"] is False
+
+    card.refresh_from_db()
+    assert card.image.name == old_name
+    assert card.image_source == Card.ImageSource.DRAW_THINGS
+    assert card.image_manually_set is False
+
+
+def test_image_replacement_leaves_decision_and_text_untouched(client, fake_fetch):
+    batch, su = _review_batch()
+    card = make_card(su)
+    _attach_bytes(card, png_bytes(600, 600))
+
+    client.post(
+        _reverse("submissions:card_review_decision", args=[batch.pk, card.pk]),
+        {"decision": "accepted"},
+        HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+    )
+
+    good_url = "https://example.com/review-keep.png"
+    fake_fetch({good_url: images.FetchedImage(png_bytes(600, 600), "image/png")})
+    resp = _img_post(client, batch, card, "select", {"candidate_url": good_url})
+    assert resp.status_code == 200
+    assert resp.json()["review_status"] == "accepted"
+
+    card.refresh_from_db()
+    assert card.review_status == Card.ReviewStatus.ACCEPTED
+    assert card.front == "What is a mitochondrion?"
+    assert card.back == "The powerhouse of the cell."
+
+    fb = _Feedback.objects.get()
+    assert fb.front == "What is a mitochondrion?"
+
+
+def test_replacement_uses_final_image_for_anki():
+    from submissions import anki as _anki
+
+    batch, su = _review_batch()
+    card = make_card(su)
+    data = png_bytes(600, 600, color=(5, 5, 5))
+    _attach_bytes(card, data)
+
+    assert _anki.card_image_bytes(card) == data
+
+
+def test_candidates_endpoint_lists_source_candidates(client, monkeypatch):
+    batch, su = _review_batch()
+    card = make_card(su)
+    html = (
+        '<img src="/cand-a.png" width="800" height="800">'
+        '<img src="/cand-b.png" width="800" height="800">'
+    )
+    monkeypatch.setattr(images, "_fetch_page_html", lambda url: html)
+
+    resp = client.get(
+        _reverse("submissions:card_review_image_candidates", args=[batch.pk, card.pk]),
+        HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["candidates"] == [
+        "https://example.com/cand-a.png",
+        "https://example.com/cand-b.png",
+    ]
+
+
+def test_no_candidates_control_still_renders(client, monkeypatch):
+    batch, su = _review_batch()
+    card = make_card(su)
+    monkeypatch.setattr(images, "_fetch_page_html", lambda url: None)
+
+    resp = client.get(
+        _reverse("submissions:card_review_image_candidates", args=[batch.pk, card.pk]),
+        HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+    )
+    assert resp.json()["candidates"] == []
+
+    page = client.get(_review_url(batch))
+    content = page.content.decode()
+    assert 'data-role="image-choose"' in content
+    assert 'data-role="image-regen"' in content
+    assert 'data-role="image-remove"' in content
+
+
+def test_cloze_replacement_preview_stays_on_question_side(client, monkeypatch):
+    batch, su = _review_batch()
+    card = make_card(
+        su, note_type="cloze", front="The {{c1::mitochondrion}} makes ATP."
+    )
+    fresh = png_bytes(512, 512)
+
+    class _DT:
+        def __init__(self, *a, **kw):
+            pass
+
+        def generate(self, prompt):
+            return fresh
+
+    monkeypatch.setattr(images, "DrawThingsClient", _DT)
+    _img_post(client, batch, card, "regenerate")
+
+    page = client.get(_review_url(batch))
+    content = page.content.decode()
+    assert "review-card__image--question" in content
+    assert content.index(card.image.name) < content.index("review-card__cloze")

@@ -19,12 +19,18 @@ Nothing here logs or embeds the API key in an exception message.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from decimal import Decimal
+from typing import Any, Callable, Iterator, Optional
 
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 # --- Tunables (named constants, not literals scattered in code) ----------
 
@@ -149,28 +155,61 @@ class Provider:
         prompt: str,
         response_format: Optional[dict] = None,
         max_tokens: int,
+        batch: Any = None,
+        submitted_url: Any = None,
     ) -> LLMResult:
-        self._require_api_key()
+        """Send one prompt to the provider, recording an ``LLMCall`` row
+        (issue #28) for the outcome - ok or failed - before returning or
+        raising. ``batch`` / ``submitted_url`` attribute the row; when
+        omitted, the ambient :func:`call_context` applies."""
+        batch, submitted_url = _resolve_attribution(batch, submitted_url)
+        start = time.perf_counter()
+        try:
+            self._require_api_key()
 
-        attempt = 0
-        while True:
-            attempt += 1
-            try:
-                raw = self._call(
-                    system=system,
-                    prompt=prompt,
-                    response_format=response_format,
-                    max_tokens=max_tokens,
-                )
-            except LLMError:
-                raise
-            except BaseException as exc:  # noqa: BLE001 - provider SDK error
-                mapped = self._map_exception(exc)
-                if _is_retryable(mapped) and attempt < MAX_ATTEMPTS:
-                    _sleep(_backoff_seconds(attempt, mapped))
-                    continue
-                raise mapped from None
-            return self._build_result(raw, response_format)
+            attempt = 0
+            while True:
+                attempt += 1
+                try:
+                    raw = self._call(
+                        system=system,
+                        prompt=prompt,
+                        response_format=response_format,
+                        max_tokens=max_tokens,
+                    )
+                except LLMError:
+                    raise
+                except BaseException as exc:  # noqa: BLE001 - provider SDK error
+                    mapped = self._map_exception(exc)
+                    if _is_retryable(mapped) and attempt < MAX_ATTEMPTS:
+                        _sleep(_backoff_seconds(attempt, mapped))
+                        continue
+                    raise mapped from None
+                result = self._build_result(raw, response_format)
+                break
+        except LLMError as exc:
+            _record_llm_call(
+                model=self.model,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=int((time.perf_counter() - start) * 1000),
+                status="failed",
+                error_class=type(exc).__name__,
+                batch=batch,
+                submitted_url=submitted_url,
+            )
+            raise
+        usage = result.usage or {}
+        _record_llm_call(
+            model=self.model,
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+            latency_ms=int((time.perf_counter() - start) * 1000),
+            status="ok",
+            batch=batch,
+            submitted_url=submitted_url,
+        )
+        return result
 
     # -- hooks for subclasses --
 
@@ -400,6 +439,123 @@ def _sleep(seconds: float) -> None:
         time.sleep(seconds)
 
 
+# --- Cost estimation + attribution context (issue #28) ----------------
+
+
+#: Fallback per-million-token prices in USD when the model id matches no
+#: entry in ``LLM_PRICE_PER_MTOK`` below.
+DEFAULT_INPUT_USD_PER_MTOK: float = 3.0
+DEFAULT_OUTPUT_USD_PER_MTOK: float = 15.0
+
+#: Known per-model ``(input, output)`` prices in USD per million tokens.
+#: Matched by substring against the model id, lowercased.
+LLM_PRICE_PER_MTOK: dict[str, tuple[float, float]] = {
+    "opus": (15.0, 75.0),
+    "sonnet": (3.0, 15.0),
+    "haiku": (0.8, 4.0),
+}
+
+
+def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> Decimal:
+    """Estimate the USD cost of one call from token counts.
+
+    Uses the first ``LLM_PRICE_PER_MTOK`` entry whose key appears in the
+    model id, else the ``DEFAULT_*`` fallback rates.
+    """
+    name = (model or "").lower()
+    prices = None
+    for key, value in LLM_PRICE_PER_MTOK.items():
+        if key in name:
+            prices = value
+            break
+    if prices is None:
+        prices = (DEFAULT_INPUT_USD_PER_MTOK, DEFAULT_OUTPUT_USD_PER_MTOK)
+    total = (input_tokens * prices[0] + output_tokens * prices[1]) / 1_000_000
+    return Decimal(str(total)).quantize(Decimal("0.000001"))
+
+
+#: Attribution for the next ``generate`` call (issue #28): the batch / URL
+#: that triggered it. Set via :func:`call_context` by the caller (e.g.
+#: :mod:`submissions.generation`); a contextvar so concurrent callers never
+#: leak context into each other, and so stubs that replace ``generate``
+#: keep working untouched.
+_current_call_context: ContextVar[dict] = ContextVar(
+    "llm_call_context", default={"batch": None, "submitted_url": None}
+)
+
+
+@contextmanager
+def call_context(
+    *, batch: Any = None, submitted_url: Any = None
+) -> Iterator[None]:
+    """Attribute LLM calls in the wrapped block to a batch / URL.
+
+    Values may be model instances, primary keys, or ``None`` (unattributed).
+    """
+    token = _current_call_context.set(
+        {"batch": batch, "submitted_url": submitted_url}
+    )
+    try:
+        yield
+    finally:
+        _current_call_context.reset(token)
+
+
+def _resolve_attribution(
+    batch: Any, submitted_url: Any
+) -> tuple[Any, Any]:
+    """Explicit kwargs win; otherwise fall back to :func:`call_context`."""
+    ctx = _current_call_context.get() or {}
+    if batch is None:
+        batch = ctx.get("batch")
+    if submitted_url is None:
+        submitted_url = ctx.get("submitted_url")
+    return batch, submitted_url
+
+
+def _record_llm_call(
+    *,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    latency_ms: int,
+    status: str,
+    error_class: str = "",
+    batch: Any = None,
+    submitted_url: Any = None,
+) -> None:
+    """Persist one :class:`submissions.models.LLMCall` row (issue #28).
+
+    Best-effort by design: observability must never break generation, so any
+    failure here is logged and swallowed. The import is local so importing
+    this module never requires the Django app registry to be ready.
+    """
+    try:
+        from submissions.models import LLMCall
+
+        kwargs: dict[str, Any] = {
+            "model": model or "",
+            "prompt_tokens": max(0, int(input_tokens or 0)),
+            "completion_tokens": max(0, int(output_tokens or 0)),
+            "latency_ms": max(0, int(latency_ms)),
+            "estimated_cost_usd": estimate_cost_usd(
+                model or "", int(input_tokens or 0), int(output_tokens or 0)
+            ),
+            "status": status,
+            "error_class": error_class or "",
+        }
+        for field_name, value in (("batch", batch), ("submitted_url", submitted_url)):
+            if value is None:
+                kwargs[field_name] = None
+            elif isinstance(value, int):
+                kwargs[f"{field_name}_id"] = value
+            else:
+                kwargs[field_name] = value
+        LLMCall.objects.create(**kwargs)
+    except Exception:  # noqa: BLE001 - observability must not break calls
+        logger.warning("failed to record LLMCall row", exc_info=True)
+
+
 # --- Provider registry (the seam #27 extends) --------------------
 
 
@@ -438,6 +594,8 @@ def generate(
     prompt: str,
     response_format: Optional[dict] = None,
     max_tokens: Optional[int] = None,
+    batch: Any = None,
+    submitted_url: Any = None,
 ) -> LLMResult:
     """Send ``system`` + ``prompt`` to the configured LLM and return an
     :class:`LLMResult`.
@@ -445,11 +603,36 @@ def generate(
     Pass ``response_format`` (a JSON Schema dict) to get ``result.parsed``
     back as a validated object; a non-conforming reply raises
     :class:`LLMBadResponseError`.
+
+    Every invocation records an ``LLMCall`` row (issue #28): the provider
+    adapter records ok/failed outcomes, and this wrapper additionally
+    records the failed row when no provider could even be built (unknown
+    ``LLM_PROVIDER``). ``batch`` / ``submitted_url`` attribute the row;
+    when omitted, the ambient :func:`call_context` applies.
     """
-    provider = get_provider()
+    try:
+        provider = get_provider()
+    except LLMConfigError as exc:
+        try:
+            model = _resolve_model()
+        except Exception:  # noqa: BLE001 - best-effort label for the row
+            model = ""
+        _record_llm_call(
+            model=model,
+            input_tokens=0,
+            output_tokens=0,
+            latency_ms=0,
+            status="failed",
+            error_class=type(exc).__name__,
+            batch=batch,
+            submitted_url=submitted_url,
+        )
+        raise
     return provider.generate(
         system=system,
         prompt=prompt,
         response_format=response_format,
         max_tokens=_resolve_max_tokens(max_tokens),
+        batch=batch,
+        submitted_url=submitted_url,
     )

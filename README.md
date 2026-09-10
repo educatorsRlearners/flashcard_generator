@@ -45,26 +45,51 @@ network call and need neither Draw Things nor internet.
 
 ```
 uv run python manage.py migrate
-uv run python manage.py runserver
+uv run python manage.py dev
 ```
 
 Then open http://127.0.0.1:8000/ , paste one or more URLs (one per line)
 into the textarea, and submit. Submitting returns immediately and sends you
-to the batch page, which polls a JSON status endpoint and updates its
-progress indicator until the batch is done.
+to the batch page, which holds one SSE (`EventSource`) connection to
+`batch/<id>/events/` and updates its progress indicator live — per-URL
+status plus the "cards generated so far" count — with no polling and no
+page reload. When the batch finishes the server sends a `complete` event
+and the client closes the connection; an already-completed batch never
+opens one (final state is server-rendered). EventSource reconnects
+automatically on a dropped connection and every (re)connect starts with a
+`snapshot` event carrying the full current state, so mid-run loads,
+reconnects, and multiple tabs all show live progress. Only if
+EventSource is unavailable, or the stream errors repeatedly, does the
+page fall back to polling the JSON status endpoint (`batch/<id>/status/`)
+every 2 s.
+
+`dev` is a development-only supervisor (stdlib only): it starts
+`runserver` and the Huey consumer below together in one terminal, prefixes
+their output (`[web]` / `[worker]`), restarts a crashed consumer
+automatically (a crash-looping consumer stops everything with exit 1), and
+stops both on Ctrl-C with no orphans. No extra process is needed for the
+SSE stream above: it is served by `runserver` itself, which `dev` starts
+in its default threaded mode. Do NOT run `runserver --nothreading` (or
+`dev` against one): the single-threaded server would serialize the
+long-lived `/events/` connection against normal requests and hang the
+page. Production/WSGI and `uv run pytest`
+never spawn a consumer (tests run Huey tasks eagerly in-process).
 
 ## Background processing (Huey)
 
 Submitting a batch enqueues one background task per URL that runs the
 extraction path (below). The tasks are processed by a Huey consumer backed
-by a local SQLite file (`huey.sqlite3`) — no Redis or extra service. Start
-the consumer in a second terminal:
+by a local SQLite file (`huey.sqlite3`) — no Redis or extra service. The
+`dev` command above starts the consumer automatically, so submitting a
+batch moves its URLs out of `pending` with no further step. Manual
+fallback in a second terminal (if you run `runserver` on its own):
 
 ```
 uv run python manage.py run_huey
 ```
 
-`runserver` does **not** start it (that is issue #20). If the consumer is
+`runserver` on its own does **not** start it (use `dev` instead).
+If the consumer is
 not running, the batch page shows the URLs stuck in `pending` with a notice
 and this command. Pending tasks are persisted, so restarting the consumer
 after a crash resumes them. To run tasks inline without a consumer (e.g. a
@@ -182,8 +207,33 @@ an ISO date, and a topic when one can be inferred (blank otherwise). A
 card's `batch` is a copy of its `SubmittedURL`'s originating batch (may be
 null); `submitted_url` is the authoritative link.
 
-Behaviour on trouble:
+Cards rephrase the source: the system prompt instructs the model to restate
+definitions in its own words and never reuse the page's sentences verbatim
+(page grounding still holds — the model may use page context plus its own
+knowledge, it just must not parrot sentences). After generation each kept
+card is scanned for contiguous verbatim runs of more than
+`MAX_VERBATIM_WORDS` (12) words copied from the page's extracted text
+(case-/punctuation-insensitive word-window scan in
+`submissions/generation.py`). A card that trips the check is **kept, not
+regenerated or dropped** — the run only logs it: the per-URL output line
+grows a `(N cards close to source wording)` suffix (e.g. `... created: 2
+basic (1 cards close to source wording)`), so the reviewer can spot and
+reject it, feeding the few-shot loop.
 
+Programming analogies use a configurable language (default Python): the
+prompt carries `When you use a programming analogy, use <language>.`, so a
+default run produces Python analogies ("a class and an instance of it"),
+not Java.
+
+Settings (`config/settings.py`, each also an env var of the same name):
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `CARD_ANALOGY_LANGUAGE` | `python` | Language used for programming analogies in generated cards |
+
+Change it with no code edit, e.g. `export CARD_ANALOGY_LANGUAGE=javascript`.
+
+Behaviour on trouble:
 - `extracted_text` under the threshold (200 non-whitespace chars) - URL
   skipped, reason `insufficient content for generation`, exit 0.
 - rate-limit / transient LLM error - that URL is marked
@@ -390,6 +440,30 @@ uv run python manage.py shell
 Changing provider is the same (`export LLM_PROVIDER=...`); an unknown value
 raises `LLMConfigError` listing the supported providers. Timeout and retry
 counts are named constants at the top of `submissions/llm.py`.
+
+## LLM usage (cost / latency observability)
+
+Every call made through `submissions.llm.generate` records one `LLMCall`
+row (`submissions/models.py`): timestamp, model, prompt/completion tokens
+(from the provider response usage payload, not estimates), wall-clock
+latency in ms, estimated USD cost (per-model per-token prices in
+`submissions/llm.py`: `LLM_PRICE_PER_MTOK`, with `DEFAULT_*` fallback
+rates), attributable batch / URL, and status (`ok`, or `failed` with the
+`LLMError` subclass name in `error_class`). A run that hits an LLM error
+still records its failed row. Generation (`submissions/generation.py`)
+attributes its calls via `submissions.llm.call_context`; unattributed calls
+simply record null batch / URL.
+
+Inspect the rows in the Django admin (`LLMCall`, read-only) or with the
+management command:
+
+```
+uv run python manage.py llm_usage                  # latest 50 calls + totals
+uv run python manage.py llm_usage --batch 1        # one batch
+uv run python manage.py llm_usage --url https://example.com/article
+uv run python manage.py llm_usage --status failed  # failures only
+uv run python manage.py llm_usage --limit 10
+```
 
 ## Tests
 

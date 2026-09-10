@@ -16,11 +16,61 @@ Two layers live here:
 
 Idempotency: a card with a non-null ``synced_at`` is never sent again, so
 re-running the push adds zero new notes for already-synced cards.
+
+Media sync (issue #22)
+----------------------
+A card with ``image`` set gets its bytes uploaded with the AnkiConnect
+``storeMediaFile`` action (base64 ``data`` form) *before* ``addNote``, and
+the note field carries ``<img src="FILENAME">`` with the bare stored
+filename. Filename: ``flashcard-<sha256(data)[:32]>.<ext>`` - deterministic
+(same bytes -> same name), collision-safe (sha256), safe charset
+``[a-z0-9._-]`` and bounded length (<= ~50 chars).
+
+Skip rule (documented choice): within one :func:`push_accepted_cards` run a
+filename uploaded once is never uploaded again (in-memory ``set``), and
+before uploading we call ``retrieveMediaFile`` for that filename - if Anki
+already stores identical bytes the ``storeMediaFile`` is skipped and the
+note still references the file. So pushing the same card twice, or two
+cards sharing identical image bytes, yields one stored file.
+
+Failure choice (documented choice): a ``storeMediaFile`` failure
+(:class:`AnkiConnectError`) fails the *whole card push* - the note is NOT
+added with a broken reference, the card stays unsynced (``synced_at`` null)
+so a re-run retries it, and the failure is recorded per-card in
+``PushResult.failed``. Already-pushed cards in the same batch are
+unaffected (per-card isolation, same as a per-note ``addNote`` error).
+
+Live-deck semantic dedup (issue #29)
+------------------------------------
+:func:`dedup_cards_against_anki` compares freshly generated cards against
+the notes currently in the target Anki deck, fetched live via AnkiConnect
+(``findNotes`` + ``notesInfo``) once per deck and cached in-process
+(:data:`_DECK_NOTES_CACHE`), never once per card. Cosine similarity reuses
+:data:`submissions.dedup.DEDUP_SIMILARITY_THRESHOLD` - the single source of
+truth, not re-tuned here. Near-duplicates are marked
+``dedup_status=duplicate`` (``duplicate_of`` stays null - there is no local
+card to point at) with ``similarity_score`` set, and the matched Anki note
+is returned in :class:`AnkiDedupResult.matches`. When Anki is unreachable
+the function returns a ``warning`` and leaves the cards untouched
+(local-only fallback); generation always completes.
+
+Display note (follow-up, views/templates): the matched note is currently
+surfaced at command-output level only - :func:`dedup_cards_against_anki`
+returns it, :mod:`submissions.generation` stores it on
+``GenerationResult.anki_matches`` and prints it in ``summary_line()``.
+Showing the matched note inline in the review grid (views/templates) is an
+explicit documented follow-up and is NOT part of this module.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
+import html
 import json
+import logging
+import re
 import socket
 import urllib.error
 import urllib.request
@@ -30,6 +80,8 @@ from django.conf import settings
 from django.utils import timezone
 
 from .models import Card
+
+logger = logging.getLogger(__name__)
 
 ANKI_CONNECT_VERSION = 6
 
@@ -132,15 +184,267 @@ def card_tags(card: Card) -> list[str]:
     ]
 
 
-def build_note(card: Card, deck_name: str) -> dict:
+def build_note(card: Card, deck_name: str, image_filename: str | None = None) -> dict:
     model_name, fields_fn = FIELD_MAP[card.note_type]
+    fields = fields_fn(card)
+    if image_filename:
+        tag = f'<img src="{image_filename}">'
+        if card.note_type == Card.NoteType.CLOZE:
+            fields["Text"] = f'{fields.get("Text", "")}<br>{tag}' if fields.get("Text") else tag
+        else:
+            fields["Back"] = f'{fields.get("Back", "")}<br>{tag}' if fields.get("Back") else tag
     return {
         "deckName": deck_name,
         "modelName": model_name,
-        "fields": fields_fn(card),
+        "fields": fields,
         "tags": card_tags(card),
         "options": {"allowDuplicate": False},
     }
+
+
+# --- media sync (issue #22) ---------------------------------------------
+
+#: Prefix for every media filename we store in Anki.
+MEDIA_FILENAME_PREFIX = "flashcard-"
+#: Hex chars of the sha256 digest kept in the filename (128 bits - far
+#: beyond collision relevance, keeps the name short).
+MEDIA_FILENAME_HASH_LEN = 32
+#: Fallback extension when the card image name carries no usable suffix.
+MEDIA_DEFAULT_EXTENSION = "png"
+
+
+def media_filename_for_bytes(data: bytes, extension: str = MEDIA_DEFAULT_EXTENSION) -> str:
+    """Deterministic, collision-safe, charset-safe media filename.
+
+    ``flashcard-<sha256(data)[:32]>.<ext>`` where ``ext`` is lowercased
+    alphanumeric (max 8 chars, default ``png``). Safe charset
+    ``[a-z0-9._-]``, bounded length (<= ``len(prefix)+32+1+8``).
+    """
+    ext = re.sub(r"[^a-z0-9]", "", str(extension or "").lower())[:8] or MEDIA_DEFAULT_EXTENSION
+    digest = hashlib.sha256(bytes(data)).hexdigest()[:MEDIA_FILENAME_HASH_LEN]
+    return f"{MEDIA_FILENAME_PREFIX}{digest}.{ext}"
+
+
+def _card_image_extension(card: Card) -> str:
+    name = getattr(getattr(card, "image", None), "name", "") or ""
+    suffix = name.rsplit(".", 1)[-1] if "." in name else ""
+    cleaned = re.sub(r"[^a-z0-9]", "", suffix.lower())[:8]
+    return cleaned or MEDIA_DEFAULT_EXTENSION
+
+
+def card_image_bytes(card: Card) -> bytes | None:
+    """Raw bytes of ``card.image``, or ``None`` when the card has no image.
+
+    :raises OSError: when the field is set but the file cannot be read -
+        the caller turns this into a per-card (retryable) failure.
+    """
+    image = getattr(card, "image", None)
+    if not image:
+        return None
+    try:
+        if not image.name:
+            return None
+    except Exception:
+        return None
+    image.open("rb")
+    try:
+        data = image.read()
+    finally:
+        try:
+            image.close()
+        except Exception:
+            pass
+    if not data:
+        return None
+    return bytes(data)
+
+
+def ensure_media_uploaded(
+    client: AnkiConnectClient,
+    filename: str,
+    data: bytes,
+    uploaded: set[str] | None = None,
+) -> bool:
+    """Store ``data`` under ``filename`` unless Anki already holds it.
+
+    Returns True when a ``storeMediaFile`` was issued, False when skipped
+    (already uploaded this run, or ``retrieveMediaFile`` returned identical
+    bytes). Raises :class:`AnkiConnectError` when the store fails.
+    """
+    if uploaded is not None and filename in uploaded:
+        return False
+    try:
+        existing = client.invoke("retrieveMediaFile", filename=filename)
+    except AnkiConnectError:
+        existing = None  # not present (or not readable) - fall through to store
+    if existing:
+        try:
+            if base64.b64decode(existing) == bytes(data):
+                if uploaded is not None:
+                    uploaded.add(filename)
+                return False
+        except (binascii.Error, ValueError, TypeError):
+            pass  # undecodable - fall through and (over)write
+    client.invoke(
+        "storeMediaFile", filename=filename, data=base64.b64encode(bytes(data)).decode("ascii")
+    )
+    if uploaded is not None:
+        uploaded.add(filename)
+    return True
+
+
+# --- live-deck semantic dedup (issue #29) -------------------------------
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+#: In-process cache: deck name -> list of {"noteId", "text"} dicts fetched
+#: via ``findNotes`` + ``notesInfo``. Populated once per batch; cleared by
+#: :func:`clear_deck_notes_cache` (tests) or process restart.
+_DECK_NOTES_CACHE: dict[str, list[dict]] = {}
+
+
+def clear_deck_notes_cache() -> None:
+    """Empty the live-deck note-text cache (tests / deck switched)."""
+    _DECK_NOTES_CACHE.clear()
+
+
+def _strip_html(value: str) -> str:
+    return html.unescape(_TAG_RE.sub(" ", str(value or ""))).strip()
+
+
+def deck_note_text(note_info: dict) -> str:
+    """Plain text of one ``notesInfo`` entry (all fields joined)."""
+    fields = (note_info or {}).get("fields") or {}
+    parts = []
+    for details in fields.values():
+        if isinstance(details, dict):
+            text = _strip_html(details.get("value", ""))
+        else:
+            text = _strip_html(details)
+        if text:
+            parts.append(text)
+    return " ".join(parts).strip()
+
+
+def fetch_deck_note_texts(
+    client: AnkiConnectClient, deck_name: str, *, use_cache: bool = True
+) -> tuple[list[dict], bool]:
+    """Fetch ``[{"noteId", "text"}]`` for every note in ``deck_name``.
+
+    Exactly two AnkiConnect calls (``findNotes`` + ``notesInfo``) on a cache
+    miss; zero calls on a hit. Returns ``(notes, from_cache)``.
+    """
+    if use_cache and deck_name in _DECK_NOTES_CACHE:
+        return _DECK_NOTES_CACHE[deck_name], True
+    note_ids = client.invoke("findNotes", query=f'deck:"{deck_name}"') or []
+    if not note_ids:
+        notes: list[dict] = []
+        if use_cache:
+            _DECK_NOTES_CACHE[deck_name] = notes
+        return notes, False
+    infos = client.invoke("notesInfo", notes=list(note_ids)) or []
+    notes = []
+    for info in infos:
+        text = deck_note_text(info)
+        if not text:
+            continue
+        notes.append({"noteId": info.get("noteId"), "text": text})
+    if use_cache:
+        _DECK_NOTES_CACHE[deck_name] = notes
+    return notes, False
+
+
+@dataclass
+class AnkiDedupMatch:
+    card: Card
+    note_id: object = None
+    note_text: str = ""
+    similarity: float = 0.0
+
+
+@dataclass
+class AnkiDedupResult:
+    """Outcome of :func:`dedup_cards_against_anki`."""
+
+    matches: list = field(default_factory=list)  # [AnkiDedupMatch]
+    deck_notes: int = 0
+    from_cache: bool = False
+    warning: str = ""  # non-empty on the unreachable/local-only fallback
+
+    @property
+    def duplicates(self) -> int:
+        return len(self.matches)
+
+
+def _anki_card_text(card: Card) -> str:
+    parts = [card.front or "", card.back or "", card.source_term or ""]
+    return " ".join(p.strip() for p in parts if p and p.strip()).strip()
+
+
+def dedup_cards_against_anki(
+    cards: list[Card],
+    client: AnkiConnectClient | None = None,
+    deck_name: str | None = None,
+    model=None,
+    *,
+    use_cache: bool = True,
+) -> AnkiDedupResult:
+    """Mark cards duplicating notes already in the Anki deck (issue #29).
+
+    Only cards still ``dedup_status == unique`` with non-empty text are
+    compared; local ``duplicate`` verdicts are never overridden. Deck text
+    is fetched once per deck (cached); embeddings are computed in one
+    ``model.encode`` call. Similarity uses
+    :data:`submissions.dedup.DEDUP_SIMILARITY_THRESHOLD`.
+    """
+    from submissions.dedup import DEDUP_SIMILARITY_THRESHOLD, load_embedding_model
+
+    candidates = [
+        c
+        for c in list(cards)
+        if getattr(c, "dedup_status", Card.DedupStatus.UNIQUE) == Card.DedupStatus.UNIQUE
+        and _anki_card_text(c)
+    ]
+    if not candidates:
+        return AnkiDedupResult()
+    client = client or AnkiConnectClient()
+    deck = deck_name or settings.ANKI_DECK_NAME
+    try:
+        deck_notes, from_cache = fetch_deck_note_texts(client, deck, use_cache=use_cache)
+    except AnkiError as exc:
+        warning = f"Anki deck dedup skipped (Anki unreachable: {exc}); local-only dedup applied."
+        logger.warning("%s", warning)
+        return AnkiDedupResult(warning=warning)
+    result = AnkiDedupResult(deck_notes=len(deck_notes), from_cache=from_cache)
+    if not deck_notes:
+        return result
+    model = model or load_embedding_model()
+    import numpy as np
+
+    texts = [n["text"] for n in deck_notes] + [_anki_card_text(c) for c in candidates]
+    vectors = np.asarray(model.encode(texts), dtype=float)
+    if vectors.ndim == 1:
+        vectors = vectors.reshape(1, -1)
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    vectors = vectors / norms
+    deck_matrix, card_matrix = vectors[: len(deck_notes)], vectors[len(deck_notes):]
+    for card, vec in zip(candidates, card_matrix):
+        sims = deck_matrix @ vec
+        best_idx = int(np.argmax(sims))
+        best = float(sims[best_idx])
+        if best >= DEDUP_SIMILARITY_THRESHOLD:
+            note = deck_notes[best_idx]
+            card.dedup_status = Card.DedupStatus.DUPLICATE
+            card.duplicate_of = None
+            card.similarity_score = best
+            card.save(update_fields=["dedup_status", "duplicate_of", "similarity_score"])
+            result.matches.append(
+                AnkiDedupMatch(
+                    card=card, note_id=note["noteId"], note_text=note["text"], similarity=best
+                )
+            )
+    return result
 
 
 # --- push orchestration ----------------------------------------------
@@ -198,10 +502,14 @@ def push_accepted_cards(client: AnkiConnectClient | None = None) -> PushResult:
     Raises :class:`AnkiUnreachableError` (before touching any card) if Anki
     cannot be contacted. A per-note AnkiConnect error is caught: that card
     is reported failed (or skipped-duplicate) and the batch continues.
+    A per-card media failure (unreadable image bytes, ``storeMediaFile``
+    error) likewise fails just that card - retryable, since the card stays
+    unsynced - and never writes a note with a broken image reference.
     """
     client = client or AnkiConnectClient()
     deck_name = settings.ANKI_DECK_NAME
     result = PushResult(deck_name=deck_name, url=client.url)
+    media_uploaded: set[str] = set()
 
     result.skipped_already_synced = Card.objects.filter(
         review_status=Card.ReviewStatus.ACCEPTED,
@@ -220,7 +528,22 @@ def push_accepted_cards(client: AnkiConnectClient | None = None) -> PushResult:
         result.deck_created = True
 
     for card in cards:
-        note = build_note(card, deck_name)
+        try:
+            image_data = card_image_bytes(card)
+        except OSError as exc:
+            result.failed.append((card.pk, f"could not read card image: {exc}"))
+            continue
+        image_filename: str | None = None
+        if image_data is not None:
+            image_filename = media_filename_for_bytes(image_data, _card_image_extension(card))
+            try:
+                ensure_media_uploaded(client, image_filename, image_data, media_uploaded)
+            except AnkiConnectError as exc:
+                result.failed.append(
+                    (card.pk, f"media upload failed for {image_filename}: {exc}")
+                )
+                continue
+        note = build_note(card, deck_name, image_filename=image_filename)
         try:
             note_id = client.invoke("addNote", note=note)
         except AnkiConnectError as exc:

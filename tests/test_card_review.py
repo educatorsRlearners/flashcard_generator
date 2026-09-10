@@ -236,3 +236,246 @@ def test_batch_detail_links_to_review(client):
     batch = Batch.objects.create()
     page = client.get(reverse("submissions:batch_detail", args=[batch.pk]))
     assert reverse("submissions:card_review", args=[batch.pk]).encode() in page.content
+
+
+# --- inline edit of card text (issue #24) ---------------------------------
+
+
+def _edit(client, batch, card, **fields):
+    return client.post(
+        reverse("submissions:card_review_edit", args=[batch.pk, card.pk]),
+        fields,
+        HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+    )
+
+
+def _revert_edit(client, batch, card):
+    return client.post(
+        reverse("submissions:card_review_revert_edit", args=[batch.pk, card.pk]),
+        {},
+        HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+    )
+
+
+def test_basic_edit_persists_and_is_reload_visible(client):
+    batch = Batch.objects.create()
+    su = _url(batch)
+    card = _card(su, batch)
+
+    resp = _edit(client, batch, card, front="New front?", back="New back.")
+    assert resp.status_code == 200
+    assert resp.json()["front"] == "New front?"
+
+    card.refresh_from_db()
+    assert card.front == "New front?"
+    assert card.back == "New back."
+    assert card.is_edited is True
+    assert card.edited_at is not None
+    assert card.original_front == "What is X?"
+    assert card.original_back == "X is a thing."
+
+    page = client.get(reverse("submissions:card_review", args=[batch.pk]))
+    content = page.content.decode()
+    assert "New front?" in content
+    assert "edited" in content
+
+
+def test_cloze_edit_saves_valid_multi_deletion(client):
+    batch = Batch.objects.create()
+    su = _url(batch)
+    card = _card(
+        su, batch, note_type=Card.NoteType.CLOZE,
+        front="The {{c1::sky}} is blue.", back="", source_term="sky",
+    )
+
+    resp = _edit(
+        client, batch, card,
+        front="The {{c1::sky}} is {{c2::blue}} today.",
+    )
+    assert resp.status_code == 200
+    card.refresh_from_db()
+    assert card.front == "The {{c1::sky}} is {{c2::blue}} today."
+    assert card.is_edited is True
+    assert card.original_front == "The {{c1::sky}} is blue."
+
+
+def test_invalid_cloze_edit_is_refused(client):
+    batch = Batch.objects.create()
+    su = _url(batch)
+    card = _card(
+        su, batch, note_type=Card.NoteType.CLOZE,
+        front="The {{c1::sky}} is blue.", back="", source_term="sky",
+    )
+
+    resp = _edit(client, batch, card, front="The sky is blue, no markers.")
+    assert resp.status_code == 400
+    assert "error" in resp.json()
+
+    card.refresh_from_db()
+    assert card.front == "The {{c1::sky}} is blue."  # unchanged
+    assert card.is_edited is False
+
+
+def test_empty_or_whitespace_basic_fields_are_refused(client):
+    batch = Batch.objects.create()
+    su = _url(batch)
+    card = _card(su, batch)
+
+    for fields in (
+        {"front": "", "back": "has back"},
+        {"front": "has front", "back": "   "},
+        {"front": "  ", "back": "\t"},
+    ):
+        resp = _edit(client, batch, card, **fields)
+        assert resp.status_code == 400
+
+    card.refresh_from_db()
+    assert card.front == "What is X?"
+    assert card.back == "X is a thing."
+    assert card.is_edited is False
+
+
+def test_second_edit_keeps_first_original(client):
+    batch = Batch.objects.create()
+    su = _url(batch)
+    card = _card(su, batch)
+
+    _edit(client, batch, card, front="Edit one", back="Back one.")
+    _edit(client, batch, card, front="Edit two", back="Back two.")
+
+    card.refresh_from_db()
+    assert card.front == "Edit two"
+    assert card.original_front == "What is X?"  # first snapshot kept
+
+
+def test_revert_restores_original_and_clears_indicator(client):
+    batch = Batch.objects.create()
+    su = _url(batch)
+    card = _card(su, batch)
+
+    _edit(client, batch, card, front="Changed", back="Changed back.")
+    resp = _revert_edit(client, batch, card)
+    assert resp.status_code == 200
+    assert resp.json()["is_edited"] is False
+
+    card.refresh_from_db()
+    assert card.front == "What is X?"
+    assert card.back == "X is a thing."
+    assert card.is_edited is False
+    assert card.edited_at is None
+
+    page = client.get(reverse("submissions:card_review", args=[batch.pk]))
+    assert 'data-role="edited-badge"' in page.content.decode()
+    assert page.content.decode().count("edited</span>") == 1  # badge hidden
+
+
+def test_edit_does_not_change_decision_state(client):
+    batch = Batch.objects.create()
+    su = _url(batch)
+    undecided = _card(su, batch)
+    accepted = _card(su, batch, front="A2", source_term="Y")
+    rejected = _card(su, batch, front="A3", source_term="Z")
+    _decide(client, batch, accepted, "accepted")
+    _decide(client, batch, rejected, "rejected", reason="nope")
+
+    _edit(client, batch, undecided, front="U?", back="U.")
+    _edit(client, batch, accepted, front="A2?", back="A2.")
+    _edit(client, batch, rejected, front="A3?", back="A3.")
+
+    for c, status in (
+        (undecided, Card.ReviewStatus.UNDECIDED),
+        (accepted, Card.ReviewStatus.ACCEPTED),
+        (rejected, Card.ReviewStatus.REJECTED),
+    ):
+        c.refresh_from_db()
+        assert c.review_status == status
+    rejected.refresh_from_db()
+    assert rejected.rejection_reason == "nope"  # reason kept
+
+
+def test_edit_one_card_leaves_other_cards_decision_intact(client):
+    batch = Batch.objects.create()
+    su = _url(batch)
+    first = _card(su, batch)
+    second = _card(su, batch, front="Q2", source_term="Y")
+
+    # concurrent-safe ordering: accept the second card, then save an edit
+    # on the first; neither clobbers the other.
+    _decide(client, batch, second, "accepted")
+    resp = _edit(client, batch, first, front="First?", back="First.")
+    assert resp.status_code == 200
+
+    first.refresh_from_db()
+    second.refresh_from_db()
+    assert first.front == "First?"
+    assert first.review_status == Card.ReviewStatus.UNDECIDED
+    assert second.review_status == Card.ReviewStatus.ACCEPTED
+    assert second.front == "Q2"
+
+
+def test_feedback_stores_edited_content_and_notes_edited(client):
+    from submissions.models import Feedback
+
+    batch = Batch.objects.create()
+    su = _url(batch)
+    card = _card(su, batch, tags={"source_url": su.url})
+
+    _edit(client, batch, card, front="Edited?", back="Edited.")
+    _decide(client, batch, card, "accepted")
+
+    fb = Feedback.objects.get()
+    assert fb.front == "Edited?"
+    assert fb.back == "Edited."
+    assert fb.was_edited is True
+
+
+def test_feedback_unedited_card_notes_not_edited(client):
+    from submissions.models import Feedback
+
+    batch = Batch.objects.create()
+    su = _url(batch)
+    card = _card(su, batch)
+
+    _decide(client, batch, card, "accepted")
+
+    fb = Feedback.objects.get()
+    assert fb.front == "What is X?"
+    assert fb.was_edited is False
+
+
+def test_anki_note_uses_edited_content():
+    from submissions import anki
+
+    batch = Batch.objects.create()
+    su = _url(batch)
+    card = _card(su, batch)
+    card.front = "Edited front?"
+    card.back = "Edited back."
+    card.save(update_fields=["front", "back"])
+
+    note = anki.build_note(card, "Deck")
+    assert note["fields"] == {"Front": "Edited front?", "Back": "Edited back."}
+
+
+def test_empty_and_notready_states_render_no_edit_controls(client):
+    empty_batch = Batch.objects.create()
+    _url(empty_batch)
+    page = client.get(reverse("submissions:card_review", args=[empty_batch.pk]))
+    assert b'data-role="edit-open"' not in page.content
+
+    notready = Batch.objects.create()
+    _url(notready, status=SubmittedURL.Status.PENDING, gen="")
+    page = client.get(reverse("submissions:card_review", args=[notready.pk]))
+    assert b'data-role="edit-open"' not in page.content
+
+
+def test_review_grid_renders_edit_and_revert_controls(client):
+    batch = Batch.objects.create()
+    su = _url(batch)
+    _card(su, batch)
+    page = client.get(reverse("submissions:card_review", args=[batch.pk]))
+    content = page.content.decode()
+    assert 'data-role="edit-open"' in content
+    assert 'data-role="edit-wrap"' in content
+    # note type + source URL visible, not editable: no textarea for them
+    assert 'name="note_type"' not in content

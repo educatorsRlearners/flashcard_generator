@@ -17,6 +17,7 @@
         id="batch-progress"
         class="batch-progress{% if status.terminal %} batch-progress--terminal{% endif %}"
         data-status-url="{% url 'submissions:batch_status' batch.pk %}"
+        data-events-url="{% url 'submissions:batch_events' batch.pk %}"
         data-terminal="{{ status.terminal|yesno:'1,0' }}"
     >
         <p class="batch-progress__summary" id="batch-progress-summary">
@@ -68,16 +69,39 @@
         </li>
         {% endfor %}
     </ul>
+
+    <form
+        method="post"
+        action="{% url 'submissions:delete_batch' batch.pk %}"
+        class="batch-delete"
+        onsubmit="return confirm('Delete Batch {{ batch.pk }} with {{ batch.url_count }} URL(s)? This cannot be undone.');"
+    >
+        {% csrf_token %}
+        <button type="submit" class="button-link button-link--danger">Delete this batch</button>
+    </form>
 {% endblock %}
 
 {% block scripts %}
 <script>
+/* Batch progress via SSE (issue #23). One EventSource per tab, no polling
+ * while the stream is healthy. The server sends a "snapshot" first (full
+ * current state, so mid-run loads and reconnects resume correctly), then
+ * "progress" events only when something changed, then "complete" when the
+ * batch reaches a terminal state — the client then closes the connection.
+ * Fallback: if EventSource is unavailable, or the stream errors repeatedly
+ * (3 errors in a row), the page falls back to the #8 polling loop against
+ * the JSON status endpoint. */
 (function () {
     var root = document.getElementById("batch-progress");
     if (!root) { return; }
     var statusUrl = root.getAttribute("data-status-url");
+    var eventsUrl = root.getAttribute("data-events-url");
     var POLL_MS = 2000;
-    var timer = null;
+    var MAX_STREAM_ERRORS = 3;
+    var pollTimer = null;
+    var source = null;
+    var streamErrors = 0;
+    var done = false;
 
     function applyRow(li, u) {
         var status = li.querySelector('[data-role="status"]');
@@ -116,20 +140,62 @@
 
         if (data.terminal) {
             root.setAttribute("data-terminal", "1");
-            if (timer) { clearInterval(timer); timer = null; }
+            done = true;
+            closeStream();
+            stopPolling();
         }
     }
 
-    function poll() {
+    function pollOnce() {
         fetch(statusUrl, { headers: { "X-Requested-With": "XMLHttpRequest" } })
             .then(function (r) { return r.json(); })
             .then(render)
             .catch(function () { /* keep polling */ });
     }
 
-    if (root.getAttribute("data-terminal") !== "1") {
-        timer = setInterval(poll, POLL_MS);
-        poll();
+    function startPolling() {
+        if (pollTimer || done) { return; }
+        pollTimer = setInterval(pollOnce, POLL_MS);
+        pollOnce();
+    }
+
+    function stopPolling() {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    function closeStream() {
+        if (source) { source.close(); source = null; }
+    }
+
+    function onEvent(e) {
+        streamErrors = 0;
+        try { render(JSON.parse(e.data)); } catch (err) { /* ignore */ }
+    }
+
+    function startStream() {
+        if (done) { return; }
+        source = new EventSource(eventsUrl);
+        ["snapshot", "progress", "complete"].forEach(function (name) {
+            source.addEventListener(name, onEvent);
+        });
+        source.onerror = function () {
+            // EventSource reconnects automatically on transient drops (the
+            // server re-sends a snapshot on reconnect, so progress resumes).
+            // Only after repeated errors do we give up and poll instead.
+            streamErrors += 1;
+            if (done || (source && source.readyState === EventSource.CLOSED && streamErrors < MAX_STREAM_ERRORS)) { return; }
+            if (streamErrors >= MAX_STREAM_ERRORS) {
+                closeStream();
+                startPolling();
+            }
+        };
+    }
+
+    if (root.getAttribute("data-terminal") === "1") { return; }
+    if (typeof EventSource === "undefined" || !eventsUrl) {
+        startPolling();
+    } else {
+        startStream();
     }
 })();
 </script>

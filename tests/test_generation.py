@@ -366,3 +366,191 @@ def test_card_batch_copies_url_batch_including_null(install_llm):
 
     assert batched.cards.get().batch_id == batched.batch_id
     assert unbatched.cards.get().batch_id is None
+
+
+# --- issue #32: paraphrase + analogy language ---------------------------
+
+
+def test_system_prompt_contains_rephrase_instruction():
+    prompt = generation.build_system_prompt()
+    assert "own words" in prompt.lower()
+    assert "verbatim" in prompt.lower()
+
+
+def test_system_prompt_contains_configured_analogy_language():
+    from django.conf import settings as dj_settings
+
+    prompt = generation.build_system_prompt()
+    assert dj_settings.CARD_ANALOGY_LANGUAGE in prompt
+    # Default is python (keeps analogies off Java unless configured).
+    assert "python" in prompt.lower()
+
+
+def test_default_analogy_language_is_python():
+    from django.conf import settings as dj_settings
+
+    assert dj_settings.CARD_ANALOGY_LANGUAGE == "python"
+
+
+def test_analogy_language_switch_is_reflected(settings):
+    settings.CARD_ANALOGY_LANGUAGE = "javascript"
+    prompt = generation.build_system_prompt()
+    assert "javascript" in prompt.lower()
+
+
+def test_verbatim_check_flags_near_copy_and_passes_reworded():
+    source = (
+        "The behavior defining layer around the model includes the system prompt "
+        "and tool descriptions and how responses get parsed and what the model "
+        "remembers across steps for context management over many long sessions today"
+    )
+    near_copy = (
+        "The behavior defining layer around the model includes the system prompt "
+        "and tool descriptions and how responses get parsed and what the model "
+        "remembers across steps for context management"
+    )
+    reworded = "Scaffolding is everything surrounding a model that steers its actions."
+    assert generation.is_close_to_source(near_copy, source) is True
+    assert generation.is_close_to_source(reworded, source) is False
+    assert (
+        generation.longest_verbatim_run(near_copy, source)
+        > generation.MAX_VERBATIM_WORDS
+    )
+    assert (
+        generation.longest_verbatim_run(reworded, source)
+        <= generation.MAX_VERBATIM_WORDS
+    )
+
+
+def test_verbatim_boundary_twelve_words_ok_thirteen_flagged():
+    words = (
+        "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu "
+        "nu xi omicron pi rho sigma tau upsilon"
+    )
+    twelve = " ".join(words.split()[:12])
+    thirteen = " ".join(words.split()[:13])
+    assert generation.is_close_to_source(twelve, words) is False
+    assert generation.is_close_to_source(thirteen, words) is True
+
+
+def test_close_to_source_cards_are_kept_but_logged(install_llm):
+    source_bits = (
+        "The behavior defining layer around the model includes the system prompt "
+        "and tool descriptions and how responses get parsed and what the model "
+        "remembers across steps for context management over many long sessions today. "
+    )
+    su = _make_url(text=source_bits * 4)
+    near_copy = (
+        "The behavior defining layer around the model includes the system prompt "
+        "and tool descriptions and how responses get parsed and what the model "
+        "remembers across steps for context management"
+    )
+    install_llm([_card("basic", "What is scaffolding?", near_copy, "scaffolding")])
+
+    out = _run("--url", su.url)
+
+    assert su.cards.count() == 1  # kept, not dropped/regenerated
+    assert "1 cards close to source wording" in out
+
+
+# --- issue #29: live-deck dedup result surfaced in GenerationResult -------
+
+
+def _stub_anki_dedup(monkeypatch, fake_fn):
+    from submissions import anki as _anki
+
+    monkeypatch.setattr(_anki, "dedup_cards_against_anki", fake_fn)
+    # Isolate from local dedup embeddings + image backends.
+    from submissions import dedup as _dedup
+    from submissions import images as _images
+
+    monkeypatch.setattr(_dedup, "dedup_cards", lambda cards: None)
+    monkeypatch.setattr(_images, "attach_images", lambda su, cards: None)
+
+
+def test_generate_for_surfaces_anki_match_in_result_and_summary(
+    install_llm, monkeypatch
+):
+    from submissions import anki as _anki
+
+    install_llm([_card("basic", "What is chlorophyll?", "The green pigment.", "chlorophyll")])
+    su = _make_url()
+
+    def fake_dedup(cards):
+        card = list(cards)[0]
+        card.dedup_status = Card.DedupStatus.DUPLICATE
+        card.similarity_score = 0.95
+        card.save(update_fields=["dedup_status", "duplicate_of", "similarity_score"])
+        return _anki.AnkiDedupResult(
+            matches=[
+                _anki.AnkiDedupMatch(
+                    card=card,
+                    note_id=11,
+                    note_text="mitochondria powerhouse of cell",
+                    similarity=0.95,
+                )
+            ],
+            deck_notes=5,
+        )
+
+    _stub_anki_dedup(monkeypatch, fake_dedup)
+
+    result = generation.generate_for(su)
+
+    assert result.outcome == "created"
+    assert result.anki_duplicates == 1
+    assert result.anki_matches[0]["note_id"] == 11
+    assert "mitochondria" in result.anki_matches[0]["note_text"]
+    summary = result.summary_line(su.url)
+    assert "1 skipped as already in Anki deck" in summary
+    assert "mitochondria powerhouse of cell" in summary
+    # Duplicates persist but stay out of the review scope.
+    assert Card.objects.for_review().filter(pk=list(su.cards.all())[0].pk).count() == 0
+    assert Card.objects.count() == 1
+
+
+def test_generate_for_truncates_long_matched_note_text(install_llm, monkeypatch):
+    from submissions import anki as _anki
+
+    install_llm([_card()])
+    su = _make_url()
+    long_text = "x" * (generation.ANKI_MATCH_TEXT_PREVIEW_CHARS + 50)
+
+    def fake_dedup(cards):
+        card = list(cards)[0]
+        return _anki.AnkiDedupResult(
+            matches=[
+                _anki.AnkiDedupMatch(
+                    card=card, note_id=1, note_text=long_text, similarity=0.9
+                )
+            ]
+        )
+
+    _stub_anki_dedup(monkeypatch, fake_dedup)
+
+    result = generation.generate_for(su)
+    summary = result.summary_line(su.url)
+    assert long_text not in summary  # truncated
+    assert "…" in summary
+
+
+def test_generate_for_propagates_unreachable_anki_warning(
+    install_llm, monkeypatch
+):
+    from submissions import anki as _anki
+
+    install_llm([_card()])
+    su = _make_url()
+    warning = "Anki deck dedup skipped (Anki unreachable: boom); local-only dedup applied."
+
+    def fake_dedup(cards):
+        return _anki.AnkiDedupResult(warning=warning)
+
+    _stub_anki_dedup(monkeypatch, fake_dedup)
+
+    result = generation.generate_for(su)
+
+    assert result.outcome == "created"
+    assert result.anki_duplicates == 0
+    assert result.anki_warnings == [warning]
+    assert warning in result.summary_line(su.url)

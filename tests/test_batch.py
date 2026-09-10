@@ -238,3 +238,164 @@ def test_backfill_migration_links_every_preexisting_url():
     # reversible
     _0005.unbackfill(django_apps, None)
     assert BatchRequest.objects.count() == 0
+
+
+# --- Issue #31: bulk clear (delete batch / clear all) ---
+
+
+def _delete_batch_url(batch):
+    return reverse("submissions:delete_batch", args=[batch.pk])
+
+
+def _clear_url():
+    return reverse("submissions:clear_batches")
+
+
+def test_delete_single_batch_removes_batch_and_orphans(client, home_url):
+    client.post(home_url, {"urls": "https://a.example.com"}, follow=True)
+    client.post(home_url, {"urls": "https://b.example.com"}, follow=True)
+    assert Batch.objects.count() == 2
+    target = Batch.objects.order_by("id").first()
+    target_pk = target.pk
+    url_ids = list(
+        BatchRequest.objects.filter(batch=target).values_list(
+            "submitted_url_id", flat=True
+        )
+    )
+    assert url_ids
+
+    resp = client.post(_delete_batch_url(target))
+    assert resp.status_code == 302
+    assert resp.url == reverse("submissions:home")
+    assert not Batch.objects.filter(pk=target_pk).exists()
+    assert not BatchRequest.objects.filter(batch_id=target_pk).exists()
+    for uid in url_ids:
+        assert not SubmittedURL.objects.filter(pk=uid).exists()
+
+    follow = client.get(reverse("submissions:home"))
+    assert f"Deleted Batch {target_pk}." in follow.content.decode()
+    assert Batch.objects.count() == 1
+
+
+def test_delete_batch_shared_url_survives_and_repoints_origin(client, home_url):
+    client.post(home_url, {"urls": "https://shared.example.com"}, follow=True)
+    batch1 = Batch.objects.get()
+    client.post(home_url, {"urls": "https://shared.example.com"}, follow=True)
+    batch2 = Batch.objects.exclude(pk=batch1.pk).get()
+    shared = SubmittedURL.objects.get(url="https://shared.example.com")
+    assert shared.batch_id == batch1.pk
+
+    resp = client.post(_delete_batch_url(batch1))
+    assert resp.status_code == 302
+    assert not Batch.objects.filter(pk=batch1.pk).exists()
+    assert Batch.objects.filter(pk=batch2.pk).exists()
+
+    shared.refresh_from_db()
+    assert shared.requests.count() == 1
+    assert shared.requests.get().batch_id == batch2.pk
+    assert shared.batch_id == batch2.pk
+
+
+def test_delete_batch_exclusive_and_shared_mix(client, home_url):
+    b1 = Batch.objects.create()
+    exclusive = _make_url("https://exclusive.example.com", b1)
+    b2 = Batch.objects.create()
+    shared = _make_url("https://mix-shared.example.com", b2)
+    # b1 also requests the shared URL
+    BatchRequest.objects.create(batch=b1, submitted_url=shared)
+
+    client.post(_delete_batch_url(b1))
+
+    assert not Batch.objects.filter(pk=b1.pk).exists()
+    assert not SubmittedURL.objects.filter(pk=exclusive.pk).exists()
+    assert not BatchRequest.objects.filter(submitted_url=exclusive).exists()
+    # shared survives via b2
+    assert SubmittedURL.objects.filter(pk=shared.pk).exists()
+    assert BatchRequest.objects.filter(
+        batch=b2, submitted_url=shared
+    ).exists()
+    assert Batch.objects.filter(pk=b2.pk).exists()
+
+
+def test_delete_batch_get_does_not_delete(client):
+    batch = Batch.objects.create()
+    _make_url("https://g.example.com", batch)
+    resp = client.get(_delete_batch_url(batch))
+    assert resp.status_code in (302, 405)
+    assert Batch.objects.filter(pk=batch.pk).exists()
+    assert SubmittedURL.objects.filter(url="https://g.example.com").exists()
+
+
+def test_delete_batch_unknown_id_404s(client):
+    assert (
+        client.post(reverse("submissions:delete_batch", args=[999999])).status_code
+        == 404
+    )
+    assert client.get(reverse("submissions:delete_batch", args=[999999])).status_code in (
+        302,
+        404,
+    )
+
+
+def test_delete_batch_control_on_detail_page(client, home_url):
+    client.post(home_url, {"urls": "https://c.example.com"}, follow=True)
+    batch = Batch.objects.get()
+    content = client.get(
+        reverse("submissions:batch_detail", args=[batch.pk])
+    ).content.decode()
+    action = _delete_batch_url(batch)
+    assert action in content
+    assert "confirm(" in content
+    assert "csrfmiddlewaretoken" in content
+    assert "Delete this batch" in content
+
+
+def test_clear_all_removes_everything_and_shows_empty_state(client, home_url):
+    client.post(home_url, {"urls": "https://a.example.com"}, follow=True)
+    client.post(home_url, {"urls": "https://b.example.com"}, follow=True)
+    assert Batch.objects.count() == 2
+    assert SubmittedURL.objects.count() == 2
+
+    resp = client.post(_clear_url())
+    assert resp.status_code == 302
+    assert resp.url == reverse("submissions:home")
+    assert Batch.objects.count() == 0
+    assert BatchRequest.objects.count() == 0
+    assert SubmittedURL.objects.count() == 0
+
+    content = client.get(reverse("submissions:home")).content.decode()
+    assert "No batches yet" in content
+    assert "Cleared all batches." in content
+
+
+def test_clear_all_shared_url_deleted_once_no_batches_left(client, home_url):
+    client.post(home_url, {"urls": "https://s.example.com"}, follow=True)
+    client.post(home_url, {"urls": "https://s.example.com"}, follow=True)
+    assert Batch.objects.count() == 2
+    assert SubmittedURL.objects.count() == 1
+    client.post(_clear_url())
+    assert Batch.objects.count() == 0
+    assert SubmittedURL.objects.count() == 0
+    assert BatchRequest.objects.count() == 0
+
+
+def test_clear_get_does_not_delete(client, home_url):
+    client.post(home_url, {"urls": "https://k.example.com"}, follow=True)
+    assert Batch.objects.count() == 1
+    resp = client.get(_clear_url())
+    assert resp.status_code in (302, 405)
+    assert Batch.objects.count() == 1
+    assert SubmittedURL.objects.count() == 1
+
+
+def test_clear_control_on_home_page(client, home_url):
+    client.post(home_url, {"urls": "https://h.example.com"}, follow=True)
+    content = client.get(home_url).content.decode()
+    assert _clear_url() in content
+    assert "confirm(" in content
+    assert "csrfmiddlewaretoken" in content
+    assert "Clear all batches" in content
+    # empty home has no clear control but shows the empty state
+    client.post(_clear_url())
+    empty = client.get(home_url).content.decode()
+    assert "No batches yet" in empty

@@ -1,3 +1,6 @@
+import html
+import re
+
 import pytest
 from django.urls import reverse
 
@@ -46,18 +49,57 @@ def test_listing_back_persists(client, url):
     assert "https://persisted.example.com" in resp.content.decode()
 
 
-def test_empty_submission_saves_nothing_and_shows_message(client, url):
+def test_empty_submission_redirects_and_replays_error(client, url):
     resp = client.post(url, {"urls": ""})
-    assert resp.status_code == 200
+    assert resp.status_code == 302
+    assert resp["Location"] == url
     assert SubmittedURL.objects.count() == 0
-    assert "Please enter at least one URL." in resp.content.decode()
+    assert Batch.objects.count() == 0
+    assert BatchRequest.objects.count() == 0
+    follow = client.get(resp["Location"])
+    assert follow.status_code == 200
+    content = follow.content.decode()
+    assert "Please enter at least one URL." in content
+    assert 'id="form-error"' in content
+    assert 'aria-describedby="form-error"' in content
+    # one-shot: second GET is clean
+    second = client.get(url)
+    second_content = second.content.decode()
+    assert "Please enter at least one URL." not in second_content
+    assert 'id="form-error"' not in second_content
+    assert SubmittedURL.objects.count() == 0
+    assert Batch.objects.count() == 0
 
 
-def test_whitespace_only_submission_treated_as_empty(client, url):
-    resp = client.post(url, {"urls": "   \n  \n\t"})
-    assert resp.status_code == 200
+def test_missing_urls_key_redirects(client, url):
+    resp = client.post(url, {})
+    assert resp.status_code == 302
+    assert resp["Location"] == url
+    follow = client.get(resp["Location"])
+    assert "Please enter at least one URL." in follow.content.decode()
+    assert 'id="form-error"' in follow.content.decode()
+
+
+def test_whitespace_only_submission_redirects_and_prefills(client, url):
+    raw = "   \n  \n\t"
+    resp = client.post(url, {"urls": raw})
+    assert resp.status_code == 302
+    assert resp["Location"] == url
     assert SubmittedURL.objects.count() == 0
-    assert "Please enter at least one URL." in resp.content.decode()
+    assert Batch.objects.count() == 0
+    assert BatchRequest.objects.count() == 0
+    content = client.get(resp["Location"]).content.decode()
+    assert "Please enter at least one URL." in content
+    assert 'id="form-error"' in content
+    assert 'aria-describedby="form-error"' in content
+    m = re.search(r"<textarea[^>]*>(.*?)</textarea>", content, re.S)
+    assert m is not None
+    assert html.unescape(m.group(1)) == raw
+    # refresh creates nothing and second GET is clean
+    second = client.get(url)
+    assert "Please enter at least one URL." not in second.content.decode()
+    assert SubmittedURL.objects.count() == 0
+    assert Batch.objects.count() == 0
 
 
 def test_surrounding_whitespace_trimmed(client, url):
@@ -149,9 +191,73 @@ def test_empty_state_wording_is_batches(client, url):
 
 
 def test_validation_failure_marks_error_for_focus(client, url):
-    content = client.post(url, {"urls": ""}).content.decode()
+    resp = client.post(url, {"urls": ""})
+    assert resp.status_code == 302
+    content = client.get(resp["Location"]).content.decode()
     assert 'id="form-error"' in content
+    assert 'tabindex="-1"' in content
     assert 'aria-describedby="form-error"' in content
+    assert "Please enter at least one URL." in content
+    # existing focus JS moves focus to the error
+    assert 'getElementById("form-error")' in content
+
+
+def test_back_to_back_invalid_posts_overwrite(client, url):
+    first_raw = "   \n  \n\t"
+    second_raw = "  \n   "
+    client.post(url, {"urls": first_raw})
+    resp2 = client.post(url, {"urls": second_raw})
+    assert resp2.status_code == 302
+    content = client.get(resp2["Location"]).content.decode()
+    assert content.count("Please enter at least one URL.") == 1
+    m = re.search(r"<textarea[^>]*>(.*?)</textarea>", content, re.S)
+    assert m is not None
+    assert html.unescape(m.group(1)) == second_raw
+    assert html.unescape(m.group(1)) != first_raw
+
+
+def test_plain_get_renders_empty_unbound_form_without_error(client, url):
+    content = client.get(url).content.decode()
+    assert 'id="form-error"' not in content
+    assert "Please enter at least one URL." not in content
+    m = re.search(r"<textarea[^>]*>(.*?)</textarea>", content, re.S)
+    assert m is not None
+    assert m.group(1) == ""
+
+
+def test_all_malformed_lines_uses_warning_path_without_field_error(client, url):
+    resp = client.post(url, {"urls": "not a url"})
+    assert resp.status_code == 302
+    assert resp["Location"] == url
+    assert SubmittedURL.objects.count() == 0
+    assert Batch.objects.count() == 0
+    content = client.get(resp["Location"]).content.decode()
+    assert 'id="form-error"' not in content
+    assert "Please enter at least one URL." not in content
+    assert "invalid" in content.lower()
+
+
+def test_all_malformed_lines_repopulates_textarea_without_field_error(client, url):
+    raw = "not a url\nftp://bad"
+    resp = client.post(url, {"urls": raw})
+    assert resp.status_code == 302
+    assert resp["Location"] == url
+    assert SubmittedURL.objects.count() == 0
+    assert Batch.objects.count() == 0
+    content = client.get(resp["Location"]).content.decode()
+    assert 'id="form-error"' not in content
+    assert "Please enter at least one URL." not in content
+    assert "invalid" in content.lower()
+    m = re.search(r"<textarea[^>]*>(.*?)</textarea>", content, re.S)
+    assert m is not None
+    assert html.unescape(m.group(1)) == raw
+    # one-shot: second GET is clean
+    second = client.get(url).content.decode()
+    assert "invalid" not in second.lower() or "One URL per line" in second
+    m2 = re.search(r"<textarea[^>]*>(.*?)</textarea>", second, re.S)
+    assert m2 is not None
+    assert m2.group(1) == ""
+    assert 'id="form-error"' not in second
 
 
 def test_batch_detail_uses_shared_base(client, url):

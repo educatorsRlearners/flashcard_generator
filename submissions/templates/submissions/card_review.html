@@ -30,27 +30,71 @@
                 data-review-status="{{ card.review_status }}">
                 <p class="review-card__meta">
                     Note type: <strong>{{ card.get_note_type_display }}</strong>
+                    <span class="review-card__edited" data-role="edited-badge"
+                          {% if not card.is_edited %}hidden{% endif %}>edited</span>
                 </p>
+                <div data-role="card-text">
                 {% if card.image %}
                     {% if card.image_placement == "question" %}
                         <img class="review-card__image review-card__image--question"
+                             data-role="card-image"
                              src="{{ card.image.url }}" alt="Card image (question side)">
                     {% endif %}
                 {% endif %}
                 {% if card.note_type == "cloze" %}
                     <p class="review-card__label">Cloze text (deletions marked):</p>
-                    <p class="review-card__cloze">{{ card.front }}</p>
+                    <p class="review-card__cloze" data-role="text-front">{{ card.front }}</p>
                     {% if card.back %}<p class="review-card__extra">{{ card.back }}</p>{% endif %}
                 {% else %}
                     <p class="review-card__label">Front:</p>
-                    <p class="review-card__front">{{ card.front }}</p>
+                    <p class="review-card__front" data-role="text-front">{{ card.front }}</p>
                     <p class="review-card__label">Back:</p>
-                    <p class="review-card__back">{{ card.back }}</p>
+                    <p class="review-card__back" data-role="text-back">{{ card.back }}</p>
                 {% endif %}
                 {% if card.image and card.image_placement == "answer" %}
                     <img class="review-card__image review-card__image--answer"
+                         data-role="card-image"
                          src="{{ card.image.url }}" alt="Card image (answer side)">
                 {% endif %}
+                </div>
+                <div class="review-card__edit" data-role="edit-wrap" hidden
+                     data-edit-url="{% url 'submissions:card_review_edit' batch.pk card.pk %}"
+                     data-revert-url="{% url 'submissions:card_review_revert_edit' batch.pk card.pk %}"
+                     data-note-type="{{ card.note_type }}">
+                    {% if card.note_type == "cloze" %}
+                        <label>Cloze text:
+                            <textarea name="front" data-role="edit-front">{{ card.front }}</textarea>
+                        </label>
+                    {% else %}
+                        <label>Front:
+                            <textarea name="front" data-role="edit-front">{{ card.front }}</textarea>
+                        </label>
+                        <label>Back:
+                            <textarea name="back" data-role="edit-back">{{ card.back }}</textarea>
+                        </label>
+                    {% endif %}
+                    <p class="review-card__edit-error" data-role="edit-error" hidden></p>
+                    <button type="button" data-role="edit-save">Save edit</button>
+                    <button type="button" data-role="edit-cancel">Cancel</button>
+                    <button type="button" data-role="edit-revert"
+                            {% if not card.is_edited %}hidden{% endif %}>Revert to original</button>
+                </div>
+                <p><button type="button" data-role="edit-open">Edit</button></p>
+                <div class="review-card__imgctl" data-role="image-control"
+                     data-candidates-url="{% url 'submissions:card_review_image_candidates' batch.pk card.pk %}"
+                     data-select-url="{% url 'submissions:card_review_image_select' batch.pk card.pk %}"
+                     data-regen-url="{% url 'submissions:card_review_image_regenerate' batch.pk card.pk %}"
+                     data-remove-url="{% url 'submissions:card_review_image_remove' batch.pk card.pk %}"
+                     data-revert-url="{% url 'submissions:card_review_image_revert' batch.pk card.pk %}">
+                    <p class="review-card__imgstatus" data-role="image-status">Image: {{ card.get_image_source_display }}{% if card.image_manually_set %} (manual){% endif %}</p>
+                    <button type="button" data-role="image-choose">Choose from source page</button>
+                    <button type="button" data-role="image-regen">Regenerate</button>
+                    <button type="button" data-role="image-remove">Remove image</button>
+                    <button type="button" data-role="image-revert"
+                            {% if not card.image_manually_set %}hidden{% endif %}>Revert image</button>
+                    <div data-role="image-candidates" hidden></div>
+                    <p data-role="image-message" hidden></p>
+                </div>
                 <p class="review-card__source">
                     Source: <a href="{{ card.submitted_url.url }}">{{ card.submitted_url.url }}</a>
                 </p>
@@ -176,6 +220,214 @@
             submit(li, "rejected");
         }
         else if (role === "save-reason") { e.preventDefault(); submit(li, "rejected"); }
+    });
+
+    function postForm(url, params) {
+        var body = new URLSearchParams();
+        Object.keys(params || {}).forEach(function (k) { body.set(k, params[k]); });
+        return fetch(url, {
+            method: "POST",
+            headers: {
+                "X-Requested-With": "XMLHttpRequest",
+                "X-CSRFToken": csrf(),
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: body.toString(),
+        }).then(function (r) {
+            return r.json().then(function (data) {
+                return { ok: r.ok, data: data };
+            });
+        });
+    }
+
+    function showError(el, msg) {
+        el.textContent = msg || "Something went wrong.";
+        el.hidden = false;
+    }
+
+    /* --- inline edit (#24): per-card POST, other cards untouched --- */
+
+    function applyEdit(li, data) {
+        var front = li.querySelector('[data-role="text-front"]');
+        if (front) { front.textContent = data.front; }
+        var back = li.querySelector('[data-role="text-back"]');
+        if (back) { back.textContent = data.back; }
+        li.querySelector('[data-role="edited-badge"]').hidden = !data.is_edited;
+        li.querySelector('[data-role="edit-revert"]').hidden = !data.is_edited;
+        var ef = li.querySelector('[data-role="edit-front"]');
+        if (ef) { ef.value = data.front; }
+        var eb = li.querySelector('[data-role="edit-back"]');
+        if (eb) { eb.value = data.back; }
+        setTally(data.tally);
+    }
+
+    grid.addEventListener("click", function (e) {
+        var btn = e.target.closest("button[data-role]");
+        if (!btn) { return; }
+        var li = btn.closest(".review-card");
+        if (!li) { return; }
+        var role = btn.getAttribute("data-role");
+        var wrap = li.querySelector('[data-role="edit-wrap"]');
+        if (role === "edit-open") {
+            var ef = wrap.querySelector('[data-role="edit-front"]');
+            if (ef) { ef.value = li.querySelector('[data-role="text-front"]').textContent; }
+            var eb = wrap.querySelector('[data-role="edit-back"]');
+            if (eb) {
+                var tb = li.querySelector('[data-role="text-back"]');
+                eb.value = tb ? tb.textContent : eb.value;
+            }
+            wrap.querySelector('[data-role="edit-error"]').hidden = true;
+            wrap.hidden = false;
+        }
+        else if (role === "edit-cancel") {
+            wrap.hidden = true;
+            wrap.querySelector('[data-role="edit-error"]').hidden = true;
+        }
+        else if (role === "edit-save") {
+            var params = {};
+            var f = wrap.querySelector('[data-role="edit-front"]');
+            if (f) { params.front = f.value; }
+            var b = wrap.querySelector('[data-role="edit-back"]');
+            if (b) { params.back = b.value; }
+            btn.disabled = true;
+            postForm(wrap.getAttribute("data-edit-url"), params).then(function (res) {
+                btn.disabled = false;
+                if (res.ok) {
+                    wrap.querySelector('[data-role="edit-error"]').hidden = true;
+                    wrap.hidden = true;
+                    applyEdit(li, res.data);
+                } else {
+                    showError(wrap.querySelector('[data-role="edit-error"]'), res.data.error);
+                }
+            }).catch(function () { btn.disabled = false; wrap.submit ? wrap.submit() : null; });
+        }
+        else if (role === "edit-revert") {
+            postForm(wrap.getAttribute("data-revert-url"), {}).then(function (res) {
+                if (res.ok) {
+                    wrap.hidden = true;
+                    applyEdit(li, res.data);
+                } else {
+                    showError(wrap.querySelector('[data-role="edit-error"]'), res.data.error);
+                }
+            });
+        }
+    });
+
+    /* --- image replacement (#26): per-card POST, other cards untouched --- */
+
+    function imageStatusText(data) {
+        var label = data.image_source === "source_page" ? "Source page"
+            : data.image_source === "draw_things" ? "Draw Things" : "None";
+        return "Image: " + label + (data.image_manually_set ? " (manual)" : "");
+    }
+
+    function applyImage(li, data) {
+        var text = li.querySelector('[data-role="card-text"]');
+        var old = li.querySelector('[data-role="card-image"]');
+        if (old) { old.remove(); }
+        if (data.image_url) {
+            var img = document.createElement("img");
+            img.setAttribute("data-role", "card-image");
+            img.src = data.image_url;
+            if (data.image_placement === "question") {
+                img.className = "review-card__image review-card__image--question";
+                img.alt = "Card image (question side)";
+                text.prepend(img);
+            } else {
+                img.className = "review-card__image review-card__image--answer";
+                img.alt = "Card image (answer side)";
+                text.append(img);
+            }
+        }
+        li.querySelector('[data-role="image-status"]').textContent = imageStatusText(data);
+        li.querySelector('[data-role="image-revert"]').hidden = !data.image_manually_set;
+        setTally(data.tally);
+    }
+
+    function imageMessage(li, msg) {
+        var el = li.querySelector('[data-role="image-message"]');
+        if (!msg) { el.hidden = true; el.textContent = ""; return; }
+        el.textContent = msg;
+        el.hidden = false;
+    }
+
+    grid.addEventListener("click", function (e) {
+        var btn = e.target.closest("button[data-role]");
+        if (!btn) { return; }
+        var li = btn.closest(".review-card");
+        if (!li) { return; }
+        var ctl = btn.closest('[data-role="image-control"]');
+        if (!ctl) { return; }
+        var role = btn.getAttribute("data-role");
+        if (role === "image-choose") {
+            var box = li.querySelector('[data-role="image-candidates"]');
+            if (!box.hidden && box.childNodes.length) { box.hidden = true; return; }
+            fetch(ctl.getAttribute("data-candidates-url"), {
+                headers: { "X-Requested-With": "XMLHttpRequest" },
+            }).then(function (r) { return r.json(); }).then(function (data) {
+                box.textContent = "";
+                if (!data.candidates || !data.candidates.length) {
+                    imageMessage(li, data.draw_things_enabled
+                        ? "No other source images found; you can still Regenerate or Remove."
+                        : "No other source images found and Draw Things is disabled; you can still Remove.");
+                    box.hidden = true;
+                    return;
+                }
+                imageMessage(li, "");
+                data.candidates.forEach(function (url) {
+                    var thumb = document.createElement("img");
+                    thumb.src = url;
+                    thumb.alt = "Candidate image";
+                    thumb.className = "review-card__candidate";
+                    thumb.setAttribute("data-candidate-url", url);
+                    thumb.setAttribute("role", "button");
+                    thumb.tabIndex = 0;
+                    box.appendChild(thumb);
+                });
+                box.hidden = false;
+            });
+        }
+        else if (role === "image-regen") {
+            btn.disabled = true;
+            var orig = btn.textContent;
+            btn.textContent = "Generating…";
+            postForm(ctl.getAttribute("data-regen-url"), {}).then(function (res) {
+                btn.disabled = false;
+                btn.textContent = orig;
+                if (res.ok) { imageMessage(li, ""); applyImage(li, res.data); }
+                else { imageMessage(li, res.data.error); }
+            }).catch(function () { btn.disabled = false; btn.textContent = orig; });
+        }
+        else if (role === "image-remove") {
+            postForm(ctl.getAttribute("data-remove-url"), {}).then(function (res) {
+                if (res.ok) { imageMessage(li, ""); applyImage(li, res.data); }
+                else { imageMessage(li, res.data.error); }
+            });
+        }
+        else if (role === "image-revert") {
+            postForm(ctl.getAttribute("data-revert-url"), {}).then(function (res) {
+                if (res.ok) { imageMessage(li, ""); applyImage(li, res.data); }
+                else { imageMessage(li, res.data.error); }
+            });
+        }
+    });
+
+    grid.addEventListener("click", function (e) {
+        var thumb = e.target.closest("[data-candidate-url]");
+        if (!thumb) { return; }
+        var li = thumb.closest(".review-card");
+        var ctl = thumb.closest('[data-role="image-control"]');
+        postForm(ctl.getAttribute("data-select-url"), {
+            candidate_url: thumb.getAttribute("data-candidate-url"),
+        }).then(function (res) {
+            if (res.ok) {
+                imageMessage(li, "");
+                li.querySelector('[data-role="image-candidates"]').hidden = true;
+                applyImage(li, res.data);
+            } else {
+                imageMessage(li, res.data.error);
+            }
+        });
     });
 
     var finish = document.getElementById("review-finish");

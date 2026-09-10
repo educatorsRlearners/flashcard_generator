@@ -7,11 +7,17 @@
 
     <form method="post" action="{% url 'submissions:home' %}" class="submit-form">
         {% csrf_token %}
-        {% if form.urls.errors %}
+        {% if submission_errors or form.urls.errors %}
         <div class="form-error" id="form-error" tabindex="-1">
+            {% if submission_errors %}
+            {% for error in submission_errors %}
+            <p><span class="message__prefix">Error:</span> {{ error }}</p>
+            {% endfor %}
+            {% else %}
             {% for error in form.urls.errors %}
             <p><span class="message__prefix">Error:</span> {{ error }}</p>
             {% endfor %}
+            {% endif %}
         </div>
         {% endif %}
         <label class="field-label" for="{{ form.urls.id_for_label }}">URLs (one per line)</label>
@@ -21,7 +27,7 @@
             class="field-input"
             rows="10"
             placeholder="https://example.com/article"
-            {% if form.urls.errors %}aria-describedby="form-error"{% endif %}
+            {% if submission_errors or form.urls.errors %}aria-describedby="form-error"{% endif %}
         >{{ form.urls.value|default:'' }}</textarea>
         <button type="submit" class="button">Submit</button>
     </form>
@@ -37,6 +43,15 @@
         </li>
         {% endfor %}
     </ul>
+    <form
+        method="post"
+        action="{% url 'submissions:clear_batches' %}"
+        class="batches-clear"
+        onsubmit="return confirm('Delete all batches? This cannot be undone.');"
+    >
+        {% csrf_token %}
+        <button type="submit" class="button-link button-link--danger">Clear all batches / start over</button>
+    </form>
     {% else %}
     <p class="empty-state">No batches yet — submit some URLs above.</p>
     {% endif %}

@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Batch, Card, Feedback, SubmittedURL
+from .models import Batch, Card, Feedback, LLMCall, SubmittedURL
 
 
 class SubmittedURLInline(admin.TabularInline):
@@ -84,6 +84,50 @@ class CardAdmin(admin.ModelAdmin):
     readonly_fields = ("created_at", "similarity_score", "embedding", "image_source")
     list_select_related = ("submitted_url", "batch", "duplicate_of")
     raw_id_fields = ("duplicate_of",)
+
+
+@admin.register(LLMCall)
+class LLMCallAdmin(admin.ModelAdmin):
+    """Per-call LLM usage / cost history (issue #28). Read-only: rows are
+    written by the client and are never edited here."""
+
+    list_display = (
+        "created_at",
+        "model",
+        "status",
+        "error_class",
+        "prompt_tokens",
+        "completion_tokens",
+        "latency_ms",
+        "estimated_cost_usd",
+        "batch",
+        "submitted_url",
+    )
+    list_filter = ("status", "model", "error_class")
+    search_fields = ("model", "error_class", "submitted_url__url")
+    ordering = ("-created_at",)
+    readonly_fields = (
+        "created_at",
+        "model",
+        "prompt_tokens",
+        "completion_tokens",
+        "latency_ms",
+        "estimated_cost_usd",
+        "status",
+        "error_class",
+        "batch",
+        "submitted_url",
+    )
+    list_select_related = ("batch", "submitted_url")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(Feedback)

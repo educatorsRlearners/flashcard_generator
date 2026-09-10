@@ -13,6 +13,10 @@ from django.test import override_settings
 
 from submissions import llm
 
+# Every llm.generate call records an LLMCall row (issue #28), so these
+# tests need database access even though they stub the network.
+pytestmark = pytest.mark.django_db
+
 
 # --- fakes ------------------------------------------------------------
 

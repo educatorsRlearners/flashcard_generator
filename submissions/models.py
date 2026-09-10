@@ -90,6 +90,9 @@ class SubmittedURL(models.Model):
         TOO_LARGE = "too_large", "Response too large"
         UNSUPPORTED_TYPE = "unsupported_type", "Unsupported content type"
         NO_CONTENT = "no_content", "No extractable content"
+        PAYWALL = "paywall", "Paywall - subscription required"
+        BOT_WALL = "bot_wall", "Bot check / CAPTCHA"
+        CONSENT_WALL = "consent_wall", "Consent / cookie gate"
         UNKNOWN = "unknown", "Unknown / uncategorised"
 
     url = models.URLField(max_length=2000, unique=True)
@@ -152,6 +155,9 @@ class SubmittedURL(models.Model):
         FailureKind.TOO_LARGE: "response too large",
         FailureKind.UNSUPPORTED_TYPE: "unsupported content type",
         FailureKind.NO_CONTENT: "no extractable content",
+        FailureKind.PAYWALL: "paywall",
+        FailureKind.BOT_WALL: "bot check / captcha",
+        FailureKind.CONSENT_WALL: "consent gate",
         FailureKind.UNKNOWN: "unknown",
     }
 
@@ -290,6 +296,18 @@ class Card(models.Model):
     #: allowed; cleared whenever the card is (re-)accepted.
     rejection_reason = models.TextField(blank=True, default="")
 
+    # --- Inline-edit fields (issue #24) -----------------------------
+    #: The generated text before the reviewer's first inline edit. Snapshotted
+    #: once (on the first successful edit) and never overwritten afterwards,
+    #: so "revert to original" always restores the #6 generator output.
+    #: Blank until the first edit.
+    original_front = models.TextField(blank=True, default="")
+    original_back = models.TextField(blank=True, default="")
+    #: True once the reviewer has saved an edit (cleared by revert).
+    is_edited = models.BooleanField(default=False)
+    #: When the last edit was saved. Null => never edited (or reverted).
+    edited_at = models.DateTimeField(null=True, blank=True)
+
     # --- Per-card image fields (issue #12) ---------------------------
     class ImageSource(models.TextChoices):
         """Where :attr:`Card.image` came from.
@@ -312,6 +330,22 @@ class Card(models.Model):
         choices=ImageSource.choices,
         default=ImageSource.NONE,
     )
+
+    # --- Manual image-replacement fields (issue #26) -----------------
+    #: Manual-choice marker: True once the reviewer replaces / removes the
+    #: image in the review grid (chosen from source candidates, regenerated
+    #: via Draw Things, or removed). Distinguishes the reviewer's pick from
+    #: the automatic #12 pick recorded in ``image_source``. Cleared by
+    #: "revert", which restores ``original_image`` / ``original_image_source``.
+    image_manually_set = models.BooleanField(default=False)
+    #: The image reference #12 originally chose (file name, may be blank for
+    #: "originally imageless"). Snapshotted on the first manual change and
+    #: never overwritten afterwards, so "revert" always restores the auto pick.
+    original_image = models.ImageField(upload_to="cards/", blank=True)
+    #: ``image_source`` value at snapshot time (``none`` when originally
+    #: imageless). Plain CharField (not ImageSource choices) so it survives
+    #: choices changes.
+    original_image_source = models.CharField(max_length=16, blank=True, default="")
 
     # --- Anki sync fields (issue #11) -----------------------------
     #: AnkiConnect note id returned when this card was pushed to Anki. Null
@@ -368,6 +402,68 @@ class BatchRequest(models.Model):
         return f"Batch {self.batch_id} -> {self.submitted_url_id}"
 
 
+# --- LLM call observability (issue #28) ------------------------------
+
+
+class LLMCall(models.Model):
+    """One recorded LLM call made through :mod:`submissions.llm` (issue #28).
+
+    Written for every ``generate`` invocation - success or failure - so an
+    engineer can see per-call latency, token usage and estimated cost after
+    a batch run. ``batch`` / ``submitted_url`` are nullable so the client
+    stays decoupled from generation: the caller passes attribution context
+    (see ``submissions.llm.call_context``) and unattributed calls simply
+    record ``None``. Token counts come from the provider response usage
+    payload, never estimates; failed calls record zeros with ``status``
+    ``failed`` and the ``LLMError`` subclass name in ``error_class``.
+    """
+
+    class Status(models.TextChoices):
+        OK = "ok", "OK"
+        FAILED = "failed", "Failed"
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    model = models.CharField(max_length=200, blank=True, default="")
+    prompt_tokens = models.IntegerField(default=0)
+    completion_tokens = models.IntegerField(default=0)
+    latency_ms = models.IntegerField(default=0)
+    #: Estimated cost in USD from per-model per-token pricing
+    #: (see ``submissions.llm.estimate_cost_usd``).
+    estimated_cost_usd = models.DecimalField(
+        max_digits=12, decimal_places=6, default=0
+    )
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.OK
+    )
+    #: ``type(exc).__name__`` of the ``LLMError`` for a failed call; blank
+    #: when ``status == "ok"``.
+    error_class = models.CharField(max_length=100, blank=True, default="")
+    batch = models.ForeignKey(
+        Batch,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="llm_calls",
+    )
+    submitted_url = models.ForeignKey(
+        SubmittedURL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="llm_calls",
+    )
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self):
+        return f"{self.model or '(unknown model)'} {self.status} ({self.created_at:%Y-%m-%d %H:%M})"
+
+    @property
+    def total_tokens(self) -> int:
+        return (self.prompt_tokens or 0) + (self.completion_tokens or 0)
+
+
 # --- Durable review feedback (issue #10) ------------------------------
 
 
@@ -396,6 +492,8 @@ class Feedback(models.Model):
     decision = models.CharField(max_length=16, choices=Decision.choices)
     #: Optional rejection reason snapshot; always blank for an acceptance.
     reason = models.TextField(blank=True, default="")
+    #: True when the card had been inline-edited (#24) at decision time.
+    was_edited = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

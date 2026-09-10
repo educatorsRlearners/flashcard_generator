@@ -367,6 +367,10 @@ class BodyTooLarge(Exception):
 class NoExtractableContent(Exception):
     """Both extraction paths returned less than :data:`MIN_CONTENT_CHARS`."""
 
+    def __init__(self, detail=""):
+        super().__init__(detail)
+        self.detail = str(detail)
+
 
 class NoExtractableText(Exception):
     """A PDF parsed cleanly but exposed no usable text layer (scanned/image)."""
@@ -390,6 +394,22 @@ class BrowserError(Exception):
     def __init__(self, cause):
         super().__init__(str(cause))
         self.cause = cause
+
+
+class WallDetected(Exception):
+    """A thin (HTTP 200) page matched a strong wall marker.
+
+    Carries the specific :class:`SubmittedURL.FailureKind` (``paywall`` /
+    ``bot_wall`` / ``consent_wall``) plus the human-readable reason naming
+    the matched signal. Raised nowhere directly - :func:`extract` builds one
+    from :func:`classify_wall` and funnels it through :func:`_save_failure`
+    / :func:`classify_failure` like any other failure.
+    """
+
+    def __init__(self, kind, reason):
+        super().__init__(reason)
+        self.kind = kind
+        self.reason = str(reason)
 
 
 @dataclass
@@ -428,6 +448,179 @@ _CONNECTION_MARKERS = (
 )
 
 
+# --- Heuristic paywall / bot-wall / consent-wall detection (issue #21) -----
+#
+# CONFIDENCE RULE (also stated in classify_wall's docstring): a thin HTTP-200
+# page is labelled paywall / bot_wall / consent_wall ONLY when at least one
+# STRONG marker below matches (case-insensitive substring of the final HTML
+# and/or extracted text). Strong markers are multi-word phrases, product
+# names, or DOM ids/classes that effectively never appear in normal prose.
+# A bare word like "subscribe" is deliberately NOT strong (see the
+# false-positive guard): an article merely mentioning "subscribe" must not
+# become a paywall. When no strong marker matches, the page stays no_content;
+# if a WEAK marker matched, the reason notes "suspected ... but not
+# confirmed" instead of silently guessing a wall.
+#
+# Priority on conflicting strong matches: NONE — when strong markers from
+# ≥2 kinds match, the signals conflict and classify_wall falls back to
+# no_content with a reason noting the suspected (but unconfirmed) walls,
+# never a silent guess. (A bot challenge usually masks whatever sits behind
+# it, but guessing bot_wall would still be a guess, so we do not pick one.)
+#
+# This dict is the ONE named place holding the signal list - extend it here.
+
+WALL_MARKERS: dict = {
+    "bot_wall": [
+        "cf-browser-verification",
+        "cf-challenge",
+        "cf_chl",
+        "__cf_chl",
+        "checking your browser",
+        "verifying you are human",
+        "verify you are human",
+        "please verify you are",
+        "browser verification",
+        "captcha",
+        "recaptcha",
+        "hcaptcha",
+        "turnstile",
+        "attention required! | cloudflare",
+        "ddos protection by cloudflare",
+        "just a moment...",
+        "perimeterx",
+        "datadome",
+        "akamai bot manager",
+        "security check by",
+        "js challenge",
+    ],
+    "paywall": [
+        "subscribe to continue",
+        "subscribe to read",
+        "subscribers only",
+        "subscriber only",
+        "already a subscriber",
+        "metered paywall",
+        "metered-paywall",
+        "paywall",
+        "pay-wall",
+        "piano.io",
+        "tinypass",
+        "read your last free article",
+        "you have reached your limit",
+        "you've reached your limit",
+        "free articles remaining",
+        "free article limit",
+        "register to continue",
+        "sign in to continue reading",
+        "to continue reading",
+        "continue reading for free",
+        "become a member to continue",
+        "join to continue reading",
+    ],
+    "consent_wall": [
+        "onetrust",
+        "trustarc",
+        "quantcast",
+        "quantcast-choice",
+        "qc-cmp",
+        "__tcfapi",
+        "sp_message",
+        "consent-management",
+        "gdpr-consent",
+        "consent-wall",
+        "consent_wall",
+        "consent-gate",
+        "consent_gate",
+        "gdpr-wall",
+        "we value your privacy",
+        "manage your privacy",
+        "accept cookies to continue",
+        "consent to continue",
+        "choose your privacy settings",
+    ],
+}
+
+#: Weak hints that alone NEVER label a wall. When no strong marker matches
+#: but at least one of these is present, classify_wall returns no_content
+#: with a reason noting the suspicion explicitly.
+_WEAK_WALL_MARKERS = (
+    "subscribe",
+    "sign in",
+    "cookies",
+    "privacy",
+    "javascript",
+    "enable js",
+    "register",
+    "membership",
+)
+
+_THIN_DEFAULT_REASON = (
+    "no extractable content (both paths returned under the threshold)"
+)
+
+
+def classify_wall(html: str, text: str = ""):
+    """Classify a thin HTTP-200 page as a wall or as genuinely thin content.
+
+    Pure function: ``(html, text)`` in, ``(kind, reason)`` out. No network,
+    deterministic for identical input.
+
+    * Runs ONLY on pages the caller already knows are thin (extracted
+      non-whitespace text below :data:`MIN_CONTENT_CHARS`); callers must
+      never invoke it for a page with enough text.
+    * Returns one of ``SubmittedURL.FailureKind.PAYWALL`` /
+      ``BOT_WALL`` / ``CONSENT_WALL`` when >= 1 strong marker in
+      :data:`WALL_MARKERS` matches, else ``NO_CONTENT``.
+    * ``reason`` always names the wall and the matched signal, e.g.
+      ``'paywall: "subscribe to continue" overlay'``.
+    * Ambiguous / weak-only input falls back to ``NO_CONTENT`` with a
+      reason noting the suspicion (never a silent guess).
+
+    Matching is a case-insensitive substring search over the combined
+    ``html`` + ``text`` pool. Conflict rule: when strong markers from ≥2
+    kinds match, the signals conflict so this returns ``NO_CONTENT`` with a
+    reason noting the suspected walls but not confirmed — never a silent
+    guess. Single-kind behavior is unchanged.
+    """
+    Kind = SubmittedURL.FailureKind
+    pool = f"{html or ''}\n{text or ''}".lower()
+
+    def _first_hit(markers):
+        for marker in markers:
+            if marker and marker.lower() in pool:
+                return marker
+        return None
+
+    hits = []
+    for kind_key, label, kind in (
+        ("bot_wall", "bot wall", Kind.BOT_WALL),
+        ("paywall", "paywall", Kind.PAYWALL),
+        ("consent_wall", "consent wall", Kind.CONSENT_WALL),
+    ):
+        hit = _first_hit(WALL_MARKERS.get(kind_key, ()))
+        if hit is not None:
+            hits.append((kind_key, label, kind, hit))
+    if len(hits) >= 2:
+        detail = "; ".join(f'{key} matched "{hit}"' for key, _, _, hit in hits)
+        return (
+            Kind.NO_CONTENT,
+            "no extractable content (suspected wall but signals conflict: "
+            f"{detail} — not confirmed)",
+        )
+    if len(hits) == 1:
+        _, label, kind, hit = hits[0]
+        return kind, f'{label}: matched "{hit}"'
+
+    weak_hit = _first_hit(_WEAK_WALL_MARKERS)
+    if weak_hit is not None:
+        return (
+            Kind.NO_CONTENT,
+            "no extractable content (suspected wall but not confirmed: "
+            f'matched "{weak_hit}")',
+        )
+    return Kind.NO_CONTENT, _THIN_DEFAULT_REASON
+
+
 def classify_failure(exc, *, url=""):
     """Turn a failure - an exception or a signalled condition - into
     ``(failure_kind, failure_reason)``.
@@ -454,11 +647,13 @@ def classify_failure(exc, *, url=""):
     if isinstance(exc, BodyTooLarge):
         cap_mb = MAX_BODY_BYTES // (1024 * 1024)
         return Kind.TOO_LARGE, f"response exceeded {cap_mb} MB cap"
+    if isinstance(exc, WallDetected):
+        return exc.kind, exc.reason
     if isinstance(exc, NoExtractableContent):
-        return (
-            Kind.NO_CONTENT,
-            "no extractable content (both paths returned under the threshold)",
-        )
+        detail = getattr(exc, "detail", "")
+        if detail:
+            return Kind.NO_CONTENT, detail
+        return Kind.NO_CONTENT, _THIN_DEFAULT_REASON
     if isinstance(exc, NoExtractableText):
         return (
             Kind.NO_CONTENT,
@@ -834,8 +1029,33 @@ def extract(
     title = title or rendered_title
 
     if _is_insufficient(rendered_text):
+        # HTTP-200-only wall classification: both paths were fetched fine
+        # but the text stayed thin, so feed the final HTML through the same
+        # pure classifier. A page with enough text never reaches here and is
+        # therefore never reclassified, even with a cookie banner present.
+        # Prefer the rendered (final) DOM; fall back to the static HTML when
+        # only it carries a strong marker. Weak-only input stays no_content
+        # with an explicit "suspected but not confirmed" reason.
+        Kind = SubmittedURL.FailureKind
+        rendered_kind, rendered_reason = classify_wall(rendered, rendered_text)
+        if rendered_kind != Kind.NO_CONTENT:
+            return _save_failure(
+                submitted_url,
+                WallDetected(rendered_kind, rendered_reason),
+                Method.BROWSER,
+            )
+        static_kind, static_reason = classify_wall(html, text)
+        if static_kind != Kind.NO_CONTENT:
+            return _save_failure(
+                submitted_url,
+                WallDetected(static_kind, static_reason),
+                Method.BROWSER,
+            )
+        detail = rendered_reason
+        if "suspected" not in detail and "suspected" in static_reason:
+            detail = static_reason
         return _save_failure(
-            submitted_url, NoExtractableContent(), Method.BROWSER
+            submitted_url, NoExtractableContent(detail), Method.BROWSER
         )
 
     return _save_success(submitted_url, rendered_text, title, Method.BROWSER)
