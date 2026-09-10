@@ -13,4 +13,15 @@ urlpatterns = [
         views.delete_url,
         name="delete_url",
     ),
+    path("batch/<int:pk>/review/", views.card_review, name="card_review"),
+    path(
+        "batch/<int:batch_pk>/review/card/<int:card_pk>/decision/",
+        views.card_review_decision,
+        name="card_review_decision",
+    ),
+    path(
+        "batch/<int:pk>/review/finish/",
+        views.card_review_finish,
+        name="card_review_finish",
+    ),
 ]

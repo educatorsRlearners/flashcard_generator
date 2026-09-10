@@ -78,7 +78,8 @@ class CardAdmin(admin.ModelAdmin):
         "similarity_score",
         "created_at",
     )
-    list_filter = ("note_type", "batch", "dedup_status")
+    # issue #9 review state
+    list_filter = ("note_type", "batch", "dedup_status", "review_status")
     search_fields = ("source_term", "front", "back", "submitted_url__url")
     readonly_fields = ("created_at", "similarity_score", "embedding")
     list_select_related = ("submitted_url", "batch", "duplicate_of")

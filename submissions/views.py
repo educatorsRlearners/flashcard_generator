@@ -1,7 +1,9 @@
 from django.conf import settings
 from django.contrib import messages
+from django.db.models import Count, Q
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.views.decorators.http import require_POST
 from django.utils import timezone
 
 from .forms import URLSubmissionForm
@@ -233,3 +235,118 @@ def delete_url(request, batch_pk, url_pk):
     if came_from_home or batch_emptied:
         return redirect("submissions:home")
     return redirect("submissions:batch_detail", pk=batch_pk)
+
+
+# --- Card review grid (issue #9) --------------------------------------
+
+
+def _batch_review_cards(batch):
+    """Cards from *batch* shown in the review grid, dedup duplicates excluded."""
+    return (
+        Card.objects.for_review()
+        .filter(submitted_url__requests__batch=batch)
+        .select_related("submitted_url")
+        .distinct()
+    )
+
+
+def _batch_cards_ready(batch):
+    """True when the batch has finished extracting + generating cards.
+
+    Not ready => some URL is still ``pending`` extraction, or an extracted
+    URL has not had card generation attempted yet, and no cards exist yet.
+    Once any card exists for the batch the grid is always shown.
+    """
+    if _batch_review_cards(batch).exists():
+        return True
+    urls = SubmittedURL.objects.filter(requests__batch=batch).distinct()
+    if not urls.exists():
+        return True
+    if urls.filter(status=SubmittedURL.Status.PENDING).exists():
+        return False
+    ok_pending_generation = urls.filter(
+        status=SubmittedURL.Status.OK,
+        generation_status=SubmittedURL.GenerationStatus.NOT_STARTED,
+    )
+    return not ok_pending_generation.exists()
+
+
+def _review_tally(cards):
+    agg = cards.aggregate(
+        total=Count("id"),
+        accepted=Count("id", filter=Q(review_status=Card.ReviewStatus.ACCEPTED)),
+        rejected=Count("id", filter=Q(review_status=Card.ReviewStatus.REJECTED)),
+    )
+    agg["undecided"] = agg["total"] - agg["accepted"] - agg["rejected"]
+    return agg
+
+
+def card_review(request, pk):
+    batch = get_object_or_404(Batch, pk=pk)
+    ready = _batch_cards_ready(batch)
+    cards = list(_batch_review_cards(batch)) if ready else []
+    tally = _review_tally(_batch_review_cards(batch)) if ready else None
+    return render(
+        request,
+        "submissions/card_review.html",
+        {
+            "batch": batch,
+            "ready": ready,
+            "cards": cards,
+            "tally": tally,
+        },
+    )
+
+
+@require_POST
+def card_review_decision(request, batch_pk, card_pk):
+    batch = get_object_or_404(Batch, pk=batch_pk)
+    card = get_object_or_404(_batch_review_cards(batch), pk=card_pk)
+
+    decision = request.POST.get("decision", "")
+    if decision not in Card.ReviewStatus.values:
+        return JsonResponse({"error": "invalid decision"}, status=400)
+
+    card.review_status = decision
+    if decision == Card.ReviewStatus.REJECTED:
+        card.rejection_reason = request.POST.get("reason", "").strip()
+    else:
+        # Accept / undecided never carry a reason.
+        card.rejection_reason = ""
+    card.save(update_fields=["review_status", "rejection_reason"])
+
+    payload = {
+        "card_id": card.pk,
+        "review_status": card.review_status,
+        "rejection_reason": card.rejection_reason,
+        "tally": _review_tally(_batch_review_cards(batch)),
+    }
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return JsonResponse(payload)
+    return redirect("submissions:card_review", pk=batch_pk)
+
+
+@require_POST
+def card_review_finish(request, pk):
+    batch = get_object_or_404(Batch, pk=pk)
+    tally = _review_tally(_batch_review_cards(batch))
+    undecided = tally["undecided"]
+    if undecided and request.POST.get("confirm") != "1":
+        # Ask for an explicit confirm showing the count; nothing is changed.
+        return render(
+            request,
+            "submissions/card_review.html",
+            {
+                "batch": batch,
+                "ready": True,
+                "cards": list(_batch_review_cards(batch)),
+                "tally": tally,
+                "confirm_undecided": undecided,
+            },
+        )
+    messages.success(
+        request,
+        "Review finished: {accepted} accepted, {rejected} rejected, "
+        "{undecided} left undecided.".format(**tally),
+    )
+    return redirect("submissions:batch_detail", pk=pk)

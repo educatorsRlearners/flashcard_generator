@@ -3,7 +3,11 @@
 {% block title %}Batch {{ batch.pk }}{% endblock %}
 
 {% block content %}
-    <p><a href="{% url 'submissions:home' %}">&larr; Back to home</a></p>
+    <p class="batch-nav">
+        <a href="{% url 'submissions:home' %}">&larr; Back to home</a>
+        &middot;
+        <a href="{% url 'submissions:card_review' batch.pk %}">Review cards</a>
+    </p>
     <h1>Batch {{ batch.pk }}</h1>
     <p class="batch-meta">
         Created: {{ batch.created_at }} &middot; URL count: {{ batch.url_count }}

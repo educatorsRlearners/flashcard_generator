@@ -1,0 +1,190 @@
+{% extends "submissions/base.html" %}
+
+{% block title %}Review cards - Batch {{ batch.pk }}{% endblock %}
+
+{% block content %}
+    <p><a href="{% url 'submissions:batch_detail' batch.pk %}">&larr; Back to Batch {{ batch.pk }}</a></p>
+    <h1>Review cards - Batch {{ batch.pk }}</h1>
+
+    {% if not ready %}
+        <p class="review-notready" id="review-notready">
+            Cards are not ready yet - this batch is still extracting or
+            generating. Reload this page once processing has finished.
+        </p>
+    {% elif not cards %}
+        <p class="review-empty" id="review-empty">No cards were generated for this batch.</p>
+    {% else %}
+        <p class="review-tally" id="review-tally"
+           data-decision-url="{% url 'submissions:card_review_decision' batch.pk 0 %}">
+            <span data-role="total">{{ tally.total }}</span> cards -
+            <span data-role="accepted">{{ tally.accepted }}</span> accepted,
+            <span data-role="rejected">{{ tally.rejected }}</span> rejected,
+            <span data-role="undecided">{{ tally.undecided }}</span> undecided
+        </p>
+
+        <ul class="review-grid">
+        {% for card in cards %}
+            <li class="review-card review-card--{{ card.review_status }}"
+                id="card-{{ card.pk }}"
+                data-card-id="{{ card.pk }}"
+                data-review-status="{{ card.review_status }}">
+                <p class="review-card__meta">
+                    Note type: <strong>{{ card.get_note_type_display }}</strong>
+                </p>
+                {% if card.note_type == "cloze" %}
+                    <p class="review-card__label">Cloze text (deletions marked):</p>
+                    <p class="review-card__cloze">{{ card.front }}</p>
+                    {% if card.back %}<p class="review-card__extra">{{ card.back }}</p>{% endif %}
+                {% else %}
+                    <p class="review-card__label">Front:</p>
+                    <p class="review-card__front">{{ card.front }}</p>
+                    <p class="review-card__label">Back:</p>
+                    <p class="review-card__back">{{ card.back }}</p>
+                {% endif %}
+                <p class="review-card__source">
+                    Source: <a href="{{ card.submitted_url.url }}">{{ card.submitted_url.url }}</a>
+                </p>
+
+                <form class="review-card__form" method="post"
+                      action="{% url 'submissions:card_review_decision' batch.pk card.pk %}">
+                    {% csrf_token %}
+                    <button type="submit" name="decision" value="accepted"
+                            class="review-btn review-btn--accept"
+                            data-role="accept"
+                            aria-pressed="{% if card.review_status == 'accepted' %}true{% else %}false{% endif %}">
+                        Accept
+                    </button>
+                    <button type="submit" name="decision" value="rejected"
+                            class="review-btn review-btn--reject"
+                            data-role="reject"
+                            aria-pressed="{% if card.review_status == 'rejected' %}true{% else %}false{% endif %}">
+                        Reject
+                    </button>
+                    <span class="review-card__reason-wrap" data-role="reason-wrap"
+                          {% if card.review_status != "rejected" %}hidden{% endif %}>
+                        <label>
+                            Reason (optional):
+                            <input type="text" name="reason" data-role="reason"
+                                   value="{{ card.rejection_reason }}">
+                        </label>
+                        <button type="submit" name="decision" value="rejected"
+                                class="review-btn review-btn--save-reason" data-role="save-reason">
+                            Save reason
+                        </button>
+                    </span>
+                </form>
+            </li>
+        {% endfor %}
+        </ul>
+
+        <form class="review-finish" method="post" id="review-finish"
+              action="{% url 'submissions:card_review_finish' batch.pk %}">
+            {% csrf_token %}
+            {% if confirm_undecided %}
+                <p class="review-finish__confirm" id="review-finish-confirm">
+                    {{ confirm_undecided }} card{{ confirm_undecided|pluralize }} still undecided.
+                    They will be left undecided. Finish anyway?
+                </p>
+                <input type="hidden" name="confirm" value="1">
+                <button type="submit" class="review-btn">Yes, finish review</button>
+                <a href="{% url 'submissions:card_review' batch.pk %}">Cancel</a>
+            {% else %}
+                <button type="submit" class="review-btn" id="review-finish-btn">Finish review</button>
+            {% endif %}
+        </form>
+    {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    var grid = document.querySelector(".review-grid");
+    if (!grid) { return; }
+    var tallyEl = document.getElementById("review-tally");
+
+    function csrf() {
+        var m = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+        if (m) { return decodeURIComponent(m[1]); }
+        var i = document.querySelector('input[name=csrfmiddlewaretoken]');
+        return i ? i.value : "";
+    }
+
+    function setTally(t) {
+        if (!tallyEl || !t) { return; }
+        ["total", "accepted", "rejected", "undecided"].forEach(function (k) {
+            var s = tallyEl.querySelector('[data-role="' + k + '"]');
+            if (s) { s.textContent = t[k]; }
+        });
+    }
+
+    function applyCard(li, status, reason) {
+        li.setAttribute("data-review-status", status);
+        li.className = "review-card review-card--" + status;
+        li.querySelector('[data-role="accept"]').setAttribute(
+            "aria-pressed", status === "accepted" ? "true" : "false");
+        li.querySelector('[data-role="reject"]').setAttribute(
+            "aria-pressed", status === "rejected" ? "true" : "false");
+        var wrap = li.querySelector('[data-role="reason-wrap"]');
+        wrap.hidden = status !== "rejected";
+        var input = li.querySelector('[data-role="reason"]');
+        if (status !== "rejected") { input.value = ""; }
+        else if (typeof reason === "string") { input.value = reason; }
+    }
+
+    function submit(li, decision) {
+        var form = li.querySelector(".review-card__form");
+        var body = new URLSearchParams();
+        body.set("decision", decision);
+        if (decision === "rejected") {
+            body.set("reason", li.querySelector('[data-role="reason"]').value);
+        }
+        fetch(form.action, {
+            method: "POST",
+            headers: {
+                "X-Requested-With": "XMLHttpRequest",
+                "X-CSRFToken": csrf(),
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: body.toString(),
+        }).then(function (r) { return r.json(); }).then(function (data) {
+            applyCard(li, data.review_status, data.rejection_reason);
+            setTally(data.tally);
+        }).catch(function () { form.submit(); });
+    }
+
+    grid.addEventListener("click", function (e) {
+        var btn = e.target.closest("button[data-role]");
+        if (!btn) { return; }
+        var li = btn.closest(".review-card");
+        var role = btn.getAttribute("data-role");
+        if (role === "accept") { e.preventDefault(); submit(li, "accepted"); }
+        else if (role === "reject") {
+            e.preventDefault();
+            if (li.getAttribute("data-review-status") !== "rejected") {
+                li.querySelector('[data-role="reason-wrap"]').hidden = false;
+            }
+            submit(li, "rejected");
+        }
+        else if (role === "save-reason") { e.preventDefault(); submit(li, "rejected"); }
+    });
+
+    var finish = document.getElementById("review-finish");
+    if (finish) {
+        finish.addEventListener("submit", function (e) {
+            var u = tallyEl
+                ? parseInt(tallyEl.querySelector('[data-role="undecided"]').textContent, 10)
+                : 0;
+            if (u > 0) {
+                var ok = window.confirm(
+                    u + " card(s) are still undecided. They will be left "
+                    + "undecided. Finish review anyway?");
+                if (!ok) { e.preventDefault(); return; }
+                var h = document.createElement("input");
+                h.type = "hidden"; h.name = "confirm"; h.value = "1";
+                finish.appendChild(h);
+            }
+        });
+    }
+})();
+</script>
+{% endblock %}
