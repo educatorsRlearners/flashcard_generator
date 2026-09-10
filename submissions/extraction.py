@@ -8,14 +8,29 @@ A response that is a PDF or a Word ``.docx`` is routed to the ``document``
 path instead (``pdfminer.six`` for PDF text, the stdlib ``zipfile`` + ``xml``
 for docx); the browser fallback is never used for documents.
 
+A response that *is* an image (PNG/JPEG/WebP/TIFF, or the matching URL
+extension served as ``application/octet-stream`` with recognised image
+magic bytes) is routed to the ``ocr`` path (:mod:`pytesseract` + the native
+Tesseract binary). A PDF whose text layer extracts to less than
+:data:`MIN_CONTENT_CHARS` (scanned / image-only) is handed to the same OCR
+path instead of failing as ``no_content``; the browser fallback is never
+used for image or OCR-routed content either.
+
+OCR is optional and config-gated (``OCR_ENABLED``, on by default): with the
+toolchain absent (no ``pytesseract``/PIL import, no ``tesseract`` binary on
+``PATH``) or disabled, image URLs fail cleanly with a setup-docs hint and
+the batch continues. See README ("Image OCR") for toolchain setup.
+
 Nothing here talks to an LLM, generates cards, or does batch orchestration.
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import io
 import random
 import re
+import shutil
 import socket
 import time
 import urllib.error
@@ -30,9 +45,20 @@ from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit, urlunsplit
 
 import trafilatura
+from django.conf import settings
 from django.utils import timezone
 
 from .models import SubmittedURL
+
+try:  # optional: OCR binding (installed outside the default path)
+    import pytesseract
+except ImportError:  # toolchain absent -> OCR path degrades, never crashes
+    pytesseract = None
+
+try:  # optional: image decoding (expected present; still guarded)
+    from PIL import Image
+except ImportError:
+    Image = None
 
 # --- Tunable constants -------------------------------------------------------
 
@@ -53,6 +79,19 @@ _DOCX_CONTENT_TYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
 _DOCUMENT_CONTENT_TYPES = {_PDF_CONTENT_TYPE, _DOCX_CONTENT_TYPE}
+#: Image content types handled by the ``ocr`` extraction path.
+_IMAGE_CONTENT_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/tiff",
+    # Common aliases served in the wild for the same formats.
+    "image/tif",
+    "image/x-tiff",
+}
+#: URL extensions that mark a response as image-candidate when it is served
+#: as a generic byte stream (see :func:`_detect_image_format`).
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}
 #: Content types generic enough that we sniff the leading bytes to classify.
 _SNIFFABLE_CONTENT_TYPES = {"application/octet-stream", "binary/octet-stream", ""}
 
@@ -388,6 +427,34 @@ class DocumentParseError(Exception):
         self.detail = str(detail)
 
 
+class OcrUnavailable(Exception):
+    """The OCR toolchain (``pytesseract`` + native Tesseract) is absent/disabled."""
+
+    def __init__(self, detail=""):
+        super().__init__(detail)
+        self.detail = str(detail)
+
+
+class OcrError(Exception):
+    """Image bytes could not be decoded / rasterized for OCR (corrupt/truncated)."""
+
+    def __init__(self, detail=""):
+        super().__init__(detail)
+        self.detail = str(detail)
+
+
+class OcrTimeout(Exception):
+    """A single file's OCR exceeded its time budget."""
+
+    def __init__(self, detail=""):
+        super().__init__(detail)
+        self.detail = str(detail)
+
+
+class NoReadableText(Exception):
+    """OCR ran but produced less than :data:`MIN_CONTENT_CHARS` of text."""
+
+
 class BrowserError(Exception):
     """Wraps any exception raised while rendering the browser fallback."""
 
@@ -417,6 +484,15 @@ class FetchedDocument:
     """A supported non-HTML document body returned by :func:`fetch_static`."""
 
     fmt: str  # "pdf" or "docx"
+    body: bytes
+    content_type: str
+
+
+@dataclass
+class FetchedImage:
+    """A supported image body returned by :func:`fetch_static` for the OCR path."""
+
+    fmt: str  # "png", "jpeg", "webp" or "tiff"
     body: bytes
     content_type: str
 
@@ -665,6 +741,20 @@ def classify_failure(exc, *, url=""):
     if isinstance(exc, DocumentParseError):
         suffix = f": {exc.detail}" if exc.detail else ""
         return Kind.UNKNOWN, f"could not parse document{suffix}"
+    if isinstance(exc, OcrUnavailable):
+        detail = getattr(exc, "detail", "")
+        hint = (
+            "OCR toolchain unavailable (optional component): "
+            "install Tesseract and enable OCR — see README 'Image OCR'"
+        )
+        return Kind.UNKNOWN, f"{hint}{': ' + detail if detail else ''}"
+    if isinstance(exc, NoReadableText):
+        return Kind.NO_CONTENT, "OCR found no readable text in this image"
+    if isinstance(exc, OcrTimeout):
+        return Kind.TIMEOUT, f"OCR timed out{': ' + exc.detail if exc.detail else ''}"
+    if isinstance(exc, OcrError):
+        suffix = f": {exc.detail}" if exc.detail else ""
+        return Kind.UNKNOWN, f"could not read image for OCR{suffix}"
     if isinstance(exc, BrowserError):
         detail = f"{type(exc.cause).__name__}: {exc.cause}".lower()
         if "timeout" in detail:
@@ -711,7 +801,7 @@ def classify_failure(exc, *, url=""):
 # --- Static fast path ------------------------------------------------------
 
 
-def _detect_document_format(body: bytes, content_type: str):
+def _detect_document_format(body: bytes, content_type: str, url: str = ""):
     """Return ``"pdf"`` / ``"docx"`` for a supported document, else ``None``."""
     if content_type == _PDF_CONTENT_TYPE:
         return "pdf"
@@ -722,6 +812,51 @@ def _detect_document_format(body: bytes, content_type: str):
             return "pdf"
         if body[:2] == b"PK" and _zip_contains(body, "word/document.xml"):
             return "docx"
+    return None
+
+
+def _sniff_image_format(body: bytes):
+    """Return ``"png"`` / ``"jpeg"`` / ``"webp"`` / ``"tiff"`` from magic bytes."""
+    if body[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if len(body) >= 3 and body[:3] == b"\xff\xd8\xff":
+        return "jpeg"
+    if (
+        len(body) >= 12
+        and body[:4] == b"RIFF"
+        and body[8:12] == b"WEBP"
+    ):
+        return "webp"
+    if body[:4] in (b"II*\x00", b"MM\x00*"):
+        return "tiff"
+    return None
+
+
+def _detect_image_format(body: bytes, content_type: str, url: str = ""):
+    """Return an image format name for an OCR-routable response, else ``None``.
+
+    Direct image content types always route to OCR. A generic byte stream
+    (``application/octet-stream`` / empty) routes to OCR only when the URL
+    carries a matching image extension *and* the leading bytes are
+    recognised image magic bytes.
+    """
+    if content_type in _IMAGE_CONTENT_TYPES:
+        sniffed = _sniff_image_format(body)
+        if sniffed is not None:
+            return sniffed
+        # Trust an explicit image content type even when the magic bytes
+        # are unfamiliar; undecodable bodies fail cleanly in the OCR path.
+        if content_type in ("image/jpeg",):
+            return "jpeg"
+        if content_type in ("image/png",):
+            return "png"
+        if content_type in ("image/webp",):
+            return "webp"
+        return "tiff"
+    if content_type in _SNIFFABLE_CONTENT_TYPES:
+        ext = urlsplit(url).path.rsplit(".", 1)
+        if len(ext) == 2 and f".{ext[1].lower()}" in _IMAGE_EXTENSIONS:
+            return _sniff_image_format(body)
     return None
 
 
@@ -736,8 +871,11 @@ def _zip_contains(body: bytes, name: str) -> bool:
 def fetch_static(url: str):
     """Fetch *url* over HTTP and return its body.
 
-    Returns a ``str`` (decoded HTML) for an HTML response, or a
-    :class:`FetchedDocument` for a supported non-HTML document (PDF / docx).
+    Returns a ``str`` (decoded HTML) for an HTML response, a
+    :class:`FetchedDocument` for a supported non-HTML document (PDF / docx),
+    or a :class:`FetchedImage` for a supported image (PNG / JPEG / WebP /
+    TIFF, or a matching extension served as ``application/octet-stream``
+    with recognised image magic bytes).
     Follows redirects (stdlib default). Raises :class:`FetchError` on any
     network error/timeout, :class:`BodyTooLarge` on an oversized body, and
     :class:`UnsupportedContentType` for any other content type.
@@ -752,9 +890,12 @@ def fetch_static(url: str):
             if content_type in _HTML_CONTENT_TYPES:
                 charset = response.headers.get_content_charset() or "utf-8"
                 return body.decode(charset, errors="replace")
-            fmt = _detect_document_format(body, content_type)
+            fmt = _detect_document_format(body, content_type, url)
             if fmt is not None:
                 return FetchedDocument(fmt, body, content_type)
+            image_fmt = _detect_image_format(body, content_type, url)
+            if image_fmt is not None:
+                return FetchedImage(image_fmt, body, content_type)
             raise UnsupportedContentType(content_type)
     except (urllib.error.URLError, OSError) as exc:
         # URLError covers HTTPError; OSError covers socket.timeout, gaierror,
@@ -952,6 +1093,215 @@ def _save_success(
     )
 
 
+# --- Image OCR path (issue #19) -------------------------------------------
+#
+# All OCR work lives behind these helpers so tests can stub the slow /
+# native parts (``_ocr_image`` for recognition, ``_pdf_page_images`` for
+# rasterization) and run offline. ``pytesseract`` / PIL are optional
+# imports: when they (or the native ``tesseract`` binary) are missing,
+# :func:`_ocr_available` is False and the path fails cleanly with an
+# :class:`OcrUnavailable` setup hint instead of raising ImportError.
+
+
+#: Setup-docs pointer embedded in the toolchain-absent failure reason.
+OCR_SETUP_DOCS = "README 'Image OCR'"
+
+
+def _ocr_timeout_seconds() -> float:
+    """Per-file OCR time budget in seconds (settings ``OCR_TIMEOUT_SECONDS``)."""
+    try:
+        return float(getattr(settings, "OCR_TIMEOUT_SECONDS", 60))
+    except (TypeError, ValueError):
+        return 60.0
+
+
+def _ocr_enabled() -> bool:
+    """False when the operator disabled OCR via settings (``OCR_ENABLED``)."""
+    return getattr(settings, "OCR_ENABLED", True) not in (False, 0, "0", "false", "False")
+
+
+def _ocr_available() -> bool:
+    """True only when OCR is enabled *and* the toolchain is importable/found."""
+    if not _ocr_enabled():
+        return False
+    if pytesseract is None or Image is None:
+        return False
+    return shutil.which("tesseract") is not None
+
+
+def _ocr_unavailable_reason() -> str:
+    if not _ocr_enabled():
+        return "OCR is disabled (OCR_ENABLED=0)"
+    if pytesseract is None or Image is None:
+        return "OCR libraries not installed"
+    return "Tesseract binary not on PATH"
+
+
+def _ocr_image(image) -> str:
+    """Recognise text in a single PIL image (injectable seam for tests)."""
+    return pytesseract.image_to_string(image)
+
+
+def _run_ocr_with_timeout(func, *args) -> str:
+    """Run *func* with the per-file OCR budget; raise :class:`OcrTimeout`."""
+    timeout = _ocr_timeout_seconds()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(func, *args)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError as exc:
+            raise OcrTimeout(
+                f"OCR exceeded {timeout:g}s budget for one file"
+            ) from exc
+
+
+def _decode_image_frames(body: bytes):
+    """Open image *body* and return its frames as a list of PIL images.
+
+    Raises :class:`OcrError` for corrupt / truncated / undecodable bytes.
+    """
+    if Image is None:  # pragma: no cover - guarded by _ocr_available first
+        raise OcrError("image libraries not installed")
+    try:
+        base = Image.open(io.BytesIO(body))
+        base.load()
+    except Exception as exc:
+        raise OcrError(f"{type(exc).__name__}: {exc}") from exc
+    frames = []
+    try:
+        n_frames = getattr(base, "n_frames", 1) or 1
+    except Exception:
+        n_frames = 1
+    try:
+        for index in range(n_frames):
+            try:
+                base.seek(index)
+            except Exception as exc:
+                raise OcrError(f"{type(exc).__name__}: {exc}") from exc
+            frames.append(base.copy())
+    except OcrError:
+        raise
+    except Exception as exc:
+        raise OcrError(f"{type(exc).__name__}: {exc}") from exc
+    if not frames:
+        raise OcrError("no decodable image frames")
+    return frames
+
+
+def _pdf_page_images(body: bytes):
+    """Rasterize PDF *body* to one PIL image per page, in page order.
+
+    Prefers ``pymupdf`` when installed, then ``pdf2image``; raises
+    :class:`OcrUnavailable` when no rasterizer is present and
+    :class:`OcrError` for corrupt / encrypted PDFs. Injectable seam: tests
+    stub this to assert page-order concatenation without native deps.
+    """
+    if Image is None:
+        raise OcrUnavailable("image libraries not installed")
+    try:
+        import fitz  # pymupdf (optional)
+
+        pages = []
+        with fitz.open(stream=body, filetype="pdf") as document:
+            for page in document:
+                pixmap = page.get_pixmap(dpi=200)
+                pages.append(
+                    Image.open(io.BytesIO(pixmap.tobytes("png"))).copy()
+                )
+        if not pages:
+            raise OcrError("PDF has no pages")
+        return pages
+    except OcrUnavailable:
+        raise
+    except OcrError:
+        raise
+    except ImportError:
+        pass
+    except Exception as exc:
+        raise OcrError(f"{type(exc).__name__}: {exc}") from exc
+    try:
+        from pdf2image import convert_from_bytes  # optional
+
+        pages = convert_from_bytes(body, dpi=200)
+        if not pages:
+            raise OcrError("PDF has no pages")
+        return list(pages)
+    except OcrError:
+        raise
+    except ImportError:
+        raise OcrUnavailable(
+            "no PDF rasterizer installed (pymupdf or pdf2image)"
+        )
+    except Exception as exc:
+        raise OcrError(f"{type(exc).__name__}: {exc}") from exc
+
+
+def _ocr_image_bytes(body: bytes) -> str:
+    """OCR raw image bytes (every frame) and return the concatenated text."""
+    texts = [
+        _run_ocr_with_timeout(_ocr_image, frame)
+        for frame in _decode_image_frames(body)
+    ]
+    return "\n\n".join(text for text in texts if (text or "").strip()).strip()
+
+
+def _ocr_pdf_bytes(body: bytes) -> str:
+    """OCR every page of a scanned-PDF body, concatenated in page order."""
+    texts = [
+        _run_ocr_with_timeout(_ocr_image, page)
+        for page in _pdf_page_images(body)
+    ]
+    return "\n\n".join(text for text in texts if (text or "").strip()).strip()
+
+
+def _save_ocr_result(submitted_url: SubmittedURL, text: str) -> ExtractionResult:
+    """Persist an OCR transcript (or a no-readable-text failure).
+
+    Images expose no title, so ``extracted_title`` stays empty on success.
+    """
+    method = SubmittedURL.ExtractionMethod.OCR
+    cleaned = (text or "").strip()
+    if _is_insufficient(cleaned):
+        return _save_failure(submitted_url, NoReadableText(), method)
+    return _save_success(submitted_url, cleaned, "", method)
+
+
+def _extract_image(
+    submitted_url: SubmittedURL, fetched: FetchedImage
+) -> ExtractionResult:
+    """OCR a fetched image and persist the outcome (never uses the browser)."""
+    method = SubmittedURL.ExtractionMethod.OCR
+    if not _ocr_available():
+        return _save_failure(
+            submitted_url, OcrUnavailable(_ocr_unavailable_reason()), method
+        )
+    try:
+        text = _ocr_image_bytes(fetched.body)
+    except OcrTimeout as exc:
+        return _save_failure(submitted_url, exc, method)
+    except OcrError as exc:
+        return _save_failure(submitted_url, exc, method)
+    return _save_ocr_result(submitted_url, text)
+
+
+def _extract_pdf_ocr(
+    submitted_url: SubmittedURL, body: bytes
+) -> ExtractionResult:
+    """OCR a scanned / image-only PDF body and persist the outcome."""
+    method = SubmittedURL.ExtractionMethod.OCR
+    if not _ocr_available():
+        return _save_failure(
+            submitted_url, OcrUnavailable(_ocr_unavailable_reason()), method
+        )
+    try:
+        text = _ocr_pdf_bytes(body)
+    except OcrTimeout as exc:
+        return _save_failure(submitted_url, exc, method)
+    except (OcrError, OcrUnavailable) as exc:
+        return _save_failure(submitted_url, exc, method)
+    return _save_ocr_result(submitted_url, text)
+
+
 def _extract_document(
     submitted_url: SubmittedURL, fetched: FetchedDocument
 ) -> ExtractionResult:
@@ -969,6 +1319,12 @@ def _extract_document(
         return _save_failure(submitted_url, exc, method)
 
     if fetched.fmt == "pdf" and _is_insufficient(text):
+        # Image-only / scanned PDF: hand off to the OCR path instead of
+        # failing as no_content. When OCR itself is unavailable the hand-off
+        # keeps the legacy no-text-layer failure so behaviour (and the
+        # document test-suite) is unchanged without the toolchain.
+        if _ocr_available():
+            return _extract_pdf_ocr(submitted_url, fetched.body)
         return _save_failure(submitted_url, NoExtractableText(), method)
 
     return _save_success(submitted_url, text, title, method)
@@ -1006,6 +1362,10 @@ def extract(
 
     if isinstance(fetched, FetchedDocument):
         return _extract_document(submitted_url, fetched)
+
+    if isinstance(fetched, FetchedImage):
+        # Image / OCR-routed content never escalates to the browser fallback.
+        return _extract_image(submitted_url, fetched)
 
     html = fetched
     text, title = _extract_from_html(html, submitted_url.url)

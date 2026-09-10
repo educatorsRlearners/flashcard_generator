@@ -116,10 +116,40 @@ A URL that resolves to a PDF (`application/pdf`, or a `%PDF-` body served
 as `application/octet-stream`) or a Word `.docx` is routed to the
 `document` extraction path instead: its text is extracted directly and the
 browser fallback is never used. A PDF with no text layer (scanned /
-image-only) fails with `failure_kind = no_content`; OCR of scanned PDFs and
-images is a separate follow-up (issue #19) and is not done here. Other
-non-HTML types (`image/png`, `application/zip`, `text/csv`, legacy `.doc`,
-…) still fail with `unsupported_type`.
+image-only) is handed to the OCR path below instead of failing as
+`no_content`. Other non-HTML types (`application/zip`, `text/csv`,
+legacy `.doc`, …) still fail with `unsupported_type`.
+
+### Image OCR
+
+A URL that *is* an image (`image/png`, `image/jpeg`, `image/webp`,
+`image/tiff` — or the matching URL extension served as
+`application/octet-stream` with recognised image magic bytes) is routed to
+the `ocr` extraction path, as is an image-only / scanned PDF whose text
+layer extracted fewer than 200 non-whitespace characters. Recognised text
+lands in `extracted_text` with `extraction_method = ocr` (`extracted_title`
+stays empty — images expose no title); multi-page scans are concatenated
+in page order. The browser fallback is never used for image or OCR-routed
+content, and the 10 MB body cap still applies to image downloads.
+
+The OCR toolchain has two parts:
+
+1. **Native binary (outside `uv`):** install Tesseract —
+   `brew install tesseract` (macOS) or
+   `sudo apt install tesseract-ocr` (Debian/Ubuntu).
+2. **Python binding (inside `uv`):** `uv add pytesseract`
+   (pillow, needed to decode images, is already a dependency).
+
+OCR is enabled by default (`OCR_ENABLED=1`) and is purely local — no
+server, no API key. When the toolchain is absent (binding not installed or
+`tesseract` not on `PATH`) or disabled (`OCR_ENABLED=0`), image URLs fail
+cleanly with `failure_reason` naming OCR as an optional component and
+pointing here; the command continues to the next URL and exits 0. The same
+applies when a scan cannot be rasterized (no `pymupdf`/`pdf2image`
+installed) or recognition yields nothing readable (`no_content` /
+"no readable text"). One file can occupy the worker for at most
+`OCR_TIMEOUT_SECONDS` (default 60 s); hitting it is a clean `timeout`
+failure, not a hang.
 
 ### Fetch politeness
 
@@ -420,10 +450,13 @@ settings (each falls back to an environment variable of the same name):
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `LLM_PROVIDER` | `anthropic` | Provider registry key (only `anthropic` today; #27 adds more) |
+| `LLM_PROVIDER` | `anthropic` | Provider registry key: `anthropic`, `openai-compatible` (alias `openai`) |
 | `LLM_MODEL` | `claude-sonnet-5` | Model id passed to the provider |
 | `LLM_API_KEY_ENV_VAR` | `ANTHROPIC_API_KEY` | Name of the env var holding the API key |
 | `LLM_MAX_TOKENS` | `4096` | Default output-token ceiling when a caller omits `max_tokens` |
+| `LLM_OPENAI_BASE_URL` | `https://api.openai.com/v1` | Base URL of the OpenAI-compatible chat-completions endpoint (only used by `openai-compatible`) |
+| `LLM_OPENAI_MODEL` | `` (falls back to `LLM_MODEL`) | Per-provider model override for `openai-compatible` |
+| `LLM_OPENAI_API_KEY_ENV_VAR` | `` (falls back to `LLM_API_KEY_ENV_VAR`) | Per-provider key-env-var override for `openai-compatible` |
 
 The API key itself is read from the environment (`ANTHROPIC_API_KEY` by
 default) at call time, never stored in settings and never logged or placed
@@ -440,6 +473,25 @@ uv run python manage.py shell
 Changing provider is the same (`export LLM_PROVIDER=...`); an unknown value
 raises `LLMConfigError` listing the supported providers. Timeout and retry
 counts are named constants at the top of `submissions/llm.py`.
+
+**Use an OpenAI-compatible endpoint** (OpenAI, Ollama, vLLM, any gateway
+speaking chat-completions) with no code change — callers are untouched, the
+provider switch routes every call through the new adapter:
+
+```
+export LLM_PROVIDER=openai-compatible
+export LLM_OPENAI_BASE_URL=https://api.openai.com/v1   # or http://127.0.0.1:11434/v1, ...
+export LLM_API_KEY_ENV_VAR=OPENAI_API_KEY               # or LLM_OPENAI_API_KEY_ENV_VAR=...
+export LLM_MODEL=gpt-4o-mini                            # or LLM_OPENAI_MODEL=...
+```
+
+`LLM_OPENAI_MODEL` / `LLM_OPENAI_API_KEY_ENV_VAR`, when non-empty, override
+the generic `LLM_MODEL` / `LLM_API_KEY_ENV_VAR` for the OpenAI-compatible
+provider only. The adapter sends `system` + `prompt` as `system` / `user`
+messages and maps `response_format` (including the card-list schema) to
+`response_format: {type: json_schema, ...}`; auth, rate-limit, 5xx, timeout
+and malformed-output errors surface as the same `LLM*Error` types, with the
+same retry behaviour, and every call records its `LLMCall` usage row.
 
 ## LLM usage (cost / latency observability)
 

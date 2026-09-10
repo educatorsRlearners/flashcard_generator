@@ -4,14 +4,23 @@ The rest of the app calls :func:`generate` (or constructs a provider via
 :func:`get_provider`) and never imports a provider SDK directly.  Which
 provider and model are used is read from Django settings:
 
-* ``LLM_PROVIDER``      - registry key, default ``"anthropic"``
+* ``LLM_PROVIDER``      - registry key, default ``"anthropic"``;
+*                             ``"openai-compatible"`` (alias ``"openai"``)
+*                             selects the OpenAI-compatible adapter (issue #27)
 * ``LLM_MODEL``         - model id, default ``"claude-sonnet-5"``
 * ``LLM_API_KEY_ENV_VAR`` - name of the env var holding the API key
 * ``LLM_MAX_TOKENS``    - default output-token ceiling
+* ``LLM_OPENAI_BASE_URL`` - base URL for the OpenAI-compatible endpoint,
+*                             default ``"https://api.openai.com/v1"``
+* ``LLM_OPENAI_MODEL``  - optional override of ``LLM_MODEL`` for the
+*                             OpenAI-compatible provider (empty = fall back)
+* ``LLM_OPENAI_API_KEY_ENV_VAR`` - optional override of
+*                             ``LLM_API_KEY_ENV_VAR`` for the OpenAI-compatible
+*                             provider (empty = fall back)
 
-Adding a second provider (issue #27) is one entry in ``_PROVIDERS`` plus a
-new ``Provider`` subclass in this file - nothing else in the codebase
-changes, and ``import anthropic`` stays confined to this module.
+Adding a third provider is one entry in ``_PROVIDERS`` plus a new
+``Provider`` subclass in this file - nothing else in the codebase changes,
+and ``import anthropic`` / ``import openai`` stay confined to this module.
 
 Nothing here logs or embeds the API key in an exception message.
 """
@@ -127,6 +136,28 @@ def _resolve_max_tokens(explicit: Optional[int]) -> int:
     if explicit is not None:
         return int(explicit)
     return int(_setting("LLM_MAX_TOKENS", 4096))
+
+
+def _resolve_openai_base_url() -> str:
+    return _setting("LLM_OPENAI_BASE_URL", "https://api.openai.com/v1")
+
+
+def _resolve_openai_model() -> str:
+    """Model for the OpenAI-compatible provider: per-provider override wins,
+    empty override falls back to the generic ``LLM_MODEL``."""
+    override = _setting("LLM_OPENAI_MODEL", "")
+    if override:
+        return override
+    return _resolve_model()
+
+
+def _resolve_openai_api_key_env_var() -> str:
+    """Key env var for the OpenAI-compatible provider: per-provider override
+    wins, empty override falls back to the generic setting."""
+    override = _setting("LLM_OPENAI_API_KEY_ENV_VAR", "")
+    if override:
+        return override
+    return _resolve_api_key_env_var()
 
 
 # --- Provider interface ----------------------------------------------
@@ -314,6 +345,102 @@ class AnthropicProvider(Provider):
         return _classify_provider_exception(exc)
 
 
+# --- OpenAI-compatible implementation (issue #27) --------------------
+
+
+def _new_openai_client(api_key: str, base_url: str) -> Any:
+    """Construct the OpenAI SDK client.
+
+    Isolated in its own function so tests can monkeypatch it and never touch
+    the network or import ``openai``. ``base_url`` makes the client talk to
+    any OpenAI-compatible gateway; ``max_retries=0`` because this module
+    owns retry/backoff.
+    """
+    import openai  # local import: keeps the SDK dependency inside this module
+
+    return openai.OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+        max_retries=0,
+    )
+
+
+class OpenAICompatibleProvider(Provider):
+    """Adapter for any OpenAI-compatible chat-completions endpoint.
+
+    Request shape: ``system`` + ``prompt`` become ``system`` / ``user``
+    messages; ``response_format`` (a JSON Schema dict) becomes a
+    ``response_format={"type": "json_schema", ...}`` parameter so the
+    endpoint returns schema-shaped JSON. Response handling (refusal /
+    truncation / empty / schema validation) is shared with the base class
+    via :meth:`Provider._build_result`.
+    """
+
+    name = "openai-compatible"
+
+    def __init__(self, *, model: str, api_key_env_var: str, base_url: str):
+        super().__init__(model=model, api_key_env_var=api_key_env_var)
+        self.base_url = base_url
+
+    def _client(self) -> Any:
+        return _new_openai_client(self._require_api_key(), self.base_url)
+
+    def _call(self, *, system, prompt, response_format, max_tokens):
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            "max_tokens": max_tokens,
+        }
+        if response_format is not None:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "response",
+                    "schema": response_format,
+                },
+            }
+        return self._client().chat.completions.create(**kwargs)
+
+    def _extract(self, raw: Any) -> tuple[str, Optional[str], dict]:
+        choices = getattr(raw, "choices", None) or []
+        message = getattr(choices[0], "message", None) if choices else None
+        text = getattr(message, "content", None) or ""
+        if getattr(message, "refusal", None):
+            return "", "refusal", _openai_usage(raw)
+        finish_reason = getattr(choices[0], "finish_reason", None) if choices else None
+        if finish_reason == "content_filter":
+            return text, "refusal", _openai_usage(raw)
+        if finish_reason == "length":
+            # OpenAI's truncation signal; the shared base class reports it
+            # as a "max_tokens"/truncated bad response.
+            return text, "max_tokens", _openai_usage(raw)
+        return text, finish_reason, _openai_usage(raw)
+
+    def _map_exception(self, exc: BaseException) -> LLMError:
+        # OpenAI SDK errors carry ``status_code`` and names like
+        # ``AuthenticationError`` / ``RateLimitError`` / ``APITimeoutError``,
+        # the same duck-typed shape the shared classifier handles.
+        return _classify_provider_exception(exc)
+
+
+def _openai_usage(raw: Any) -> dict:
+    """Pull ``{input_tokens, output_tokens}`` out of a chat-completion."""
+    usage_obj = getattr(raw, "usage", None)
+    usage: dict = {}
+    if usage_obj is not None:
+        prompt_tokens = getattr(usage_obj, "prompt_tokens", None)
+        completion_tokens = getattr(usage_obj, "completion_tokens", None)
+        if prompt_tokens is not None:
+            usage["input_tokens"] = prompt_tokens
+        if completion_tokens is not None:
+            usage["output_tokens"] = completion_tokens
+    return usage
+
+
 def _classify_provider_exception(exc: BaseException) -> LLMError:
     """Map a provider SDK exception (or a test fake shaped like one) to a
     typed :class:`LLMError`, using duck typing so tests need not import the
@@ -453,6 +580,15 @@ LLM_PRICE_PER_MTOK: dict[str, tuple[float, float]] = {
     "opus": (15.0, 75.0),
     "sonnet": (3.0, 15.0),
     "haiku": (0.8, 4.0),
+    # OpenAI family (issue #27): ordered most-specific first because the
+    # lookup is first-substring-match; the trailing "gpt" is the generic
+    # fallback for other gpt-* ids.
+    "gpt-4o-mini": (0.15, 0.6),
+    "gpt-4o": (2.5, 10.0),
+    "gpt-4.1": (2.0, 8.0),
+    "gpt-4": (10.0, 30.0),
+    "o1": (15.0, 60.0),
+    "gpt": (2.5, 10.0),
 }
 
 
@@ -560,9 +696,15 @@ def _record_llm_call(
 
 
 #: The one obvious place a new provider is wired in. Key == ``LLM_PROVIDER``.
+#: ``"openai"`` is a short alias for ``"openai-compatible"``.
 _PROVIDERS: dict[str, Callable[..., Provider]] = {
     "anthropic": AnthropicProvider,
+    "openai-compatible": OpenAICompatibleProvider,
+    "openai": OpenAICompatibleProvider,
 }
+
+#: Provider names that need the OpenAI-compatible constructor kwargs.
+_OPENAI_PROVIDER_NAMES = frozenset({"openai-compatible", "openai"})
 
 SUPPORTED_PROVIDERS = tuple(sorted(_PROVIDERS))
 
@@ -578,6 +720,12 @@ def get_provider(name: Optional[str] = None) -> Provider:
         raise LLMConfigError(
             f"Unknown LLM_PROVIDER {provider_name!r}. "
             f"Supported providers: {', '.join(SUPPORTED_PROVIDERS)}."
+        )
+    if provider_name in _OPENAI_PROVIDER_NAMES:
+        return factory(
+            model=_resolve_openai_model(),
+            api_key_env_var=_resolve_openai_api_key_env_var(),
+            base_url=_resolve_openai_base_url(),
         )
     return factory(model=_resolve_model(), api_key_env_var=_resolve_api_key_env_var())
 

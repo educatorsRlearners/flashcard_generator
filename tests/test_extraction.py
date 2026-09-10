@@ -162,10 +162,12 @@ def test_non_html_content_type_fails(monkeypatch, batch):
     _run("--url", row.url)
 
     row.refresh_from_db()
+    # Issue #19: image content types route to the OCR path (never the
+    # browser). Without the OCR toolchain this is a clean OCR-unavailable
+    # failure, not unsupported_type.
     assert row.status == SubmittedURL.Status.FAILED
-    assert "image/png" in row.failure_reason
-    assert row.failure_kind == SubmittedURL.FailureKind.UNSUPPORTED_TYPE
-    assert row.extraction_method == SubmittedURL.ExtractionMethod.NONE
+    assert "OCR" in row.failure_reason
+    assert row.extraction_method == SubmittedURL.ExtractionMethod.OCR
     assert called == []
 
 

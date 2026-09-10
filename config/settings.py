@@ -128,6 +128,18 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-5")
 LLM_API_KEY_ENV_VAR = os.environ.get("LLM_API_KEY_ENV_VAR", "ANTHROPIC_API_KEY")
 # Default output-token ceiling when a caller does not pass max_tokens.
 LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "4096"))
+# OpenAI-compatible provider (issue #27; adapter in submissions/llm.py).
+# Base URL of the OpenAI-compatible chat-completions endpoint. Point at any
+# OpenAI-compatible gateway (OpenAI, Ollama, vLLM, ...) with no code change.
+LLM_OPENAI_BASE_URL = os.environ.get(
+    "LLM_OPENAI_BASE_URL", "https://api.openai.com/v1"
+)
+# Optional per-provider overrides: when non-empty these win over the generic
+# LLM_MODEL / LLM_API_KEY_ENV_VAR above for the openai-compatible provider.
+# Empty (default) falls back to the generic settings, so a provider swap can
+# be just LLM_PROVIDER + LLM_MODEL (+ base URL / key env var as needed).
+LLM_OPENAI_MODEL = os.environ.get("LLM_OPENAI_MODEL", "")
+LLM_OPENAI_API_KEY_ENV_VAR = os.environ.get("LLM_OPENAI_API_KEY_ENV_VAR", "")
 
 # --- Card generation (submissions/generation.py, issue #32) ---------------
 # Language/domain used for programming analogies in generated cards.
@@ -163,6 +175,18 @@ FEWSHOT_SELECTION_MODE = os.environ.get("FEWSHOT_SELECTION_MODE", "relevance")
 FEWSHOT_MIN_FEEDBACK_CHARS = int(os.environ.get("FEWSHOT_MIN_FEEDBACK_CHARS", "20"))
 FEWSHOT_CHARS_PER_TOKEN = int(os.environ.get("FEWSHOT_CHARS_PER_TOKEN", "4"))
 FEWSHOT_EMBED_FN = os.environ.get("FEWSHOT_EMBED_FN", "")
+
+# --- Image OCR (submissions/extraction.py, issue #19) ----------------------
+# URLs that *are* an image (PNG/JPEG/WebP/TIFF) or an image-only (scanned)
+# PDF are OCR'd with Tesseract via the ``pytesseract`` binding. The native
+# ``tesseract`` binary lives outside ``uv`` (brew/apt install); the binding
+# itself is a regular ``uv`` dependency. OCR is enabled by default and works
+# whenever the toolchain is present — purely local, localhost-only, no
+# server or API key. Set OCR_ENABLED=0 to disable it (image URLs then fail
+# cleanly with a setup hint, exactly as if the toolchain were absent).
+# OCR_TIMEOUT_SECONDS bounds how long one file can occupy the worker.
+OCR_ENABLED = os.environ.get("OCR_ENABLED", "1") == "1"
+OCR_TIMEOUT_SECONDS = float(os.environ.get("OCR_TIMEOUT_SECONDS", "60"))
 
 # --- Anki sync (submissions/anki.py, issue #11) -------------------------
 # The single deck accepted cards are pushed into, and the base URL of the
