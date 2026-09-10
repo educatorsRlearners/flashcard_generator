@@ -10,6 +10,7 @@ dependencies = [
     "trafilatura>=1.8",
     "playwright>=1.40",
     "pdfminer.six>=20231228",
+    "anthropic>=0.40",
 ]
 
 [tool.pytest.ini_options]

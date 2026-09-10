@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -65,3 +66,15 @@ USE_TZ = True
 STATIC_URL = "static/"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# --- LLM client (submissions/llm.py) -------------------------------------
+# Which provider/model the in-process LLM client talks to. All of these are
+# configuration, not code: change the model with an env var, no code edit.
+# See README.md ("LLM client") for details.
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "anthropic")
+LLM_MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-5")
+# Name of the environment variable that holds the provider API key. The key
+# itself is read from os.environ at call time and never stored in settings.
+LLM_API_KEY_ENV_VAR = os.environ.get("LLM_API_KEY_ENV_VAR", "ANTHROPIC_API_KEY")
+# Default output-token ceiling when a caller does not pass max_tokens.
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "4096"))

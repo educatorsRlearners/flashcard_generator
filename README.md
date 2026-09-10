@@ -110,6 +110,44 @@ chosen keeps `extraction_method = none`. The no-selector run
 This is intentional - it is the way to retry transient failures - but it
 means a plain re-run is not idempotent for rows that keep failing.
 
+## LLM client
+
+`submissions/llm.py` is a thin, provider-agnostic client for text
+generation. Call `submissions.llm.generate(system=..., prompt=...,
+response_format=None, max_tokens=None)` and get back an `LLMResult` with
+`.text` (and `.parsed`, a validated object, when you pass a JSON Schema as
+`response_format`). Errors surface as typed exceptions from that module
+(`LLMConfigError`, `LLMAuthError`, `LLMRateLimitError`, `LLMTransientError`,
+`LLMBadResponseError`) so callers never import a provider SDK. Transient
+failures (429, 5xx, connection, timeout) are retried with backoff; auth and
+bad-request errors are not.
+
+Which provider and model are used is configuration, read from Django
+settings (each falls back to an environment variable of the same name):
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `LLM_PROVIDER` | `anthropic` | Provider registry key (only `anthropic` today; #27 adds more) |
+| `LLM_MODEL` | `claude-sonnet-5` | Model id passed to the provider |
+| `LLM_API_KEY_ENV_VAR` | `ANTHROPIC_API_KEY` | Name of the env var holding the API key |
+| `LLM_MAX_TOKENS` | `4096` | Default output-token ceiling when a caller omits `max_tokens` |
+
+The API key itself is read from the environment (`ANTHROPIC_API_KEY` by
+default) at call time, never stored in settings and never logged or placed
+in an exception message. With no key set, the first call (or
+`submissions.llm.check()`) raises `LLMAuthError` naming the variable to set.
+
+**Point the client at a different model** with no code change:
+
+```
+export LLM_MODEL=claude-opus-5        # or any current Anthropic model id
+uv run python manage.py shell
+```
+
+Changing provider is the same (`export LLM_PROVIDER=...`); an unknown value
+raises `LLMConfigError` listing the supported providers. Timeout and retry
+counts are named constants at the top of `submissions/llm.py`.
+
 ## Tests
 
 ```
