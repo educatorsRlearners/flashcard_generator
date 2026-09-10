@@ -7,14 +7,14 @@
     <h1>Review cards - Batch {{ batch.pk }}</h1>
 
     {% if not ready %}
-        <p class="review-notready" id="review-notready">
+        <p class="empty-state review-notready" id="review-notready">
             Cards are not ready yet - this batch is still extracting or
             generating. Reload this page once processing has finished.
         </p>
     {% elif not cards %}
-        <p class="review-empty" id="review-empty">No cards were generated for this batch.</p>
+        <p class="empty-state review-empty" id="review-empty">No cards were generated for this batch.</p>
     {% else %}
-        <p class="review-tally" id="review-tally"
+        <p class="review-tally" id="review-tally" aria-live="polite"
            data-decision-url="{% url 'submissions:card_review_decision' batch.pk 0 %}">
             <span data-role="total">{{ tally.total }}</span> cards -
             <span data-role="accepted">{{ tally.accepted }}</span> accepted,
@@ -96,10 +96,10 @@
                     They will be left undecided. Finish anyway?
                 </p>
                 <input type="hidden" name="confirm" value="1">
-                <button type="submit" class="review-btn">Yes, finish review</button>
+                <button type="submit" class="button" id="review-finish-btn">Yes, finish review</button>
                 <a href="{% url 'submissions:card_review' batch.pk %}">Cancel</a>
             {% else %}
-                <button type="submit" class="review-btn" id="review-finish-btn">Finish review</button>
+                <button type="submit" class="button" id="review-finish-btn">Finish review</button>
             {% endif %}
         </form>
     {% endif %}

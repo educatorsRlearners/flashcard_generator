@@ -86,7 +86,7 @@ a { color: var(--accent); }
     border-radius: 6px;
     resize: vertical;
 }
-.field-input:focus-visible, .button:focus-visible, .button-link:focus-visible, a:focus-visible {
+.field-input:focus-visible, .button:focus-visible, .button-link:focus-visible, a:focus-visible, .review-btn:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
@@ -234,6 +234,103 @@ a { color: var(--accent); }
     vertical-align: middle;
 }
 
+/* Card review grid (issue #9) */
+.review-tally {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.65rem 0.85rem;
+    font-weight: 600;
+    margin: 1rem 0 1.25rem;
+}
+
+.review-grid {
+    list-style: none;
+    margin: 0 0 1.5rem;
+    padding: 0;
+    display: grid;
+    gap: 1rem;
+}
+
+.review-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left-width: 4px;
+    border-left-color: var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.15rem;
+}
+.review-card--accepted {
+    border-color: var(--success-bd);
+    border-left-color: var(--success-fg);
+    background: var(--success-bg);
+}
+.review-card--rejected {
+    border-color: var(--error-bd);
+    border-left-color: var(--error-fg);
+    background: var(--error-bg);
+}
+
+.review-card__meta, .review-card__source { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.5rem; }
+.review-card__source { margin: 0.5rem 0 0; }
+.review-card__label { font-weight: 600; margin: 0.6rem 0 0.2rem; }
+.review-card__front, .review-card__back, .review-card__cloze, .review-card__extra { margin: 0 0 0.4rem; }
+.review-card__extra { color: var(--muted); font-size: 0.9rem; }
+
+.review-card__form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.9rem;
+    padding-top: 0.9rem;
+    border-top: 1px solid var(--border);
+}
+
+.review-btn {
+    padding: 0.45rem 1rem;
+    font: inherit;
+    font-weight: 600;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+}
+.review-btn:hover { border-color: var(--muted); }
+
+/* Active decision: the pressed button is filled, so a reviewer scanning a long
+   list sees at a glance which cards are decided. */
+.review-btn--accept[aria-pressed="true"] {
+    background: var(--success-fg);
+    border-color: var(--success-fg);
+    color: #fff;
+}
+.review-btn--reject[aria-pressed="true"] {
+    background: var(--error-fg);
+    border-color: var(--error-fg);
+    color: #fff;
+}
+
+.review-card__reason-wrap {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    flex-basis: 100%;
+}
+.review-card__reason-wrap input {
+    padding: 0.4rem 0.55rem;
+    font: inherit;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    flex: 1 1 12rem;
+}
+
+.review-finish { margin-top: 1rem; }
+.review-finish__confirm { font-weight: 600; }
+
 /* Per-card image in the review grid (issue #12) */
 .review-card__image {
     display: block;
@@ -244,4 +341,5 @@ a { color: var(--accent); }
     border: 1px solid var(--border);
     border-radius: 6px;
     object-fit: contain;
+    background: var(--surface);
 }

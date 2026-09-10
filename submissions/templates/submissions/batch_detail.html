@@ -20,7 +20,7 @@
         data-terminal="{{ status.terminal|yesno:'1,0' }}"
     >
         <p class="batch-progress__summary" id="batch-progress-summary">
-            <span class="batch-progress__check" aria-hidden="true">&#10003;</span>{{ status.summary }}
+            <span class="batch-progress__check" aria-hidden="true">&#10003;</span><span id="batch-progress-summary-text">{{ status.summary }}</span>
         </p>
         <p class="batch-progress__cards" id="batch-progress-cards">
             Cards generated so far: <span id="batch-progress-card-count">{{ status.cards }}</span>
@@ -98,7 +98,7 @@
     }
 
     function render(data) {
-        var summary = document.getElementById("batch-progress-summary");
+        var summary = document.getElementById("batch-progress-summary-text");
         if (summary) { summary.textContent = data.summary; }
         var cards = document.getElementById("batch-progress-card-count");
         if (cards) { cards.textContent = data.cards; }

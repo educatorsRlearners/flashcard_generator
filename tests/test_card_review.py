@@ -175,6 +175,27 @@ def test_review_grid_renders_card_image_by_placement(client):
     assert "review-card__image" not in plain_html
 
 
+def test_empty_and_notready_states_use_design_system_panel(client):
+    empty_batch = Batch.objects.create()
+    _url(empty_batch)
+    page = client.get(reverse("submissions:card_review", args=[empty_batch.pk]))
+    assert b'class="empty-state review-empty"' in page.content
+
+    notready = Batch.objects.create()
+    _url(notready, status=SubmittedURL.Status.PENDING, gen="")
+    page = client.get(reverse("submissions:card_review", args=[notready.pk]))
+    assert b'class="empty-state review-notready"' in page.content
+
+
+def test_tally_is_an_aria_live_region(client):
+    batch = Batch.objects.create()
+    su = _url(batch)
+    _card(su, batch)
+    page = client.get(reverse("submissions:card_review", args=[batch.pk]))
+    assert b'id="review-tally"' in page.content
+    assert b'aria-live="polite"' in page.content
+
+
 def test_batch_detail_links_to_review(client):
     batch = Batch.objects.create()
     page = client.get(reverse("submissions:batch_detail", args=[batch.pk]))
