@@ -211,6 +211,19 @@ class Card(models.Model):
         BASIC = "basic", "Basic (Q&A)"
         CLOZE = "cloze", "Cloze"
 
+    class ReviewStatus(models.TextChoices):
+        """Reviewer's inline decision for this card (issue #9).
+
+        ``undecided`` is the default. Exactly one of the three values is
+        recorded per card at any time. ``rejection_reason`` is only ever
+        populated while ``review_status == "rejected"`` and is optional
+        even then; accepting a card always clears it.
+        """
+
+        UNDECIDED = "undecided", "Undecided"
+        ACCEPTED = "accepted", "Accepted"
+        REJECTED = "rejected", "Rejected"
+
     class DedupStatus(models.TextChoices):
         """Semantic-dedup verdict for this card (issue #7).
 
@@ -265,6 +278,17 @@ class Card(models.Model):
     #: re-run of ``dedup_cards`` unless ``--force`` is passed. Empty list
     #: means "not embedded yet".
     embedding = models.JSONField(default=list, blank=True)
+
+    # --- Review-state fields (issue #9) -----------------------------
+    #: The reviewer's inline Accept / Reject decision.
+    review_status = models.CharField(
+        max_length=16,
+        choices=ReviewStatus.choices,
+        default=ReviewStatus.UNDECIDED,
+    )
+    #: Optional free-text reason captured when a card is rejected. Blank is
+    #: allowed; cleared whenever the card is (re-)accepted.
+    rejection_reason = models.TextField(blank=True, default="")
 
     objects = CardQuerySet.as_manager()
 
