@@ -196,6 +196,42 @@ def test_tally_is_an_aria_live_region(client):
     assert b'aria-live="polite"' in page.content
 
 
+def _reason_wrap_is_hidden(content):
+    import re
+
+    m = re.search(
+        rb'<span class="review-card__reason-wrap" data-role="reason-wrap"([^>]*)>',
+        content,
+    )
+    assert m, "reason wrap span not found"
+    return b"hidden" in m.group(1)
+
+
+@pytest.mark.parametrize(
+    "status,hidden",
+    [
+        (Card.ReviewStatus.ACCEPTED, True),
+        (Card.ReviewStatus.UNDECIDED, True),
+        (Card.ReviewStatus.REJECTED, False),
+    ],
+)
+def test_reason_wrap_hidden_attr_tracks_decision(client, status, hidden):
+    batch = Batch.objects.create()
+    su = _url(batch)
+    _card(su, batch, review_status=status)
+    page = client.get(reverse("submissions:card_review", args=[batch.pk]))
+    assert _reason_wrap_is_hidden(page.content) is hidden
+
+
+def test_reason_wrap_css_has_hidden_guard():
+    from pathlib import Path
+
+    from django.conf import settings
+
+    css = Path(settings.BASE_DIR, "submissions/static/submissions/app.css").read_text()
+    assert ".review-card__reason-wrap[hidden]" in css
+
+
 def test_batch_detail_links_to_review(client):
     batch = Batch.objects.create()
     page = client.get(reverse("submissions:batch_detail", args=[batch.pk]))

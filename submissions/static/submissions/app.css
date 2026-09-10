@@ -319,13 +319,22 @@ a { color: var(--accent); }
     gap: 0.4rem;
     flex-basis: 100%;
 }
+.review-card__reason-wrap[hidden] { display: none; }
+.review-card__reason-wrap label {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3rem;
+    flex: 1 1 100%;
+}
 .review-card__reason-wrap input {
     padding: 0.4rem 0.55rem;
     font: inherit;
     color: var(--text);
     border: 1px solid var(--border);
     border-radius: 6px;
-    flex: 1 1 12rem;
+    flex: 1 1 8rem;
+    min-width: 0;
 }
 
 .review-finish { margin-top: 1rem; }
