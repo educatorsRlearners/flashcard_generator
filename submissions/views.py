@@ -1,9 +1,12 @@
+from django.conf import settings
 from django.contrib import messages
-from django.http import Http404
+from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 
 from .forms import URLSubmissionForm
-from .models import Batch, BatchRequest, SubmittedURL
+from .models import Batch, BatchRequest, Card, SubmittedURL
+from .tasks import enqueue_batch
 
 
 def home(request):
@@ -33,6 +36,19 @@ def home(request):
                         f"{existing_count} URL(s) were already saved; "
                         "recorded as a new request for this batch.",
                     )
+                # Kick off background processing and hand the user straight
+                # to the live batch page (the response never waits on a
+                # fetch).
+                enqueue_batch(batch)
+                if form.invalid_lines:
+                    messages.warning(
+                        request,
+                        "Rejected {n} invalid line(s): {lines}".format(
+                            n=len(form.invalid_lines),
+                            lines=", ".join(form.invalid_lines),
+                        ),
+                    )
+                return redirect("submissions:batch_detail", pk=batch.pk)
             if form.invalid_lines:
                 messages.warning(
                     request,
@@ -94,13 +110,85 @@ def _batch_is_empty(batch):
     return not batch.requests.exists()
 
 
+def _batch_card_count(batch):
+    return (
+        Card.objects.filter(submitted_url__requests__batch=batch)
+        .distinct()
+        .count()
+    )
+
+
+def _worker_looks_down(batch, counts):
+    """Heuristic: pending work, nothing processed, and the batch is old."""
+    pending = counts.get(SubmittedURL.Status.PENDING, 0)
+    processed = counts.get(SubmittedURL.Status.OK, 0) + counts.get(
+        SubmittedURL.Status.FAILED, 0
+    )
+    if pending == 0 or processed > 0:
+        return False
+    age = (timezone.now() - batch.created_at).total_seconds()
+    return age >= settings.HUEY_WORKER_STALE_SECONDS
+
+
+def _status_payload(batch):
+    counts = batch.status_counts
+    total = batch.url_count
+    ok = counts.get(SubmittedURL.Status.OK, 0)
+    failed = counts.get(SubmittedURL.Status.FAILED, 0)
+    pending = counts.get(SubmittedURL.Status.PENDING, 0)
+    processed = ok + failed
+    terminal = pending == 0
+    worker_down = _worker_looks_down(batch, counts)
+    if terminal:
+        summary = f"Done: {ok} ok, {failed} failed"
+    else:
+        summary = f"Processing URL {min(processed + 1, total)} of {total}"
+    return {
+        "batch_id": batch.pk,
+        "total": total,
+        "processed": processed,
+        "ok": ok,
+        "failed": failed,
+        "pending": pending,
+        "cards": _batch_card_count(batch),
+        "terminal": terminal,
+        "worker_running": not worker_down,
+        "summary": summary,
+        "start_command": HUEY_CONSUMER_COMMAND,
+        "urls": [
+            {
+                "id": row["id"],
+                "url": row["url"],
+                "status": row["status"],
+                "failure_reason": row["failure_reason"],
+                "failure_kind_label": row["failure_kind_label"],
+            }
+            for row in _batch_rows(batch)
+        ],
+    }
+
+
+HUEY_CONSUMER_COMMAND = "uv run python manage.py run_huey"
+
+
 def batch_detail(request, pk):
     batch = get_object_or_404(Batch, pk=pk)
+    payload = _status_payload(batch)
     return render(
         request,
         "submissions/batch_detail.html",
-        {"batch": batch, "urls": _batch_rows(batch)},
+        {
+            "batch": batch,
+            "urls": _batch_rows(batch),
+            "status": payload,
+            "huey_command": HUEY_CONSUMER_COMMAND,
+        },
     )
+
+
+def batch_status(request, pk):
+    batch = get_object_or_404(Batch, pk=pk)
+    return JsonResponse(_status_payload(batch))
 
 
 def delete_url(request, batch_pk, url_pk):

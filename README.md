@@ -40,8 +40,26 @@ uv run python manage.py runserver
 ```
 
 Then open http://127.0.0.1:8000/ , paste one or more URLs (one per line)
-into the textarea, and submit. Saved URLs are listed back on the page and
-stored in `db.sqlite3`.
+into the textarea, and submit. Submitting returns immediately and sends you
+to the batch page, which polls a JSON status endpoint and updates its
+progress indicator until the batch is done.
+
+## Background processing (Huey)
+
+Submitting a batch enqueues one background task per URL that runs the
+extraction path (below). The tasks are processed by a Huey consumer backed
+by a local SQLite file (`huey.sqlite3`) — no Redis or extra service. Start
+the consumer in a second terminal:
+
+```
+uv run python manage.py run_huey
+```
+
+`runserver` does **not** start it (that is issue #20). If the consumer is
+not running, the batch page shows the URLs stuck in `pending` with a notice
+and this command. Pending tasks are persisted, so restarting the consumer
+after a crash resumes them. To run tasks inline without a consumer (e.g. a
+one-off script), set `HUEY_IMMEDIATE=1`.
 
 ## Extract content
 

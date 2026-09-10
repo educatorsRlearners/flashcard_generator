@@ -3,6 +3,8 @@ Commands
 - `uv sync` - install dependencies
 - `uv run pytest` - the whole suite
 - `uv run pytest tests/test_home.py` - one test file
+- `uv run python manage.py run_huey` - background task consumer for batch
+  processing (run alongside `runserver`); tests use Huey immediate mode
 
 Rules
 

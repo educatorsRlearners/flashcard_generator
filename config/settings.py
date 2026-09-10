@@ -16,6 +16,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "huey.contrib.djhuey",
     "submissions",
 ]
 
@@ -66,6 +67,31 @@ USE_TZ = True
 STATIC_URL = "static/"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# --- Background batch processing (Huey, issue #8) -----------------------
+# One task per submitted URL runs the extraction path in a background
+# consumer. The broker is a local SQLite file (huey.sqlite3) so no Redis
+# or extra service is needed. Start the consumer with:
+#     uv run python manage.py run_huey
+# Set HUEY_IMMEDIATE=1 to run tasks inline in the submitting process (no
+# consumer needed); the test suite forces immediate mode via a fixture.
+HUEY = {
+    "huey_class": "huey.SqliteHuey",
+    "name": "flashcard_generator",
+    "filename": str(BASE_DIR / "huey.sqlite3"),
+    "immediate": os.environ.get("HUEY_IMMEDIATE", "") == "1",
+    "immediate_use_memory": True,
+    "results": False,
+    "utc": True,
+    "consumer": {
+        "workers": 4,
+        "worker_type": "thread",
+    },
+}
+
+#: A batch with URLs still pending this many seconds after it was created
+#: and with nothing processed yet is reported as "worker not running".
+HUEY_WORKER_STALE_SECONDS = int(os.environ.get("HUEY_WORKER_STALE_SECONDS", "15"))
 
 # --- LLM client (submissions/llm.py) -------------------------------------
 # Which provider/model the in-process LLM client talks to. All of these are

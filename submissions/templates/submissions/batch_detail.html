@@ -6,19 +6,39 @@
     <p><a href="{% url 'submissions:home' %}">&larr; Back to home</a></p>
     <h1>Batch {{ batch.pk }}</h1>
     <p class="batch-meta">
-        Created: {{ batch.created_at }} &middot; URL count: {{ batch.url_count }} &middot;
-        Overall status: {{ batch.overall_status }} ({{ batch.status_summary }})
+        Created: {{ batch.created_at }} &middot; URL count: {{ batch.url_count }}
     </p>
+
+    <div
+        id="batch-progress"
+        class="batch-progress"
+        data-status-url="{% url 'submissions:batch_status' batch.pk %}"
+        data-terminal="{{ status.terminal|yesno:'1,0' }}"
+    >
+        <p class="batch-progress__summary" id="batch-progress-summary">{{ status.summary }}</p>
+        <p class="batch-progress__cards" id="batch-progress-cards">
+            Cards generated so far: <span id="batch-progress-card-count">{{ status.cards }}</span>
+        </p>
+        <p
+            class="batch-progress__worker-notice"
+            id="batch-progress-worker-notice"
+            {% if status.worker_running or status.terminal %}hidden{% endif %}
+        >
+            The background worker does not appear to be running. Start it with:
+            <code>{{ huey_command }}</code>
+        </p>
+    </div>
+
     {% if batch.failure_kind_summary %}
-    <p class="batch-meta">{{ batch.failure_kind_summary }}</p>
+    <p class="batch-meta" id="batch-failure-summary">{{ batch.failure_kind_summary }}</p>
     {% endif %}
 
     <ul class="url-list">
         {% for item in urls %}
-        <li class="url-list__item">
+        <li class="url-list__item" data-url-id="{{ item.id }}">
             <div class="url-list__head">
                 <span class="url-list__url">{{ item.url }}</span>
-                <span class="status status--{{ item.status }}">{{ item.status }}</span>
+                <span class="status status--{{ item.status }}" data-role="status">{{ item.status }}</span>
                 <form
                     method="post"
                     action="{% url 'submissions:delete_url' batch.pk item.id %}"
@@ -32,10 +52,75 @@
             {% if not item.originated_here %}
             <span class="url-list__origin">{% if item.origin_batch_id %}first requested in <a href="{% url 'submissions:batch_detail' item.origin_batch_id %}">Batch {{ item.origin_batch_id }}</a>{% else %}first requested in an earlier batch{% endif %}</span>
             {% endif %}
-            {% if item.status == "failed" %}
-            <span class="url-list__reason">{% if item.failure_kind_label %}{{ item.failure_kind_label }} &mdash; {% endif %}{{ item.failure_reason }}</span>
-            {% endif %}
+            <span
+                class="url-list__reason"
+                data-role="reason"
+                {% if item.status != "failed" %}hidden{% endif %}
+            >{% if item.failure_kind_label %}{{ item.failure_kind_label }} &mdash; {% endif %}{{ item.failure_reason }}</span>
         </li>
         {% endfor %}
     </ul>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    var root = document.getElementById("batch-progress");
+    if (!root) { return; }
+    var statusUrl = root.getAttribute("data-status-url");
+    var POLL_MS = 2000;
+    var timer = null;
+
+    function applyRow(li, u) {
+        var status = li.querySelector('[data-role="status"]');
+        if (status) {
+            status.textContent = u.status;
+            status.className = "status status--" + u.status;
+        }
+        var reason = li.querySelector('[data-role="reason"]');
+        if (reason) {
+            if (u.status === "failed") {
+                var prefix = u.failure_kind_label ? (u.failure_kind_label + " — ") : "";
+                reason.textContent = prefix + (u.failure_reason || "");
+                reason.hidden = false;
+            } else {
+                reason.hidden = true;
+            }
+        }
+    }
+
+    function render(data) {
+        var summary = document.getElementById("batch-progress-summary");
+        if (summary) { summary.textContent = data.summary; }
+        var cards = document.getElementById("batch-progress-card-count");
+        if (cards) { cards.textContent = data.cards; }
+        var notice = document.getElementById("batch-progress-worker-notice");
+        if (notice) { notice.hidden = data.worker_running || data.terminal; }
+
+        var byId = {};
+        (data.urls || []).forEach(function (u) { byId[u.id] = u; });
+        document.querySelectorAll(".url-list [data-url-id]").forEach(function (li) {
+            var u = byId[li.getAttribute("data-url-id")];
+            if (u) { applyRow(li, u); }
+        });
+
+        if (data.terminal) {
+            root.setAttribute("data-terminal", "1");
+            if (timer) { clearInterval(timer); timer = null; }
+        }
+    }
+
+    function poll() {
+        fetch(statusUrl, { headers: { "X-Requested-With": "XMLHttpRequest" } })
+            .then(function (r) { return r.json(); })
+            .then(render)
+            .catch(function () { /* keep polling */ });
+    }
+
+    if (root.getAttribute("data-terminal") !== "1") {
+        timer = setInterval(poll, POLL_MS);
+        poll();
+    }
+})();
+</script>
 {% endblock %}

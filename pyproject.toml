@@ -12,6 +12,7 @@ dependencies = [
     "pdfminer.six>=20231228",
     "anthropic>=0.40",
     "sentence-transformers>=2.7",
+    "huey>=2.5",
 ]
 
 [tool.pytest.ini_options]
