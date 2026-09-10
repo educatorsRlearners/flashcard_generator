@@ -1,7 +1,7 @@
 import pytest
 from django.urls import reverse
 
-from submissions.models import Batch, SubmittedURL
+from submissions.models import Batch, BatchRequest, SubmittedURL
 
 pytestmark = pytest.mark.django_db
 
@@ -37,9 +37,11 @@ def test_multi_line_submission_saved_and_listed(client, url):
 
 
 def test_listing_back_persists(client, url):
-    SubmittedURL.objects.create(
-        url="https://persisted.example.com", batch=Batch.objects.create()
+    batch = Batch.objects.create()
+    submitted = SubmittedURL.objects.create(
+        url="https://persisted.example.com", batch=batch
     )
+    BatchRequest.objects.create(batch=batch, submitted_url=submitted)
     resp = client.get(url)
     assert "https://persisted.example.com" in resp.content.decode()
 

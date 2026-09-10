@@ -72,22 +72,20 @@ def _row(submitted_url, batch):
 
 
 def _batch_rows(batch):
-    rows = []
-    seen = set()
-    for request_row in batch.requests.select_related("submitted_url"):
-        submitted_url = request_row.submitted_url
-        seen.add(submitted_url.pk)
-        rows.append(_row(submitted_url, batch))
-    # URLs that originated in this batch but have no BatchRequest row yet
-    # (pre-#15 data that has not been through the backfill migration).
-    for submitted_url in batch.urls.all():
-        if submitted_url.pk not in seen:
-            rows.append(_row(submitted_url, batch))
-    return rows
+    # Since #15, BatchRequest is the sole source of truth for what a batch
+    # contains. The legacy SubmittedURL.batch origin FK is only an "originated
+    # here" marker and must never add or keep a row in a batch's listing
+    # (0005_backfill_batchrequest gave every pre-#15 URL a BatchRequest row).
+    return [
+        _row(request_row.submitted_url, batch)
+        for request_row in batch.requests.select_related("submitted_url")
+    ]
 
 
 def _batch_is_empty(batch):
-    return not batch.requests.exists() and not batch.urls.exists()
+    # Emptiness is defined solely by BatchRequest, matching _batch_rows and
+    # Batch.url_count. The origin FK does not keep an otherwise-empty batch alive.
+    return not batch.requests.exists()
 
 
 def batch_detail(request, pk):
@@ -105,7 +103,9 @@ def delete_url(request, batch_pk, url_pk):
     batch_request = BatchRequest.objects.filter(
         batch=batch, submitted_url=submitted_url
     ).first()
-    if batch_request is None and submitted_url.batch_id != batch.pk:
+    # Membership is defined solely by BatchRequest (#15). A URL whose only tie
+    # to this batch is the legacy origin FK is not "in" the batch.
+    if batch_request is None:
         raise Http404("URL is not part of this batch")
 
     came_from_home = request.POST.get("next") == "home"
@@ -116,11 +116,19 @@ def delete_url(request, batch_pk, url_pk):
         return redirect("submissions:batch_detail", pk=batch_pk)
 
     url_text = submitted_url.url
-    if batch_request is not None:
-        batch_request.delete()
+    batch_request.delete()
 
-    if not submitted_url.requests.exists():
+    remaining = list(submitted_url.requests.select_related("batch"))
+    if not remaining:
         submitted_url.delete()
+    elif submitted_url.batch_id == batch.pk:
+        # The URL is being removed from the batch it originated in but still
+        # lives in other batches. Repoint the origin marker to the oldest batch
+        # that still requests it so "originated_here" keeps pointing at a batch
+        # that actually contains the URL.
+        oldest = min(remaining, key=lambda r: (r.batch.created_at, r.batch_id))
+        submitted_url.batch = oldest.batch
+        submitted_url.save(update_fields=["batch"])
 
     batch_emptied = _batch_is_empty(batch)
     if batch_emptied:

@@ -160,6 +160,57 @@ def test_delete_from_multi_batch_only_removes_that_request(client):
     assert SubmittedURL.objects.filter(pk=shared.pk).exists()
 
 
+def test_delete_multi_batch_url_from_origin_batch(client):
+    home = reverse("submissions:home")
+    client.post(home, {"urls": "https://example.com/shared"}, follow=True)
+    batch1 = Batch.objects.get()
+    client.post(home, {"urls": "https://example.com/shared"}, follow=True)
+    batch2 = Batch.objects.exclude(pk=batch1.pk).get()
+
+    shared = SubmittedURL.objects.get(url="https://example.com/shared")
+    assert shared.batch_id == batch1.pk  # originated in batch1
+
+    # delete from batch1, the ORIGIN batch
+    resp = client.post(_delete_url(batch1, shared))
+
+    shared.refresh_from_db()
+    # request for batch1 gone, batch2's untouched
+    assert shared.requests.count() == 1
+    assert shared.requests.get().batch_id == batch2.pk
+    # origin marker repointed to a batch that still contains the URL
+    assert shared.batch_id == batch2.pk
+    # batch1 is now empty -> deleted; batch2 unaffected
+    assert not Batch.objects.filter(pk=batch1.pk).exists()
+    assert Batch.objects.filter(pk=batch2.pk).exists()
+    assert resp.url == reverse("submissions:home")
+
+    # row does not reappear on batch1 (404 now) and batch2 still shows it
+    assert client.get(
+        reverse("submissions:batch_detail", args=[batch1.pk])
+    ).status_code == 404
+    detail2 = client.get(
+        reverse("submissions:batch_detail", args=[batch2.pk])
+    ).content.decode()
+    assert "https://example.com/shared" in detail2
+
+
+def test_url_count_matches_rendered_rows_after_delete(client):
+    batch = Batch.objects.create()
+    a = _make_url("https://example.com/a", batch)
+    _make_url("https://example.com/b", batch)
+    _make_url("https://example.com/c", batch)
+
+    client.post(_delete_url(batch, a))
+
+    batch.refresh_from_db()
+    detail = client.get(
+        reverse("submissions:batch_detail", args=[batch.pk])
+    ).content.decode()
+    url_list = detail.split('<ul class="url-list">')[1].split("</ul>")[0]
+    rendered_rows = url_list.count("<li")
+    assert rendered_rows == batch.url_count == 2
+
+
 def test_delete_control_rendered_on_both_pages(client):
     home = reverse("submissions:home")
     client.post(home, {"urls": "https://example.com/x"}, follow=True)
