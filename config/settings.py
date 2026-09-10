@@ -120,3 +120,13 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-5")
 LLM_API_KEY_ENV_VAR = os.environ.get("LLM_API_KEY_ENV_VAR", "ANTHROPIC_API_KEY")
 # Default output-token ceiling when a caller does not pass max_tokens.
 LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "4096"))
+
+# --- Anki sync (submissions/anki.py, issue #11) -------------------------
+# The single deck accepted cards are pushed into, and the base URL of the
+# AnkiConnect add-on's local HTTP server. Both are configuration: point at a
+# different deck or a remote AnkiConnect with an env var, no code edit.
+ANKI_DECK_NAME = os.environ.get("ANKI_DECK_NAME", "Flashcard Generator")
+ANKI_CONNECT_URL = os.environ.get("ANKI_CONNECT_URL", "http://127.0.0.1:8765")
+# Seconds to wait on any single AnkiConnect HTTP call before treating Anki
+# as unreachable.
+ANKI_CONNECT_TIMEOUT = float(os.environ.get("ANKI_CONNECT_TIMEOUT", "10"))

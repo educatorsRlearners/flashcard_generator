@@ -302,6 +302,44 @@ few-shot section to the generation system prompt, built from stored
 - Zero feedback -> no section at all. Only-accepted or only-rejected
   feedback -> only that category's list is included; the other is omitted.
 
+## Push to Anki
+
+Accepted cards from the review grid are pushed into a single Anki deck over
+the [AnkiConnect](https://foosoft.net/projects/anki-connect/) HTTP API
+(standard library only, no extra dependency).
+
+**Anki must be running with the AnkiConnect add-on installed** and listening
+at `ANKI_CONNECT_URL` (default `http://127.0.0.1:8765`).
+
+```
+uv run python manage.py push_to_anki
+```
+
+- Sends only cards with `review_status == accepted` that have not been synced
+  yet. Other states are ignored.
+- Creates the deck (AnkiConnect `createDeck`) if it does not exist.
+- `basic` cards → the "Basic" note type, `cloze` cards → "Cloze".
+- Every note is tagged with its source URL, ISO date added, and topic.
+- On success a card records `anki_note_id` + `synced_at`, so re-running adds
+  zero new notes for already-synced cards.
+- If Anki is unreachable the command aborts with a message naming the problem
+  and the configured URL; nothing is marked synced. A per-note AnkiConnect
+  error (bad note type, etc.) fails just that card; an Anki duplicate is
+  reported as skipped-duplicate. The command prints counts of
+  added / skipped / failed with reasons.
+
+Settings (`config/settings.py`, each also an env var of the same name):
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `ANKI_DECK_NAME` | `Flashcard Generator` | the single deck cards are pushed into |
+| `ANKI_CONNECT_URL` | `http://127.0.0.1:8765` | AnkiConnect base URL |
+| `ANKI_CONNECT_TIMEOUT` | `10` | seconds before Anki is treated as unreachable |
+
+The AnkiConnect transport lives in `submissions/anki.py`
+(`AnkiConnectClient`), behind which `push_accepted_cards()` does the
+orchestration; both are fakeable in tests without a live Anki.
+
 ## LLM client
 
 `submissions/llm.py` is a thin, provider-agnostic client for text
