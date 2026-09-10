@@ -290,6 +290,14 @@ class Card(models.Model):
     #: allowed; cleared whenever the card is (re-)accepted.
     rejection_reason = models.TextField(blank=True, default="")
 
+    # --- Anki sync fields (issue #11) -----------------------------
+    #: AnkiConnect note id returned when this card was pushed to Anki. Null
+    #: until the card has been synced.
+    anki_note_id = models.BigIntegerField(null=True, blank=True)
+    #: When this card was successfully pushed to Anki. Null => not synced;
+    #: a non-null value makes ``push_to_anki`` skip the card on a re-run.
+    synced_at = models.DateTimeField(null=True, blank=True)
+
     objects = CardQuerySet.as_manager()
 
     class Meta:

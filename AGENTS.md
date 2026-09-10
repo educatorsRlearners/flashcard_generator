@@ -5,6 +5,10 @@ Commands
 - `uv run pytest tests/test_home.py` - one test file
 - `uv run python manage.py run_huey` - background task consumer for batch
   processing (run alongside `runserver`); tests use Huey immediate mode
+- `uv run python manage.py push_to_anki` - push accepted cards to Anki via
+  AnkiConnect (idempotent). Requires Anki running with the AnkiConnect
+  add-on. Settings: `ANKI_DECK_NAME` (default "Flashcard Generator"),
+  `ANKI_CONNECT_URL` (default http://127.0.0.1:8765)
 
 Rules
 
