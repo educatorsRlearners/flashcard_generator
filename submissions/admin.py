@@ -12,8 +12,8 @@ class SubmittedURLInline(admin.TabularInline):
 
 class CardInline(admin.TabularInline):
     model = Card
-    fields = ("note_type", "source_term", "front", "back", "created_at")
-    readonly_fields = ("created_at",)
+    fields = ("note_type", "source_term", "front", "back", "image_source", "created_at")
+    readonly_fields = ("created_at", "image_source")
     extra = 0
     show_change_link = True
 
@@ -76,10 +76,11 @@ class CardAdmin(admin.ModelAdmin):
         "dedup_status",
         "duplicate_of",
         "similarity_score",
+        "image_source",
         "created_at",
     )
-    list_filter = ("note_type", "batch", "dedup_status")
+    list_filter = ("note_type", "batch", "dedup_status", "image_source")
     search_fields = ("source_term", "front", "back", "submitted_url__url")
-    readonly_fields = ("created_at", "similarity_score", "embedding")
+    readonly_fields = ("created_at", "similarity_score", "embedding", "image_source")
     list_select_related = ("submitted_url", "batch", "duplicate_of")
     raw_id_fields = ("duplicate_of",)

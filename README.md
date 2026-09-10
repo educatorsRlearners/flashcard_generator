@@ -32,6 +32,15 @@ uv run python -c "from sentence_transformers import SentenceTransformer; Sentenc
 
 CI / test runs do not need the weights: the tests stub the encoder.
 
+Per-card images (see *Card images* below) use `pillow` (image inspection /
+storage) and `httpx` (image downloads + the Draw Things HTTP call). Both
+are installed by `uv sync`. Generating fallback images additionally
+assumes a running **Draw Things** with its HTTP API server enabled
+(Draw Things → Settings → API Server); installing Draw Things and picking
+a model/checkpoint is out of scope. If Draw Things is not running the card
+is simply produced with no image — nothing aborts. Tests stub every
+network call and need neither Draw Things nor internet.
+
 ## Run
 
 ```
@@ -218,6 +227,50 @@ command exits non-zero and tells you to run the one-time download above
 (post-generation dedup instead logs a warning and is skipped). `dedup_status`,
 `duplicate_of` and `similarity_score` are shown and filterable in the Django
 admin.
+
+## Card images
+
+As the final step of `generate_cards`, each new `Card` gets **at most one**
+image (`submissions/images.py`):
+
+1. **Source page first.** The card's source page is re-fetched (reusing the
+   extraction fetch stack — politeness, size cap, retries) and its `<img>`
+   tags are scanned for a *usable* image.
+2. **Draw Things fallback.** If no source image is usable, one image is
+   requested from a local Draw Things over its Automatic1111-compatible
+   `/sdapi/v1/txt2img` endpoint, with a prompt built from the card's own
+   term / topic.
+3. **No image.** If neither yields anything the card is still produced,
+   with `image_source = none`. Image work never raises, never aborts the
+   batch, and is bounded by a per-image timeout (`IMAGE_FETCH_TIMEOUT`)
+   and a Draw Things timeout (`DRAW_THINGS_TIMEOUT`).
+
+**"Usable image" rules** (named constants at the top of
+`submissions/images.py`, applied consistently): minimum 200×200 px,
+minimum 1 KB encoded, raster type only (`jpeg`/`png`/`webp`/`gif`, no
+SVG), under an 8 MB cap; URLs containing chrome/tracking markers
+(`favicon`, `sprite`, `spacer`, `pixel`, `1x1`, `logo`, `icon`, `avatar`,
+`tracking`, `beacon`, ad paths, …) and `data:` URIs are excluded before
+download. If a chosen candidate fails to fetch (404, timeout, non-image,
+blocked) the next candidate is tried, then Draw Things.
+
+**Placement.** The image side follows the note type and is exposed as
+`Card.image_placement`: `cloze` → `"question"` (shown on the question
+side), `basic` → `"answer"` (shown on the answer side). The #9 review grid
+reads this rule.
+
+Images are stored under `MEDIA_ROOT` (`media/`, git-ignored) in `cards/`,
+and the card records the file plus `image_source` (`source_page` /
+`draw_things` / `none`), both visible in the Django admin.
+
+**Settings** (each falls back to an environment variable of the same name):
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `DRAW_THINGS_URL` | `http://127.0.0.1:7860` | Base URL of the local Draw Things HTTP API |
+| `DRAW_THINGS_ENABLED` | `1` | Set to `0` to skip fallback generation entirely |
+| `MEDIA_ROOT` | `media/` | Where card images are written |
+| `MEDIA_URL` | `media/` | URL prefix for stored images |
 
 ## LLM client
 

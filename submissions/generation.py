@@ -46,7 +46,7 @@ from typing import Any, Optional
 from django.db import transaction
 from django.utils import timezone
 
-from submissions import dedup, llm
+from submissions import dedup, images, llm
 from submissions.models import Card, SubmittedURL
 
 logger = logging.getLogger(__name__)
@@ -321,6 +321,14 @@ def generate_for(
         )
     except Exception:  # noqa: BLE001 - dedup is best-effort here
         logger.exception("post-generation dedup failed for %s", submitted_url.url)
+
+    # Per-card images (#12): source-page image first, Draw Things fallback,
+    # otherwise no image. Best-effort - image trouble (unreachable Draw
+    # Things, a failed fetch) never fails or aborts card generation.
+    try:
+        images.attach_images(submitted_url, cards)
+    except Exception:  # noqa: BLE001 - images are strictly best-effort
+        logger.exception("image attachment failed for %s", submitted_url.url)
 
     counts = {
         Card.NoteType.BASIC.value: sum(

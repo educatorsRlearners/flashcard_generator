@@ -45,3 +45,18 @@ def _huey_immediate(monkeypatch):
     monkeypatch.setattr(tasks, "run_extraction", lambda submitted_url: None)
     yield
     HUEY.immediate = False
+
+
+@pytest.fixture(autouse=True)
+def _no_card_images(monkeypatch):
+    """Neutralise per-card image work (issue #12) for the whole suite.
+
+    Card generation calls ``submissions.images.attach_images`` as a
+    best-effort final step; that would re-fetch the source page and call
+    Draw Things. Stub it to a no-op so the wider suite stays offline.
+    ``tests/test_card_images.py`` exercises the real module with fakes.
+    """
+    from submissions import images
+
+    monkeypatch.setattr(images, "attach_images", lambda *a, **kw: None)
+    yield

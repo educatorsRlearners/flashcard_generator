@@ -266,6 +266,29 @@ class Card(models.Model):
     #: means "not embedded yet".
     embedding = models.JSONField(default=list, blank=True)
 
+    # --- Per-card image fields (issue #12) ---------------------------
+    class ImageSource(models.TextChoices):
+        """Where :attr:`Card.image` came from.
+
+        ``none`` (the default) means the card has no image - a card is
+        never left in an error state because image work failed.
+        """
+
+        SOURCE_PAGE = "source_page", "Source page"
+        DRAW_THINGS = "draw_things", "Draw Things"
+        NONE = "none", "None"
+
+    #: At most one image per card, saved under ``MEDIA_ROOT/cards/``.
+    #: Blank when no usable source-page image was found and Draw Things
+    #: produced nothing. Populated by :mod:`submissions.images`.
+    image = models.ImageField(upload_to="cards/", blank=True)
+    #: Provenance of :attr:`image`; ``none`` when the card has no image.
+    image_source = models.CharField(
+        max_length=16,
+        choices=ImageSource.choices,
+        default=ImageSource.NONE,
+    )
+
     objects = CardQuerySet.as_manager()
 
     class Meta:
@@ -273,6 +296,21 @@ class Card(models.Model):
 
     def __str__(self):
         return f"[{self.note_type}] {self.source_term}"
+
+    @property
+    def image_placement(self) -> str:
+        """Which side of the card the image is shown on in the #9 review
+        grid, derived from ``note_type``:
+
+        * ``cloze`` -> ``"question"`` (visible on the question side)
+        * ``basic`` -> ``"answer"`` (visible on the answer side)
+
+        #9's grid reads this rule; #12 only stores enough (``note_type``
+        plus ``image`` / ``image_source``) for it to apply the rule.
+        """
+        if self.note_type == self.NoteType.CLOZE:
+            return "question"
+        return "answer"
 
 
 class BatchRequest(models.Model):

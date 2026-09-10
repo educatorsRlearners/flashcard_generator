@@ -13,6 +13,8 @@ dependencies = [
     "anthropic>=0.40",
     "sentence-transformers>=2.7",
     "huey>=2.5",
+    "pillow>=10.0",
+    "httpx>=0.27",
 ]
 
 [tool.pytest.ini_options]

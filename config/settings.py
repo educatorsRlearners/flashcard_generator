@@ -66,7 +66,23 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 
+# --- Media files (issue #12: per-card images) --------------------------
+# Card images (source-page or Draw Things) are stored on disk here.
+MEDIA_URL = "media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# --- Draw Things fallback image generation (issue #12) -----------------
+# When a generated card has no usable source-page image, an image is
+# requested from a locally running Draw Things via its HTTP API
+# (Automatic1111-compatible ``/sdapi/v1/txt2img``). This task assumes
+# Draw Things is already installed and its API server is enabled
+# (Draw Things -> Settings -> API Server); standing it up is out of scope.
+# If it is unreachable / disabled the card is simply produced with no
+# image - batch generation never aborts.
+DRAW_THINGS_URL = os.environ.get("DRAW_THINGS_URL", "http://127.0.0.1:7860")
+DRAW_THINGS_ENABLED = os.environ.get("DRAW_THINGS_ENABLED", "1") == "1"
 
 # --- Background batch processing (Huey, issue #8) -----------------------
 # One task per submitted URL runs the extraction path in a background
