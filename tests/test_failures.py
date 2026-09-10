@@ -147,7 +147,8 @@ def test_batch_detail_shows_failure_kind_and_reason(client, monkeypatch, batch):
     assert resp.status_code == 200
     assert row.get_failure_kind_display() in body
     assert "HTTP 403 (access refused)" in body
-    assert "1 failed: 1 blocked" in body
+    # By-kind breakdown uses human-readable labels, never raw enum values.
+    assert "1 failed: 1 blocked / rate-limited" in body
 
 
 def test_batch_detail_renders_when_all_failed_and_when_empty(client):
@@ -168,6 +169,28 @@ def test_batch_detail_renders_when_all_failed_and_when_empty(client):
     )
     assert resp.status_code == 200
     assert "1 failed: 1 timeout" in resp.content.decode()
+
+
+def test_failure_kind_summary_uses_human_labels_not_raw_enum(client):
+    batch = Batch.objects.create()
+    kinds = (Kind.HTTP_CLIENT, Kind.HTTP_CLIENT, Kind.NO_CONTENT, Kind.TOO_LARGE)
+    for i, kind in enumerate(kinds):
+        _url(
+            batch,
+            f"https://x{i}.example.com/",
+            status=SubmittedURL.Status.FAILED,
+            failure_kind=kind,
+        )
+
+    summary = batch.failure_kind_summary
+    assert summary == (
+        "4 failed: 2 client error (4xx), "
+        "1 no extractable content, 1 response too large"
+    )
+    # No raw TextChoices values leak into the user-facing sentence.
+    for raw in ("http_client", "no_content", "too_large"):
+        assert raw not in summary
+    assert "_" not in summary
 
 
 def test_previously_failed_row_that_now_succeeds_is_cleared(monkeypatch, batch):

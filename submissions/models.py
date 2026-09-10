@@ -36,7 +36,7 @@ class Batch(models.Model):
             return ""
         total = sum(counts.values())
         parts = ", ".join(
-            f"{n} {kind}"
+            f"{n} {SubmittedURL.short_failure_label(kind)}"
             for kind, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
         )
         return f"{total} failed: {parts}"
@@ -114,6 +114,33 @@ class SubmittedURL(models.Model):
         default=ExtractionMethod.NONE,
     )
     extracted_at = models.DateTimeField(null=True, blank=True)
+
+    #: Short human-readable forms of ``FailureKind`` for use in running
+    #: prose (e.g. the batch by-kind breakdown). The full ``.label`` values
+    #: are used verbatim for per-row display via ``get_failure_kind_display``.
+    SHORT_FAILURE_LABELS = {
+        FailureKind.DNS: "host not found",
+        FailureKind.CONNECTION: "connection failed",
+        FailureKind.HTTP_CLIENT: "client error (4xx)",
+        FailureKind.BLOCKED: "blocked / rate-limited",
+        FailureKind.TIMEOUT: "timeout",
+        FailureKind.TOO_LARGE: "response too large",
+        FailureKind.UNSUPPORTED_TYPE: "unsupported content type",
+        FailureKind.NO_CONTENT: "no extractable content",
+        FailureKind.UNKNOWN: "unknown",
+    }
+
+    @classmethod
+    def short_failure_label(cls, kind):
+        """Human-readable short label for a ``FailureKind`` value."""
+        if not kind:
+            kind = cls.FailureKind.UNKNOWN
+        try:
+            return cls.SHORT_FAILURE_LABELS.get(
+                cls.FailureKind(kind), cls.FailureKind(kind).label
+            )
+        except ValueError:
+            return str(kind)
 
     class Meta:
         ordering = ["-created_at", "-id"]
