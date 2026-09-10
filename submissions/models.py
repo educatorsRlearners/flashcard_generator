@@ -13,13 +13,14 @@ class Batch(models.Model):
     @property
     def status_counts(self):
         counts = {choice: 0 for choice in SubmittedURL.Status.values}
-        for url in self.urls.all():
-            counts[url.status] = counts.get(url.status, 0) + 1
+        for request in self.requests.select_related("submitted_url"):
+            status = request.submitted_url.status
+            counts[status] = counts.get(status, 0) + 1
         return counts
 
     @property
     def url_count(self):
-        return self.urls.count()
+        return self.requests.count()
 
     @property
     def overall_status(self):
@@ -72,3 +73,26 @@ class SubmittedURL(models.Model):
 
     def __str__(self):
         return self.url
+
+
+class BatchRequest(models.Model):
+    """Records that a batch requested a given URL.
+
+    Acts as a through-model between Batch and SubmittedURL so a URL that is
+    re-submitted in a later batch is tracked for every batch that asked for it.
+    """
+
+    batch = models.ForeignKey(
+        Batch, on_delete=models.CASCADE, related_name="requests"
+    )
+    submitted_url = models.ForeignKey(
+        SubmittedURL, on_delete=models.CASCADE, related_name="requests"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("batch", "submitted_url")
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self):
+        return f"Batch {self.batch_id} -> {self.submitted_url_id}"
