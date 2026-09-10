@@ -7,7 +7,7 @@ from django.views.decorators.http import require_POST
 from django.utils import timezone
 
 from .forms import URLSubmissionForm
-from .models import Batch, BatchRequest, Card, SubmittedURL
+from .models import Batch, BatchRequest, Card, Feedback, SubmittedURL
 from .tasks import enqueue_batch
 
 
@@ -314,6 +314,19 @@ def card_review_decision(request, batch_pk, card_pk):
         # Accept / undecided never carry a reason.
         card.rejection_reason = ""
     card.save(update_fields=["review_status", "rejection_reason"])
+
+    # issue #10: persist a durable, batch-deletion-proof snapshot of the
+    # decision. Only accept / reject are recorded (undecided is not feedback).
+    if decision in (Card.ReviewStatus.ACCEPTED, Card.ReviewStatus.REJECTED):
+        tags = card.tags if isinstance(card.tags, dict) else {}
+        Feedback.objects.create(
+            note_type=card.note_type,
+            front=card.front,
+            back=card.back,
+            source_url=tags.get("source_url", "") or "",
+            decision=decision,
+            reason=card.rejection_reason,
+        )
 
     payload = {
         "card_id": card.pk,

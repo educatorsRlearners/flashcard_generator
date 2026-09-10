@@ -272,6 +272,36 @@ and the card records the file plus `image_source` (`source_page` /
 | `MEDIA_ROOT` | `media/` | Where card images are written |
 | `MEDIA_URL` | `media/` | URL prefix for stored images |
 
+## Review feedback (durable) + few-shot injection
+
+Every time a card is accepted or rejected in the review grid, a `Feedback`
+row is written (`submissions/models.py`). It is a **snapshot**: the card
+front/back (or cloze text), note type, source URL, the decision, the
+optional rejection reason, and a timestamp are copied in as plain values.
+`Feedback` has no foreign key to `Card`, `SubmittedURL` or `Batch`, so
+deleting a batch and its cards never removes the feedback history. The rows
+are read-only in the Django admin (`Feedback`, filterable by decision and
+note type); a raw query works too, e.g.
+`sqlite3 db.sqlite3 "select decision, reason, front from submissions_feedback"`.
+
+When a new batch generates cards, `submissions/generation.py` prepends a
+few-shot section to the generation system prompt, built from stored
+`Feedback`:
+
+- The most recent `FEWSHOT_EXAMPLES_PER_CATEGORY` accepted rows and,
+  separately, the most recent `FEWSHOT_EXAMPLES_PER_CATEGORY` rejected rows
+  (named constant in `submissions/generation.py`, currently 3) - so the
+  section is capped at `2 x FEWSHOT_EXAMPLES_PER_CATEGORY` examples however
+  much feedback accumulates.
+- Selection is "most recent N per category" by timestamp; within the prompt
+  the examples are ordered oldest-first, so the assembled prompt string is
+  deterministic for the same stored data.
+- Each example shows the card; rejected examples also show the reason, or
+  `(no reason given)` when the rejection had none (reason-less rejections
+  are still used).
+- Zero feedback -> no section at all. Only-accepted or only-rejected
+  feedback -> only that category's list is included; the other is omitted.
+
 ## LLM client
 
 `submissions/llm.py` is a thin, provider-agnostic client for text

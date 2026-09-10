@@ -358,3 +358,40 @@ class BatchRequest(models.Model):
 
     def __str__(self):
         return f"Batch {self.batch_id} -> {self.submitted_url_id}"
+
+
+# --- Durable review feedback (issue #10) ------------------------------
+
+
+class Feedback(models.Model):
+    """A durable snapshot of one accept/reject review decision (issue #10).
+
+    Written whenever a reviewer accepts or rejects a ``Card`` (see
+    ``card_review_decision``). It intentionally holds **no** foreign key to
+    ``Card``, ``SubmittedURL`` or ``Batch``: the card content is copied in as
+    plain text so deleting a batch (and its cards / URLs) never removes the
+    feedback history. Consumed as few-shot examples by
+    ``submissions.generation``.
+    """
+
+    class Decision(models.TextChoices):
+        ACCEPTED = "accepted", "Accepted"
+        REJECTED = "rejected", "Rejected"
+
+    note_type = models.CharField(max_length=8, choices=Card.NoteType.choices)
+    #: Card front snapshot (question / term, or cloze sentence).
+    front = models.TextField()
+    #: Card back snapshot (may be blank, e.g. for cloze cards).
+    back = models.TextField(blank=True, default="")
+    #: Source URL snapshot (from ``Card.tags['source_url']``); blank if unknown.
+    source_url = models.URLField(max_length=2000, blank=True, default="")
+    decision = models.CharField(max_length=16, choices=Decision.choices)
+    #: Optional rejection reason snapshot; always blank for an acceptance.
+    reason = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self):
+        return f"{self.decision} [{self.note_type}] {self.front[:50]}"

@@ -47,7 +47,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from submissions import dedup, images, llm
-from submissions.models import Card, SubmittedURL
+from submissions.models import Card, Feedback, SubmittedURL
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,15 @@ MAX_PROMPT_CHARS: int = 12_000
 
 #: Output-token ceiling for the generation call.
 GENERATION_MAX_TOKENS: int = 4_096
+
+#: Few-shot cap (issue #10). The generation prompt embeds at most this many
+#: most-recent *accepted* ``Feedback`` rows and, separately, at most this many
+#: most-recent *rejected* rows - so the few-shot section never grows past
+#: ``2 * FEWSHOT_EXAMPLES_PER_CATEGORY`` examples no matter how much feedback
+#: accumulates. Selection is "most recent N per category" by timestamp;
+#: within the section the examples are ordered oldest-first for a stable,
+#: deterministic prompt string.
+FEWSHOT_EXAMPLES_PER_CATEGORY: int = 3
 
 #: Skip / failure reason strings (also asserted by the tests).
 INSUFFICIENT_CONTENT = "insufficient content for generation"
@@ -130,6 +139,65 @@ CARD_LIST_SCHEMA: dict = {
     },
     "required": ["cards"],
 }
+
+
+# --- Few-shot section from stored feedback (issue #10) -----------------
+
+
+def _format_feedback_example(fb: Feedback) -> str:
+    lines = [f"- note_type: {fb.note_type}", f"  front: {fb.front}"]
+    if fb.back:
+        lines.append(f"  back: {fb.back}")
+    if fb.decision == Feedback.Decision.REJECTED:
+        lines.append(f"  reason: {fb.reason.strip() or '(no reason given)'}")
+    return "\n".join(lines)
+
+
+def _recent_feedback(decision: str) -> list[Feedback]:
+    """Most-recent ``FEWSHOT_EXAMPLES_PER_CATEGORY`` rows for *decision*,
+    returned oldest-first so the prompt string is deterministic."""
+    recent = list(
+        Feedback.objects.filter(decision=decision).order_by("-created_at", "-id")[
+            :FEWSHOT_EXAMPLES_PER_CATEGORY
+        ]
+    )
+    recent.reverse()
+    return recent
+
+
+def build_fewshot_section() -> str:
+    """Build the few-shot block injected into the generation system prompt.
+
+    Returns ``""`` when no feedback exists (criterion: zero feedback -> no
+    section, no error). Includes an "Accepted examples" list when any
+    acceptance exists and a "Rejected examples" list when any rejection
+    exists; whichever category is empty is simply omitted.
+    """
+    accepted = _recent_feedback(Feedback.Decision.ACCEPTED)
+    rejected = _recent_feedback(Feedback.Decision.REJECTED)
+    if not accepted and not rejected:
+        return ""
+
+    out = [
+        "",
+        "Reviewer feedback on previously generated cards. Produce more cards "
+        "like the accepted examples and avoid the problems in the rejected "
+        "examples.",
+    ]
+    if accepted:
+        out.append("")
+        out.append("Accepted examples:")
+        out.extend(_format_feedback_example(fb) for fb in accepted)
+    if rejected:
+        out.append("")
+        out.append("Rejected examples:")
+        out.extend(_format_feedback_example(fb) for fb in rejected)
+    return "\n".join(out) + "\n"
+
+
+def build_system_prompt() -> str:
+    """``SYSTEM_PROMPT`` plus the feedback few-shot section, if any."""
+    return SYSTEM_PROMPT + build_fewshot_section()
 
 
 # --- Result type ----------------------------------------------------
@@ -196,7 +264,7 @@ def _call_llm(submitted_url: SubmittedURL) -> list[dict]:
     )
     try:
         result = llm.generate(
-            system=SYSTEM_PROMPT,
+            system=build_system_prompt(),
             prompt=prompt,
             response_format=CARD_LIST_SCHEMA,
             max_tokens=GENERATION_MAX_TOKENS,

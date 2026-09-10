@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Batch, Card, SubmittedURL
+from .models import Batch, Card, Feedback, SubmittedURL
 
 
 class SubmittedURLInline(admin.TabularInline):
@@ -84,3 +84,23 @@ class CardAdmin(admin.ModelAdmin):
     readonly_fields = ("created_at", "similarity_score", "embedding", "image_source")
     list_select_related = ("submitted_url", "batch", "duplicate_of")
     raw_id_fields = ("duplicate_of",)
+
+
+@admin.register(Feedback)
+class FeedbackAdmin(admin.ModelAdmin):
+    """Durable review-decision history (issue #10). Read-only: rows are
+    written by the review grid and are never edited here."""
+
+    list_display = ("decision", "note_type", "source_url", "front", "created_at")
+    list_filter = ("decision", "note_type")
+    search_fields = ("front", "back", "reason", "source_url")
+    ordering = ("-created_at",)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
