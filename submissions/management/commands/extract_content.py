@@ -37,10 +37,19 @@ class Command(BaseCommand):
             action="store_true",
             help="Re-extract rows whose extraction_method is not 'none'.",
         )
+        parser.add_argument(
+            "--ignore-robots",
+            action="store_true",
+            help=(
+                "Skip the robots.txt check before fetching (local testing "
+                "only). Per-domain rate limiting and retry/backoff still apply."
+            ),
+        )
 
     def handle(self, *args, **options):
         queryset = self._select(options)
         force = options["force"]
+        ignore_robots = options["ignore_robots"]
         single = options["url"] or options["id"]
 
         for submitted_url in queryset:
@@ -56,7 +65,9 @@ class Command(BaseCommand):
                 continue
 
             try:
-                result = extract(submitted_url, force=force)
+                result = extract(
+                    submitted_url, force=force, ignore_robots=ignore_robots
+                )
             except Exception as exc:  # never raise on a single bad URL
                 submitted_url.status = SubmittedURL.Status.FAILED
                 submitted_url.failure_kind = SubmittedURL.FailureKind.UNKNOWN

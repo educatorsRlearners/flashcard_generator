@@ -77,14 +77,15 @@ class SubmittedURL(models.Model):
     class FailureKind(models.TextChoices):
         """Machine-readable category for a failed extraction.
 
-        The blank default ("") means "not failed". #17 will add
-        ``blocked_by_robots`` and ``retries_exhausted`` here.
+        The blank default ("") means "not failed".
         """
 
         DNS = "dns", "DNS - host not found"
         CONNECTION = "connection", "Connection failed"
         HTTP_CLIENT = "http_client", "HTTP client error (4xx)"
         BLOCKED = "blocked", "Blocked / rate-limited (401/403/429)"
+        BLOCKED_BY_ROBOTS = "blocked_by_robots", "Disallowed by robots.txt"
+        RETRIES_EXHAUSTED = "retries_exhausted", "Retries exhausted"
         TIMEOUT = "timeout", "Timed out"
         TOO_LARGE = "too_large", "Response too large"
         UNSUPPORTED_TYPE = "unsupported_type", "Unsupported content type"
@@ -124,6 +125,8 @@ class SubmittedURL(models.Model):
         FailureKind.CONNECTION: "connection failed",
         FailureKind.HTTP_CLIENT: "client error (4xx)",
         FailureKind.BLOCKED: "blocked / rate-limited",
+        FailureKind.BLOCKED_BY_ROBOTS: "disallowed by robots.txt",
+        FailureKind.RETRIES_EXHAUSTED: "retries exhausted",
         FailureKind.TIMEOUT: "timeout",
         FailureKind.TOO_LARGE: "response too large",
         FailureKind.UNSUPPORTED_TYPE: "unsupported content type",

@@ -41,6 +41,7 @@ uv run python manage.py extract_content --url https://example.com/article
 uv run python manage.py extract_content --batch 1
 uv run python manage.py extract_content            # all rows not yet extracted
 uv run python manage.py extract_content --batch 1 --force   # re-extract
+uv run python manage.py extract_content --url ... --ignore-robots  # skip robots.txt (local only)
 ```
 
 The static path (`trafilatura`) is tried first; the browser fallback runs
@@ -57,13 +58,46 @@ images is a separate follow-up (issue #19) and is not done here. Other
 non-HTML types (`image/png`, `application/zip`, `text/csv`, legacy `.doc`,
 …) still fail with `unsupported_type`.
 
+### Fetch politeness
+
+Every fetch on the extraction path (static, document, and browser fallback)
+is polite:
+
+- **robots.txt** — before fetching a URL the host's
+  `https://<host>/robots.txt` is retrieved (stdlib `urllib.robotparser`),
+  parsed, and cached per host for an hour. A URL disallowed for our
+  User-Agent is not fetched and fails with
+  `failure_kind = blocked_by_robots` / `failure_reason = "disallowed by
+  robots.txt"`. A missing, empty, or unreachable `robots.txt` is treated as
+  "allow all" (fail open) and never fails the URL itself. Pass
+  `--ignore-robots` to skip this check for local testing.
+- **Per-domain rate limiting** — consecutive fetches to the same registrable
+  domain (eTLD+1; a naive last-two-labels match for now) are spaced by at
+  least 1 second, or by the domain's `robots.txt` `Crawl-delay` if larger.
+  Fetches to different domains are not delayed relative to each other. This
+  makes `extract_content` over a batch **noticeably slower** — that is the
+  intended trade-off.
+- **Retry with backoff** — a fetch that times out, hits a connection error,
+  or returns HTTP 429 / 5xx is retried up to 3 times with exponential
+  backoff (`min(30s, 1s * 2**attempt)` plus jitter), honouring a
+  `Retry-After` header (seconds or HTTP-date form, capped at 30s) when the
+  server sends one. If every attempt fails the URL ends
+  `failure_kind = retries_exhausted` with the underlying cause in the
+  reason. DNS failures, HTTP 400/401/403/404/410, unsupported content types
+  and oversized bodies are **not** retried.
+
+All of this is in-process for the synchronous command; sharing the cache and
+the rate-limit clock across workers is part of background batch processing
+(issue #8).
+
 ### Failures
 
 A URL that cannot be extracted ends `status = failed` with two fields: a
 machine-readable `failure_kind` (`dns`, `connection`, `http_client`,
-`blocked`, `timeout`, `too_large`, `unsupported_type`, `no_content`,
-`unknown`) and a one-line `failure_reason` with the specific detail (e.g.
-`HTTP 429 (rate limited)`). A bad URL never stops the run: the command skips
+`blocked`, `blocked_by_robots`, `retries_exhausted`, `timeout`, `too_large`,
+`unsupported_type`, `no_content`, `unknown`) and a one-line `failure_reason`
+with the specific detail (e.g. `HTTP 429 (rate limited)`). A bad URL never
+stops the run: the command skips
 it, moves to the next URL, and still exits 0. The batch detail page and the
 Django admin show the kind and reason per URL, and the batch page shows a
 by-kind breakdown (e.g. `3 failed: 2 blocked, 1 timeout`). On a re-run that

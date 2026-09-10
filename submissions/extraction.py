@@ -14,15 +14,20 @@ Nothing here talks to an LLM, generates cards, or does batch orchestration.
 from __future__ import annotations
 
 import io
+import random
 import re
 import socket
+import time
 import urllib.error
 import urllib.request
+import urllib.robotparser
 import xml.etree.ElementTree as ET
 import zipfile
 from collections import Counter
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from datetime import datetime, timezone as _dt_timezone
+from email.utils import parsedate_to_datetime
+from urllib.parse import urlsplit, urlunsplit
 
 import trafilatura
 from django.utils import timezone
@@ -55,6 +60,288 @@ _DOCX_MAIN_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _DC_NS = "http://purl.org/dc/elements/1.1/"
 
 _USER_AGENT = "flashcard-generator/0.1 (+content extraction)"
+
+# --- Fetch politeness: robots.txt, per-domain rate limiting, retry/backoff --
+#
+# All state below is in-process only: it lives for the duration of a single
+# ``extract_content`` run. Sharing the robots cache / rate-limit clock across
+# worker processes is #8's job (background batch processing), not this one.
+
+#: How long a parsed ``robots.txt`` is trusted before it is re-fetched (seconds).
+ROBOTS_CACHE_TTL = 3600
+#: Minimum spacing between two fetches to the same registrable domain (seconds).
+#: A ``Crawl-delay`` in ``robots.txt`` raises this for that domain when larger.
+PER_DOMAIN_MIN_INTERVAL = 1.0
+#: How many times a transient fetch failure is retried before giving up.
+MAX_RETRIES = 3
+#: Base delay for exponential backoff: ``RETRY_BASE_DELAY * 2 ** attempt`` (s).
+RETRY_BASE_DELAY = 1.0
+#: Upper bound on any single backoff / ``Retry-After`` wait (seconds).
+RETRY_MAX_DELAY = 30.0
+
+
+# --- Injectable seam: the whole module sleeps / reads the clock / fetches
+#     robots.txt only through these three functions, so the test suite can
+#     replace them with a fake clock, a sleep spy, and canned robots bodies
+#     and run instantly and offline.
+
+
+def _now() -> float:
+    """Monotonic wall-clock reading used by the rate limiter and robots cache."""
+    return time.monotonic()
+
+
+def _sleep(seconds: float) -> None:
+    """Block for *seconds* (retry backoff and per-domain rate-limit waits)."""
+    if seconds and seconds > 0:
+        time.sleep(seconds)
+
+
+def _jitter(amount: float) -> float:
+    """Random jitter in ``[0, amount]`` added to a computed backoff delay."""
+    if amount <= 0:
+        return 0.0
+    return random.uniform(0.0, amount)
+
+
+def _fetch_robots_text(robots_url: str):
+    """Return the body of *robots_url* as text, or ``None``.
+
+    ``None`` means "treat as allow-all": a missing (404), empty, or
+    network-erroring ``robots.txt`` must never itself fail the target URL.
+    """
+    request = urllib.request.Request(
+        robots_url, headers={"User-Agent": _USER_AGENT}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=STATIC_TIMEOUT) as response:
+            status = getattr(response, "status", None) or getattr(
+                response, "code", None
+            )
+            try:
+                if status is not None and int(status) >= 400:
+                    return None
+            except (TypeError, ValueError):
+                pass
+            raw = response.read(MAX_BODY_BYTES)
+    except urllib.error.HTTPError:
+        return None
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return str(raw)
+
+
+#: host -> ``(fetched_at_monotonic, RobotFileParser)``
+_robots_cache: dict = {}
+#: registrable domain -> last fetch time (monotonic)
+_domain_last_fetch: dict = {}
+#: registrable domain -> minimum interval raised by a robots ``Crawl-delay``
+_domain_min_interval: dict = {}
+
+
+def _reset_politeness_state() -> None:
+    """Drop all in-process robots / rate-limit state (used by the test suite)."""
+    _robots_cache.clear()
+    _domain_last_fetch.clear()
+    _domain_min_interval.clear()
+
+
+def _registrable_domain(host: str) -> str:
+    """Best-effort eTLD+1 for *host*.
+
+    MVP heuristic: the last two labels. Subdomains of one site therefore share
+    a rate-limit bucket. Multi-part public suffixes (``co.uk``) are not handled
+    - acceptable for now per the issue; #8 can tighten this if it matters.
+    """
+    host = (host or "").lower().strip(".")
+    if not host:
+        return ""
+    labels = host.split(".")
+    if len(labels) <= 2:
+        return host
+    return ".".join(labels[-2:])
+
+
+def _robots_parser_for(url: str):
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    cached = _robots_cache.get(host)
+    now = _now()
+    if cached is not None and (now - cached[0]) < ROBOTS_CACHE_TTL:
+        return cached[1]
+
+    scheme = parts.scheme or "https"
+    robots_url = urlunsplit((scheme, parts.netloc, "/robots.txt", "", ""))
+    parser = urllib.robotparser.RobotFileParser()
+    parser.set_url(robots_url)
+    text = _fetch_robots_text(robots_url)
+    if text is None:
+        parser.allow_all = True
+    else:
+        parser.parse(text.splitlines())
+    parser.modified()  # set mtime so can_fetch / crawl_delay are live
+    _robots_cache[host] = (now, parser)
+    return parser
+
+
+def _note_crawl_delay(url: str, parser) -> None:
+    """Raise the target domain's minimum interval to a robots ``Crawl-delay``."""
+    delay = None
+    try:
+        delay = parser.crawl_delay(_USER_AGENT)
+    except Exception:  # pragma: no cover - defensive
+        delay = None
+    if delay is None:
+        try:
+            rate = parser.request_rate(_USER_AGENT)
+        except Exception:  # pragma: no cover - defensive
+            rate = None
+        if rate is not None and getattr(rate, "requests", 0):
+            delay = rate.seconds / rate.requests
+    if delay:
+        domain = _registrable_domain(urlsplit(url).hostname or "")
+        _domain_min_interval[domain] = max(
+            _domain_min_interval.get(domain, 0.0), float(delay)
+        )
+
+
+def _check_robots(url: str, *, ignore_robots: bool = False) -> None:
+    """Raise :class:`RobotsDisallowed` if *url* is disallowed for our agent."""
+    if ignore_robots:
+        return
+    parser = _robots_parser_for(url)
+    _note_crawl_delay(url, parser)
+    if not parser.can_fetch(_USER_AGENT, url):
+        raise RobotsDisallowed(url)
+
+
+def _rate_limit(url: str) -> None:
+    """Space this fetch from the previous one to the same registrable domain."""
+    domain = _registrable_domain(urlsplit(url).hostname or "")
+    interval = max(
+        PER_DOMAIN_MIN_INTERVAL, _domain_min_interval.get(domain, 0.0)
+    )
+    last = _domain_last_fetch.get(domain)
+    now = _now()
+    if last is not None:
+        wait = interval - (now - last)
+        if wait > 0:
+            _sleep(wait)
+            now = _now()
+    _domain_last_fetch[domain] = now
+
+
+def _retry_cause(exc):
+    return exc.cause if isinstance(exc, FetchError) else exc
+
+
+def _is_retryable(exc) -> bool:
+    """True for a transient failure (timeout / connection / 429 / 5xx)."""
+    cause = _retry_cause(exc)
+    if isinstance(cause, urllib.error.HTTPError):
+        return cause.code == 429 or 500 <= cause.code < 600
+    if isinstance(cause, (socket.timeout, TimeoutError)):
+        return True
+    if isinstance(cause, socket.gaierror):
+        return False
+    if isinstance(cause, urllib.error.URLError):
+        reason = cause.reason
+        if isinstance(reason, (socket.timeout, TimeoutError)):
+            return True
+        if isinstance(reason, socket.gaierror):
+            return False
+        if isinstance(reason, ConnectionError):
+            return True
+        text = str(reason).lower()
+        if any(marker in text for marker in _DNS_MARKERS):
+            return False
+        return any(marker in text for marker in _CONNECTION_MARKERS)
+    if isinstance(cause, ConnectionError):
+        return True
+    return False
+
+
+def _retry_after_delay(exc):
+    """Seconds requested by a ``Retry-After`` header, capped, or ``None``."""
+    cause = _retry_cause(exc)
+    if not isinstance(cause, urllib.error.HTTPError):
+        return None
+    headers = getattr(cause, "headers", None)
+    value = None
+    if headers is not None:
+        try:
+            value = headers.get("Retry-After")
+        except Exception:  # pragma: no cover - defensive
+            value = None
+    if not value:
+        return None
+    value = str(value).strip()
+    if value.isdigit():
+        seconds = float(value)
+    else:
+        try:
+            when = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if when is None:
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=_dt_timezone.utc)
+        seconds = (when - datetime.now(_dt_timezone.utc)).total_seconds()
+    seconds = max(0.0, seconds)
+    return min(seconds, RETRY_MAX_DELAY)
+
+
+def _backoff_delay(attempt: int) -> float:
+    capped = min(RETRY_MAX_DELAY, RETRY_BASE_DELAY * (2 ** attempt))
+    return capped + _jitter(capped)
+
+
+def _fetch_static_with_retry(url: str):
+    """:func:`fetch_static` wrapped in a bounded exponential-backoff retry.
+
+    Retries timeouts, connection errors, HTTP 429 and HTTP 5xx up to
+    :data:`MAX_RETRIES` times, honouring ``Retry-After`` when present. DNS
+    failures, 4xx (except 429), unsupported types and oversized bodies are not
+    retried - they raise on the first attempt. When every retry of a transient
+    failure is used up, raises :class:`RetriesExhausted` carrying the cause.
+    """
+    attempt = 0
+    while True:
+        try:
+            return fetch_static(url)
+        except (FetchError, UnsupportedContentType, BodyTooLarge) as exc:
+            if not _is_retryable(exc):
+                raise
+            if attempt >= MAX_RETRIES:
+                raise RetriesExhausted(exc, attempt + 1) from exc
+            retry_after = _retry_after_delay(exc)
+            delay = (
+                retry_after
+                if retry_after is not None
+                else _backoff_delay(attempt)
+            )
+            _sleep(delay)
+            attempt += 1
+
+
+class RobotsDisallowed(Exception):
+    """The target URL is disallowed by the host's ``robots.txt``."""
+
+    def __init__(self, url):
+        super().__init__(url)
+        self.url = url
+
+
+class RetriesExhausted(Exception):
+    """Every retry of a transient fetch failure was used up."""
+
+    def __init__(self, last_exc, attempts):
+        super().__init__(str(last_exc))
+        self.last_exc = last_exc
+        self.attempts = attempts
 
 
 class FetchError(Exception):
@@ -154,6 +441,14 @@ def classify_failure(exc, *, url=""):
     host = urlsplit(url).hostname or ""
     host_suffix = f": {host}" if host else ""
 
+    if isinstance(exc, RobotsDisallowed):
+        return Kind.BLOCKED_BY_ROBOTS, "disallowed by robots.txt"
+    if isinstance(exc, RetriesExhausted):
+        _, inner = classify_failure(exc.last_exc, url=url)
+        return (
+            Kind.RETRIES_EXHAUSTED,
+            f"retries exhausted after {exc.attempts} attempts: {inner}",
+        )
     if isinstance(exc, UnsupportedContentType):
         return Kind.UNSUPPORTED_TYPE, f"unsupported content type: {exc.content_type}"
     if isinstance(exc, BodyTooLarge):
@@ -484,7 +779,12 @@ def _extract_document(
     return _save_success(submitted_url, text, title, method)
 
 
-def extract(submitted_url: SubmittedURL, *, force: bool = False) -> ExtractionResult:
+def extract(
+    submitted_url: SubmittedURL,
+    *,
+    force: bool = False,
+    ignore_robots: bool = False,
+) -> ExtractionResult:
     """Fetch, extract, and persist content for *submitted_url*.
 
     Static path first; escalates to the browser fallback when the static text is
@@ -495,8 +795,12 @@ def extract(submitted_url: SubmittedURL, *, force: bool = False) -> ExtractionRe
     Method = SubmittedURL.ExtractionMethod
 
     try:
-        fetched = fetch_static(submitted_url.url)
+        _check_robots(submitted_url.url, ignore_robots=ignore_robots)
+        _rate_limit(submitted_url.url)
+        fetched = _fetch_static_with_retry(submitted_url.url)
     except (
+        RobotsDisallowed,
+        RetriesExhausted,
         FetchError,
         UnsupportedContentType,
         BodyTooLarge,
@@ -514,9 +818,15 @@ def extract(submitted_url: SubmittedURL, *, force: bool = False) -> ExtractionRe
     if not _is_insufficient(text):
         return _save_success(submitted_url, text, title, Method.STATIC)
 
-    # Escalate to the browser fallback.
+    # Escalate to the browser fallback - which also honours robots.txt and the
+    # per-domain rate limiter before navigating (it has no retry loop of its
+    # own; a navigation timeout is still reported as a timeout).
     try:
+        _check_robots(submitted_url.url, ignore_robots=ignore_robots)
+        _rate_limit(submitted_url.url)
         rendered = render_browser(submitted_url.url)
+    except RobotsDisallowed as exc:
+        return _save_failure(submitted_url, exc, Method.BROWSER)
     except Exception as exc:
         return _save_failure(submitted_url, BrowserError(exc), Method.BROWSER)
 

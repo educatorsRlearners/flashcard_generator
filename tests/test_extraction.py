@@ -193,7 +193,9 @@ def test_network_error_fails_and_command_continues(monkeypatch, batch):
     assert good.failure_kind == ""
 
 
-def test_timeout_fails(monkeypatch, batch):
+def test_timeout_is_retried_then_fails(monkeypatch, batch):
+    # A timeout is transient, so it is retried (issue #17); once the retries
+    # are exhausted the row fails as retries_exhausted, naming the cause.
     def factory(request):
         raise socket.timeout("timed out")
 
@@ -204,8 +206,9 @@ def test_timeout_fails(monkeypatch, batch):
 
     row.refresh_from_db()
     assert row.status == SubmittedURL.Status.FAILED
-    assert row.failure_kind == SubmittedURL.FailureKind.TIMEOUT
-    assert row.failure_reason == "request timed out"
+    assert row.failure_kind == SubmittedURL.FailureKind.RETRIES_EXHAUSTED
+    assert "retries exhausted" in row.failure_reason
+    assert "request timed out" in row.failure_reason
 
 
 def test_response_too_large_fails(monkeypatch, batch):
