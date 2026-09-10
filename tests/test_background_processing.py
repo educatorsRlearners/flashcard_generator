@@ -116,12 +116,16 @@ def test_worker_not_running_page_still_loads(client):
     content = resp.content.decode()
     assert "does not appear to be running" in content
     assert "run_huey" in content
+    # Worker-down: suppress the misleading "Processing URL 1 of N" line
+    assert "Processing URL" not in content
+    assert "Waiting for the background worker to start" in content
 
     payload = client.get(
         reverse("submissions:batch_status", args=[batch.pk])
     ).json()
     assert payload["worker_running"] is False
     assert payload["terminal"] is False
+    assert payload["summary"] == "Waiting for the background worker to start"
 
 
 def test_status_endpoint_reports_card_count(client, home_url, monkeypatch):

@@ -147,6 +147,34 @@ def test_finish_with_undecided_requires_confirm(client):
     assert c2.review_status == Card.ReviewStatus.UNDECIDED  # still undecided
 
 
+def test_review_grid_renders_card_image_by_placement(client):
+    batch = Batch.objects.create()
+    su = _url(batch)
+    cloze = _card(
+        su, batch, note_type=Card.NoteType.CLOZE, front="The {{c1::sky}} is blue.",
+        back="", source_term="sky", image="cards/cloze.png",
+        image_source="source_page",
+    )
+    basic = _card(
+        su, batch, source_term="Y", back="Basic answer text.",
+        image="cards/basic.png", image_source="draw_things",
+    )
+    plain = _card(su, batch, source_term="Z")  # no image
+
+    page = client.get(reverse("submissions:card_review", args=[batch.pk]))
+    content = page.content.decode()
+
+    assert "cards/cloze.png" in content
+    assert "cards/basic.png" in content
+    # cloze image sits before its cloze text (question side)
+    assert content.index("cards/cloze.png") < content.index("review-card__cloze")
+    # basic image sits after its back text (answer side)
+    assert content.index("Basic answer text.") < content.index("cards/basic.png")
+    # the imageless card renders no <img>
+    plain_html = content.split(f'id="card-{plain.pk}"')[1].split("</li>")[0]
+    assert "review-card__image" not in plain_html
+
+
 def test_batch_detail_links_to_review(client):
     batch = Batch.objects.create()
     page = client.get(reverse("submissions:batch_detail", args=[batch.pk]))

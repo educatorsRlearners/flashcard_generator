@@ -143,6 +143,8 @@ def _status_payload(batch):
     worker_down = _worker_looks_down(batch, counts)
     if terminal:
         summary = f"Done: {ok} ok, {failed} failed"
+    elif worker_down:
+        summary = "Waiting for the background worker to start"
     else:
         summary = f"Processing URL {min(processed + 1, total)} of {total}"
     return {

@@ -15,21 +15,25 @@
 
     <div
         id="batch-progress"
-        class="batch-progress"
+        class="batch-progress{% if status.terminal %} batch-progress--terminal{% endif %}"
         data-status-url="{% url 'submissions:batch_status' batch.pk %}"
         data-terminal="{{ status.terminal|yesno:'1,0' }}"
     >
-        <p class="batch-progress__summary" id="batch-progress-summary">{{ status.summary }}</p>
+        <p class="batch-progress__summary" id="batch-progress-summary">
+            <span class="batch-progress__check" aria-hidden="true">&#10003;</span>{{ status.summary }}
+        </p>
         <p class="batch-progress__cards" id="batch-progress-cards">
             Cards generated so far: <span id="batch-progress-card-count">{{ status.cards }}</span>
         </p>
         <p
-            class="batch-progress__worker-notice"
+            class="message message--warning batch-progress__worker-notice"
             id="batch-progress-worker-notice"
+            role="alert"
             {% if status.worker_running or status.terminal %}hidden{% endif %}
         >
+            <span class="message__prefix">Worker not running.</span>
             The background worker does not appear to be running. Start it with:
-            <code>{{ huey_command }}</code>
+            <code class="command">{{ huey_command }}</code>
         </p>
     </div>
 
@@ -107,6 +111,8 @@
             var u = byId[li.getAttribute("data-url-id")];
             if (u) { applyRow(li, u); }
         });
+
+        root.classList.toggle("batch-progress--terminal", !!data.terminal);
 
         if (data.terminal) {
             root.setAttribute("data-terminal", "1");

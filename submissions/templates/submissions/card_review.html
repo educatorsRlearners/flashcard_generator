@@ -31,6 +31,12 @@
                 <p class="review-card__meta">
                     Note type: <strong>{{ card.get_note_type_display }}</strong>
                 </p>
+                {% if card.image %}
+                    {% if card.image_placement == "question" %}
+                        <img class="review-card__image review-card__image--question"
+                             src="{{ card.image.url }}" alt="Card image (question side)">
+                    {% endif %}
+                {% endif %}
                 {% if card.note_type == "cloze" %}
                     <p class="review-card__label">Cloze text (deletions marked):</p>
                     <p class="review-card__cloze">{{ card.front }}</p>
@@ -40,6 +46,10 @@
                     <p class="review-card__front">{{ card.front }}</p>
                     <p class="review-card__label">Back:</p>
                     <p class="review-card__back">{{ card.back }}</p>
+                {% endif %}
+                {% if card.image and card.image_placement == "answer" %}
+                    <img class="review-card__image review-card__image--answer"
+                         src="{{ card.image.url }}" alt="Card image (answer side)">
                 {% endif %}
                 <p class="review-card__source">
                     Source: <a href="{{ card.submitted_url.url }}">{{ card.submitted_url.url }}</a>

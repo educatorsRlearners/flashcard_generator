@@ -182,3 +182,66 @@ a { color: var(--accent); }
 .status--ok, .status--complete { background: var(--success-bg); color: var(--success-fg); border-color: var(--success-bd); }
 .status--failed { background: var(--error-bg); color: var(--error-fg); border-color: var(--error-bd); }
 .status--pending { background: var(--warning-bg); color: var(--warning-fg); border-color: var(--warning-bd); }
+
+/* Batch progress panel (#8) - card/panel consistent with the form + list cards */
+.batch-progress {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left-width: 4px;
+    border-radius: 10px;
+    padding: 1rem 1.15rem;
+    margin: 1rem 0 1.25rem;
+}
+.batch-progress__summary {
+    margin: 0;
+    font-weight: 600;
+    font-size: 1.05rem;
+}
+.batch-progress__cards {
+    margin: 0.4rem 0 0;
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+.batch-progress__check { display: none; }
+
+/* Terminal ("Done") state - obviously finished, green like .status--complete */
+.batch-progress--terminal {
+    background: var(--success-bg);
+    border-color: var(--success-bd);
+}
+.batch-progress--terminal .batch-progress__summary { color: var(--success-fg); }
+.batch-progress--terminal .batch-progress__check {
+    display: inline;
+    margin-right: 0.4rem;
+    font-weight: 700;
+}
+
+.batch-progress__worker-notice { margin: 0.75rem 0 0; }
+
+/* Inline command snippet - legible, copy-pasteable, no mid-command wrap */
+.command {
+    display: inline-block;
+    max-width: 100%;
+    margin-top: 0.35rem;
+    padding: 0.15rem 0.45rem;
+    background: rgba(0, 0, 0, 0.06);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.88rem;
+    white-space: nowrap;
+    overflow-x: auto;
+    vertical-align: middle;
+}
+
+/* Per-card image in the review grid (issue #12) */
+.review-card__image {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    max-height: 12rem;
+    margin: 0.5rem 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    object-fit: contain;
+}
