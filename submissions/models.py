@@ -53,7 +53,11 @@ class SubmittedURL(models.Model):
     url = models.URLField(max_length=2000, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
     batch = models.ForeignKey(
-        Batch, on_delete=models.CASCADE, related_name="urls"
+        Batch,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="urls",
     )
     status = models.CharField(
         max_length=16, choices=Status.choices, default=Status.PENDING

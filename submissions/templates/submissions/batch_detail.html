@@ -16,7 +16,7 @@
             <span class="url-list__url">{{ item.url }}</span>
             <span class="status status--{{ item.status }}">{{ item.status }}</span>
             {% if not item.originated_here %}
-            <span class="url-list__origin">first requested in Batch {{ item.origin_batch_id }}</span>
+            <span class="url-list__origin">{% if item.origin_batch_id %}first requested in Batch {{ item.origin_batch_id }}{% else %}first requested in an earlier batch{% endif %}</span>
             {% endif %}
             {% if item.status == "failed" %}
             <span class="url-list__reason">{{ item.failure_reason }}</span>

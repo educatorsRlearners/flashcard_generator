@@ -188,6 +188,26 @@ def test_deleting_batch_keeps_shared_submittedurl(client, home_url):
     assert BatchRequest.objects.filter(submitted_url=shared).count() == 1
 
 
+def test_deleting_originating_batch_keeps_shared_url_and_other_request(
+    client, home_url
+):
+    b1 = Batch.objects.create()
+    shared = _make_url("https://origin-del.example.com", b1)
+    client.post(
+        home_url, {"urls": "https://origin-del.example.com"}, follow=True
+    )
+    b2 = Batch.objects.exclude(pk=b1.pk).get()
+
+    b1.delete()
+
+    shared.refresh_from_db()
+    assert shared.batch_id is None
+    assert BatchRequest.objects.filter(
+        batch=b2, submitted_url=shared
+    ).exists()
+    assert BatchRequest.objects.filter(submitted_url=shared).count() == 1
+
+
 def test_backfill_migration_links_every_preexisting_url():
     from importlib import import_module
 
