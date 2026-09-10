@@ -1,23 +1,24 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <title>Batch {{ batch.pk }}</title>
-</head>
-<body>
-    <h1>Batch {{ batch.pk }}</h1>
-    <p><a href="{% url 'submissions:home' %}">Back to home</a></p>
-    <p>Created: {{ batch.created_at }}</p>
-    <p>URL count: {{ batch.url_count }}</p>
-    <p>Overall status: {{ batch.overall_status }} ({{ batch.status_summary }})</p>
+{% extends "submissions/base.html" %}
 
-    <ul class="batch-urls">
+{% block title %}Batch {{ batch.pk }}{% endblock %}
+
+{% block content %}
+    <p><a href="{% url 'submissions:home' %}">&larr; Back to home</a></p>
+    <h1>Batch {{ batch.pk }}</h1>
+    <p class="batch-meta">
+        Created: {{ batch.created_at }} &middot; URL count: {{ batch.url_count }} &middot;
+        Overall status: {{ batch.overall_status }} ({{ batch.status_summary }})
+    </p>
+
+    <ul class="url-list">
         {% for item in urls %}
-        <li>
-            {{ item.url }} — {{ item.status }}
-            {% if item.status == "failed" %} — {{ item.failure_reason }}{% endif %}
+        <li class="url-list__item">
+            <span class="url-list__url">{{ item.url }}</span>
+            <span class="status status--{{ item.status }}">{{ item.status }}</span>
+            {% if item.status == "failed" %}
+            <span class="url-list__reason">{{ item.failure_reason }}</span>
+            {% endif %}
         </li>
         {% endfor %}
     </ul>
-</body>
-</html>
+{% endblock %}

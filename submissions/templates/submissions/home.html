@@ -1,54 +1,81 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <title>Submit URLs</title>
-</head>
-<body>
+{% extends "submissions/base.html" %}
+
+{% block title %}Submit URLs{% endblock %}
+
+{% block content %}
     <h1>Submit URLs</h1>
 
-    {% if messages %}
-    <ul class="messages">
-        {% for message in messages %}
-        <li class="{{ message.tags }}">{{ message }}</li>
-        {% endfor %}
-    </ul>
-    {% endif %}
+    <div class="messages" aria-live="polite" role="status">
+        {% if messages %}
+        <ul class="message-list">
+            {% for message in messages %}
+            <li class="message message--{{ message.tags|default:'info' }}">
+                <span class="message__prefix">{{ message.tags|default:'info'|capfirst }}:</span>
+                {{ message }}
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+    </div>
 
-    <form method="post" action="{% url 'submissions:home' %}">
+    <form method="post" action="{% url 'submissions:home' %}" class="submit-form">
         {% csrf_token %}
-        {{ form.urls.errors }}
-        <label for="{{ form.urls.id_for_label }}">URLs (one per line)</label><br>
-        {{ form.urls }}<br>
-        <button type="submit">Submit</button>
+        {% if form.urls.errors %}
+        <div class="form-error" id="form-error" tabindex="-1">
+            {% for error in form.urls.errors %}
+            <p><span class="message__prefix">Error:</span> {{ error }}</p>
+            {% endfor %}
+        </div>
+        {% endif %}
+        <label class="field-label" for="{{ form.urls.id_for_label }}">URLs (one per line)</label>
+        <textarea
+            name="urls"
+            id="{{ form.urls.id_for_label }}"
+            class="field-input"
+            rows="10"
+            placeholder="https://example.com/article"
+            {% if form.urls.errors %}aria-describedby="form-error"{% endif %}
+        >{{ form.urls.value|default:'' }}</textarea>
+        <button type="submit" class="button">Submit</button>
     </form>
 
     <h2>Batches</h2>
     {% if batches %}
-    <ul class="batches">
+    <ul class="batch-list">
         {% for batch in batches %}
-        <li>
+        <li class="batch-list__item">
             <a href="{% url 'submissions:batch_detail' batch.pk %}">Batch {{ batch.pk }}</a>
-            — {{ batch.created_at }} — {{ batch.url_count }} URL(s) —
-            status: {{ batch.overall_status }} ({{ batch.status_summary }})
+            <span class="batch-meta">{{ batch.created_at }} &middot; {{ batch.url_count }} URL(s) &middot;
+            status: {{ batch.overall_status }} ({{ batch.status_summary }})</span>
         </li>
         {% endfor %}
     </ul>
     {% else %}
-    <p>No URLs submitted yet.</p>
+    <p class="empty-state">No batches yet — submit some URLs above.</p>
     {% endif %}
 
     {% if latest_batch %}
     <h2>Most recent batch</h2>
-    <p>
-        Batch {{ latest_batch.pk }} — {{ latest_batch.created_at }} —
+    <p class="batch-meta">
+        Batch {{ latest_batch.pk }} &middot; {{ latest_batch.created_at }} &middot;
         status: {{ latest_batch.overall_status }} ({{ latest_batch.status_summary }})
     </p>
-    <ul class="latest-batch-urls">
+    <ul class="url-list">
         {% for item in latest_batch.urls.all %}
-        <li>{{ item.url }} — {{ item.status }}</li>
+        <li class="url-list__item">
+            <span class="url-list__url">{{ item.url }}</span>
+            <span class="status status--{{ item.status }}">{{ item.status }}</span>
+        </li>
         {% endfor %}
     </ul>
     {% endif %}
-</body>
-</html>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    (function () {
+        var err = document.getElementById("form-error");
+        if (err) { err.focus(); }
+    })();
+</script>
+{% endblock %}

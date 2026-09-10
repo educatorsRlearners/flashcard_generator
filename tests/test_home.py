@@ -100,3 +100,65 @@ def test_long_submission_of_100_urls(client, url):
     resp = client.post(url, {"urls": body}, follow=True)
     assert resp.status_code == 200
     assert SubmittedURL.objects.count() == 100
+
+
+# --- Issue #13: visual styling / accessibility ---
+
+
+def test_page_loads_single_project_css_and_no_style_blocks(client, url):
+    content = client.get(url).content.decode()
+    assert content.count('<link rel="stylesheet"') == 1
+    assert "submissions/app.css" in content
+    assert "<style" not in content
+
+
+def test_viewport_meta_present(client, url):
+    content = client.get(url).content.decode()
+    assert 'name="viewport"' in content
+    assert "width=device-width" in content
+
+
+def test_skip_link_and_main_landmark(client, url):
+    content = client.get(url).content.decode()
+    assert 'href="#main"' in content
+    assert "Skip to content" in content
+    assert '<main id="main"' in content
+    # skip link is before <main> in source (first focusable element)
+    assert content.index("Skip to content") < content.index("<main")
+
+
+def test_consistent_field_wording(client, url):
+    content = client.get(url).content.decode()
+    assert "URLs (one per line)" in content
+    assert "One URL per line" not in content
+
+
+def test_flash_messages_have_live_region(client, url):
+    resp = client.post(url, {"urls": "https://example.com/live"}, follow=True)
+    content = resp.content.decode()
+    assert 'aria-live="polite"' in content or 'role="status"' in content
+    assert "Saved 1 URL(s)." in content
+
+
+def test_empty_state_wording_is_batches(client, url):
+    content = client.get(url).content.decode()
+    assert "No batches yet" in content
+    assert "No URLs submitted yet" not in content
+
+
+def test_validation_failure_marks_error_for_focus(client, url):
+    content = client.post(url, {"urls": ""}).content.decode()
+    assert 'id="form-error"' in content
+    assert 'aria-describedby="form-error"' in content
+
+
+def test_batch_detail_uses_shared_base(client, url):
+    client.post(url, {"urls": "https://example.com/x"}, follow=True)
+    batch = Batch.objects.get()
+    content = client.get(
+        reverse("submissions:batch_detail", args=[batch.pk])
+    ).content.decode()
+    assert "submissions/app.css" in content
+    assert '<main id="main"' in content
+    assert 'name="viewport"' in content
+    assert "Skip to content" in content
