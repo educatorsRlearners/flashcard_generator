@@ -175,7 +175,10 @@ def test_batch_detail_lists_re_requested_url_with_origin_marker(client, home_url
         reverse("submissions:batch_detail", args=[new_batch.pk])
     ).content.decode()
     assert "https://origin.example.com" in content
-    assert f"first requested in Batch {b1.pk}" in content
+    assert 'class="url-list__origin"' in content
+    assert "first requested in" in content
+    assert f"Batch {b1.pk}" in content
+    assert reverse("submissions:batch_detail", args=[b1.pk]) in content
 
 
 def test_deleting_batch_keeps_shared_submittedurl(client, home_url):

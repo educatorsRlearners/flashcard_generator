@@ -124,6 +124,8 @@ a { color: var(--accent); }
 .batch-meta { color: var(--muted); font-size: 0.9rem; display: block; margin-top: 0.2rem; }
 .url-list__url { display: block; overflow-wrap: anywhere; word-break: break-word; }
 .url-list__reason { display: block; color: var(--error-fg); font-size: 0.9rem; }
+.url-list__origin { display: block; color: var(--muted); font-size: 0.9rem; margin-top: 0.2rem; }
+.url-list__origin a { color: inherit; }
 
 .empty-state {
     color: var(--muted);
