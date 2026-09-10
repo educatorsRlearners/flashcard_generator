@@ -72,6 +72,7 @@ class SubmittedURL(models.Model):
         NONE = "none", "None"
         STATIC = "static", "Static"
         BROWSER = "browser", "Browser"
+        DOCUMENT = "document", "Document"
 
     class FailureKind(models.TextChoices):
         """Machine-readable category for a failed extraction.

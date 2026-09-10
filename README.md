@@ -9,8 +9,10 @@ persists them, and lists them back.
 uv sync
 ```
 
-Content extraction uses `trafilatura` for the static fast path and Playwright
-(headless Chromium) for the JavaScript fallback. Chromium is a one-time
+Content extraction uses `trafilatura` for the static (HTML) fast path,
+Playwright (headless Chromium) for the JavaScript fallback, and
+`pdfminer.six` for PDF text extraction. `.docx` files are read with the
+Python standard library (no extra dependency). Chromium is a one-time
 several-hundred-MB download that is **not** installed by `uv sync`:
 
 ```
@@ -45,6 +47,15 @@ The static path (`trafilatura`) is tried first; the browser fallback runs
 automatically when the static text has fewer than 200 non-whitespace
 characters. Results land in the `extracted_text` / `extracted_title` /
 `extraction_method` / `extracted_at` fields and are visible in the admin.
+
+A URL that resolves to a PDF (`application/pdf`, or a `%PDF-` body served
+as `application/octet-stream`) or a Word `.docx` is routed to the
+`document` extraction path instead: its text is extracted directly and the
+browser fallback is never used. A PDF with no text layer (scanned /
+image-only) fails with `failure_kind = no_content`; OCR of scanned PDFs and
+images is a separate follow-up (issue #19) and is not done here. Other
+non-HTML types (`image/png`, `application/zip`, `text/csv`, legacy `.doc`,
+…) still fail with `unsupported_type`.
 
 ### Failures
 

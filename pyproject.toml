@@ -9,6 +9,7 @@ dependencies = [
     "pytest-django>=4.8",
     "trafilatura>=1.8",
     "playwright>=1.40",
+    "pdfminer.six>=20231228",
 ]
 
 [tool.pytest.ini_options]

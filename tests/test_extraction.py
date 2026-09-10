@@ -151,19 +151,20 @@ def test_both_paths_under_threshold_fails(monkeypatch, batch):
 def test_non_html_content_type_fails(monkeypatch, batch):
     _patch_urlopen(
         monkeypatch,
-        lambda req: _FakeResponse(b"%PDF-1.7", content_type="application/pdf"),
+        lambda req: _FakeResponse(b"\x89PNG\r\n\x1a\n", content_type="image/png"),
     )
     called = []
     monkeypatch.setattr(
         extraction, "render_browser", lambda url: called.append(url) or ""
     )
-    row = _url(batch, "https://example.com/doc.pdf")
+    row = _url(batch, "https://example.com/photo.png")
 
     _run("--url", row.url)
 
     row.refresh_from_db()
     assert row.status == SubmittedURL.Status.FAILED
-    assert "application/pdf" in row.failure_reason
+    assert "image/png" in row.failure_reason
+    assert row.failure_kind == SubmittedURL.FailureKind.UNSUPPORTED_TYPE
     assert row.extraction_method == SubmittedURL.ExtractionMethod.NONE
     assert called == []
 
