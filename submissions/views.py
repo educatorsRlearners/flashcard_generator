@@ -66,6 +66,12 @@ def _row(submitted_url, batch):
         "url": submitted_url.url,
         "status": submitted_url.status,
         "failure_reason": submitted_url.failure_reason,
+        "failure_kind": submitted_url.failure_kind,
+        "failure_kind_label": (
+            submitted_url.get_failure_kind_display()
+            if submitted_url.failure_kind
+            else ""
+        ),
         "originated_here": submitted_url.batch_id == batch.pk,
         "origin_batch_id": submitted_url.batch_id,
     }

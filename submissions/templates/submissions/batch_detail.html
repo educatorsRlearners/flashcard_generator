@@ -9,6 +9,9 @@
         Created: {{ batch.created_at }} &middot; URL count: {{ batch.url_count }} &middot;
         Overall status: {{ batch.overall_status }} ({{ batch.status_summary }})
     </p>
+    {% if batch.failure_kind_summary %}
+    <p class="batch-meta">{{ batch.failure_kind_summary }}</p>
+    {% endif %}
 
     <ul class="url-list">
         {% for item in urls %}
@@ -30,7 +33,7 @@
             <span class="url-list__origin">{% if item.origin_batch_id %}first requested in <a href="{% url 'submissions:batch_detail' item.origin_batch_id %}">Batch {{ item.origin_batch_id }}</a>{% else %}first requested in an earlier batch{% endif %}</span>
             {% endif %}
             {% if item.status == "failed" %}
-            <span class="url-list__reason">{{ item.failure_reason }}</span>
+            <span class="url-list__reason">{% if item.failure_kind_label %}{{ item.failure_kind_label }} &mdash; {% endif %}{{ item.failure_reason }}</span>
             {% endif %}
         </li>
         {% endfor %}

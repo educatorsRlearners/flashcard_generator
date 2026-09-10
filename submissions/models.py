@@ -19,6 +19,29 @@ class Batch(models.Model):
         return counts
 
     @property
+    def failure_kind_counts(self):
+        counts = {}
+        for request in self.requests.select_related("submitted_url"):
+            submitted_url = request.submitted_url
+            if submitted_url.status != SubmittedURL.Status.FAILED:
+                continue
+            kind = submitted_url.failure_kind or SubmittedURL.FailureKind.UNKNOWN
+            counts[kind] = counts.get(kind, 0) + 1
+        return counts
+
+    @property
+    def failure_kind_summary(self):
+        counts = self.failure_kind_counts
+        if not counts:
+            return ""
+        total = sum(counts.values())
+        parts = ", ".join(
+            f"{n} {kind}"
+            for kind, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        )
+        return f"{total} failed: {parts}"
+
+    @property
     def url_count(self):
         return self.requests.count()
 
@@ -50,6 +73,23 @@ class SubmittedURL(models.Model):
         STATIC = "static", "Static"
         BROWSER = "browser", "Browser"
 
+    class FailureKind(models.TextChoices):
+        """Machine-readable category for a failed extraction.
+
+        The blank default ("") means "not failed". #17 will add
+        ``blocked_by_robots`` and ``retries_exhausted`` here.
+        """
+
+        DNS = "dns", "DNS - host not found"
+        CONNECTION = "connection", "Connection failed"
+        HTTP_CLIENT = "http_client", "HTTP client error (4xx)"
+        BLOCKED = "blocked", "Blocked / rate-limited (401/403/429)"
+        TIMEOUT = "timeout", "Timed out"
+        TOO_LARGE = "too_large", "Response too large"
+        UNSUPPORTED_TYPE = "unsupported_type", "Unsupported content type"
+        NO_CONTENT = "no_content", "No extractable content"
+        UNKNOWN = "unknown", "Unknown / uncategorised"
+
     url = models.URLField(max_length=2000, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
     batch = models.ForeignKey(
@@ -61,6 +101,9 @@ class SubmittedURL(models.Model):
     )
     status = models.CharField(
         max_length=16, choices=Status.choices, default=Status.PENDING
+    )
+    failure_kind = models.CharField(
+        max_length=20, choices=FailureKind.choices, blank=True, default=""
     )
     failure_reason = models.TextField(blank=True, default="")
     extracted_text = models.TextField(blank=True, default="")

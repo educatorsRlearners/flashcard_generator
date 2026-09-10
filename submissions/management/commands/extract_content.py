@@ -11,7 +11,17 @@ from submissions.models import SubmittedURL
 
 
 class Command(BaseCommand):
-    help = "Fetch and extract main text content for SubmittedURL rows."
+    help = (
+        "Fetch and extract main text content for SubmittedURL rows.\n\n"
+        "With no selector, every row whose extraction_method is still 'none' "
+        "is processed. A URL whose fetch fails before a method is chosen "
+        "(DNS, connection, timeout, HTTP error, unsupported type, oversized "
+        "body) keeps extraction_method='none', so a plain re-run (no "
+        "selector) retries every previously-failed-before-selection URL. "
+        "This retry-on-re-run behaviour is intentional. Failed rows are "
+        "tagged with a machine-readable failure_kind and a one-line "
+        "failure_reason; both are cleared when a re-run succeeds."
+    )
 
     def add_arguments(self, parser):
         selector = parser.add_mutually_exclusive_group()
@@ -49,9 +59,12 @@ class Command(BaseCommand):
                 result = extract(submitted_url, force=force)
             except Exception as exc:  # never raise on a single bad URL
                 submitted_url.status = SubmittedURL.Status.FAILED
+                submitted_url.failure_kind = SubmittedURL.FailureKind.UNKNOWN
                 submitted_url.failure_reason = f"unexpected error: {exc}"
                 submitted_url.save()
-                self.stdout.write(f"{submitted_url.url} failed {exc}")
+                self.stdout.write(
+                    f"{submitted_url.url} failed [unknown] {exc}"
+                )
                 continue
 
             if result.outcome == "ok":
@@ -60,7 +73,8 @@ class Command(BaseCommand):
                 )
             else:
                 self.stdout.write(
-                    f"{submitted_url.url} {result.method} {result.reason}"
+                    f"{submitted_url.url} {result.method} "
+                    f"[{result.kind}] {result.reason}"
                 )
 
     def _select(self, options):

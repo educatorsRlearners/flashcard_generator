@@ -46,6 +46,25 @@ automatically when the static text has fewer than 200 non-whitespace
 characters. Results land in the `extracted_text` / `extracted_title` /
 `extraction_method` / `extracted_at` fields and are visible in the admin.
 
+### Failures
+
+A URL that cannot be extracted ends `status = failed` with two fields: a
+machine-readable `failure_kind` (`dns`, `connection`, `http_client`,
+`blocked`, `timeout`, `too_large`, `unsupported_type`, `no_content`,
+`unknown`) and a one-line `failure_reason` with the specific detail (e.g.
+`HTTP 429 (rate limited)`). A bad URL never stops the run: the command skips
+it, moves to the next URL, and still exits 0. The batch detail page and the
+Django admin show the kind and reason per URL, and the batch page shows a
+by-kind breakdown (e.g. `3 failed: 2 blocked, 1 timeout`). On a re-run that
+now succeeds, both fields are cleared.
+
+Note on retries: a URL whose fetch fails *before* an extraction method is
+chosen keeps `extraction_method = none`. The no-selector run
+(`extract_content` with no `--url` / `--id` / `--batch`) selects exactly the
+`none` rows, so it **re-attempts every previously-failed URL** on each run.
+This is intentional - it is the way to retry transient failures - but it
+means a plain re-run is not idempotent for rows that keep failing.
+
 ## Tests
 
 ```

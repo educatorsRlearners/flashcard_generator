@@ -186,8 +186,10 @@ def test_network_error_fails_and_command_continues(monkeypatch, batch):
     bad.refresh_from_db()
     good.refresh_from_db()
     assert bad.status == SubmittedURL.Status.FAILED
-    assert bad.failure_reason == "connection error"
+    assert bad.failure_kind == SubmittedURL.FailureKind.DNS
+    assert "host not found" in bad.failure_reason
     assert good.status == SubmittedURL.Status.OK
+    assert good.failure_kind == ""
 
 
 def test_timeout_fails(monkeypatch, batch):
@@ -201,7 +203,8 @@ def test_timeout_fails(monkeypatch, batch):
 
     row.refresh_from_db()
     assert row.status == SubmittedURL.Status.FAILED
-    assert row.failure_reason == "timeout"
+    assert row.failure_kind == SubmittedURL.FailureKind.TIMEOUT
+    assert row.failure_reason == "request timed out"
 
 
 def test_response_too_large_fails(monkeypatch, batch):
@@ -213,7 +216,8 @@ def test_response_too_large_fails(monkeypatch, batch):
 
     row.refresh_from_db()
     assert row.status == SubmittedURL.Status.FAILED
-    assert row.failure_reason == "response too large"
+    assert row.failure_kind == SubmittedURL.FailureKind.TOO_LARGE
+    assert row.failure_reason == "response exceeded 10 MB cap"
 
 
 def test_rerun_overwrites_in_place(monkeypatch, batch):

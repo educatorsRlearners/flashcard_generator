@@ -5,7 +5,7 @@ from .models import Batch, SubmittedURL
 
 class SubmittedURLInline(admin.TabularInline):
     model = SubmittedURL
-    fields = ("url", "status", "failure_reason")
+    fields = ("url", "status", "failure_kind", "failure_reason")
     readonly_fields = ("url",)
     extra = 0
 
@@ -22,17 +22,19 @@ class SubmittedURLAdmin(admin.ModelAdmin):
         "url",
         "batch",
         "status",
+        "failure_kind",
         "extraction_method",
         "extracted_title",
         "extracted_at",
         "created_at",
     )
-    list_filter = ("status", "extraction_method")
+    list_filter = ("status", "failure_kind", "extraction_method")
     list_editable = ("status",)
     fields = (
         "url",
         "batch",
         "status",
+        "failure_kind",
         "failure_reason",
         "extraction_method",
         "extracted_title",
@@ -40,5 +42,11 @@ class SubmittedURLAdmin(admin.ModelAdmin):
         "extracted_text",
         "created_at",
     )
-    readonly_fields = ("created_at", "extracted_text", "extracted_at")
+    readonly_fields = (
+        "created_at",
+        "extracted_text",
+        "extracted_at",
+        "failure_kind",
+        "failure_reason",
+    )
     search_fields = ("url",)
