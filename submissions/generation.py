@@ -128,16 +128,28 @@ CARD_LIST_SCHEMA: dict = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "note_type": {"type": "string"},
+                    "note_type": {"type": "string", "enum": ["basic", "cloze"]},
                     "front": {"type": "string"},
                     "back": {"type": "string"},
                     "source_term": {"type": "string"},
                     "topic": {"type": "string"},
                 },
+                # The Anthropic structured-output API requires every object in
+                # the schema to list all its properties in ``required`` and to
+                # set ``additionalProperties: false`` explicitly.
+                "required": [
+                    "note_type",
+                    "front",
+                    "back",
+                    "source_term",
+                    "topic",
+                ],
+                "additionalProperties": False,
             },
         }
     },
     "required": ["cards"],
+    "additionalProperties": False,
 }
 
 
