@@ -1,7 +1,13 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load a local, git-ignored .env file (e.g. ANTHROPIC_API_KEY) before any
+# os.environ lookups below. Real environment variables always win.
+load_dotenv(BASE_DIR / ".env")
 
 SECRET_KEY = "dev-insecure-key-not-for-production"
 

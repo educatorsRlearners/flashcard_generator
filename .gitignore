@@ -5,3 +5,8 @@ huey.sqlite3
 __pycache__/
 .venv/
 .claude/
+.env
+huey.sqlite3-shm
+huey.sqlite3-wal
+db.sqlite3-shm
+db.sqlite3-wal

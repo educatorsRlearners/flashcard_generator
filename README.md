@@ -340,6 +340,19 @@ The AnkiConnect transport lives in `submissions/anki.py`
 (`AnkiConnectClient`), behind which `push_accepted_cards()` does the
 orchestration; both are fakeable in tests without a live Anki.
 
+## Configuration (.env)
+
+Secrets and local overrides are read from a git-ignored `.env` file in the
+project root (via `python-dotenv`, loaded in `config/settings.py`). Copy the
+template and fill in your key:
+
+```bash
+cp .env.example .env
+# then edit .env and set ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Real environment variables take precedence over `.env`.
+
 ## LLM client
 
 `submissions/llm.py` is a thin, provider-agnostic client for text
