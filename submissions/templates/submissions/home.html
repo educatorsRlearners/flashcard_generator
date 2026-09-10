@@ -5,19 +5,6 @@
 {% block content %}
     <h1>Submit URLs</h1>
 
-    <div class="messages" aria-live="polite" role="status">
-        {% if messages %}
-        <ul class="message-list">
-            {% for message in messages %}
-            <li class="message message--{{ message.tags|default:'info' }}">
-                <span class="message__prefix">{{ message.tags|default:'info'|capfirst }}:</span>
-                {{ message }}
-            </li>
-            {% endfor %}
-        </ul>
-        {% endif %}
-    </div>
-
     <form method="post" action="{% url 'submissions:home' %}" class="submit-form">
         {% csrf_token %}
         {% if form.urls.errors %}
@@ -61,10 +48,20 @@
         status: {{ latest_batch.overall_status }} ({{ latest_batch.status_summary }})
     </p>
     <ul class="url-list">
-        {% for item in latest_batch.urls.all %}
+        {% for item in latest_batch_rows %}
         <li class="url-list__item">
             <span class="url-list__url">{{ item.url }}</span>
             <span class="status status--{{ item.status }}">{{ item.status }}</span>
+            <form
+                method="post"
+                action="{% url 'submissions:delete_url' latest_batch.pk item.id %}"
+                class="url-list__delete"
+                onsubmit="return confirm('Delete this URL from Batch {{ latest_batch.pk }}? This cannot be undone.');"
+            >
+                {% csrf_token %}
+                <input type="hidden" name="next" value="home">
+                <button type="submit" class="button button--danger">Delete</button>
+            </form>
         </li>
         {% endfor %}
     </ul>

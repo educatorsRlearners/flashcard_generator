@@ -21,6 +21,15 @@
             {% if item.status == "failed" %}
             <span class="url-list__reason">{{ item.failure_reason }}</span>
             {% endif %}
+            <form
+                method="post"
+                action="{% url 'submissions:delete_url' batch.pk item.id %}"
+                class="url-list__delete"
+                onsubmit="return confirm('Delete this URL from Batch {{ batch.pk }}? This cannot be undone.');"
+            >
+                {% csrf_token %}
+                <button type="submit" class="button button--danger">Delete</button>
+            </form>
         </li>
         {% endfor %}
     </ul>

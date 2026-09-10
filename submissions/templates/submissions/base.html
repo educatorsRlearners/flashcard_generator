@@ -9,6 +9,18 @@
 <body>
     <a class="skip-link" href="#main">Skip to content</a>
     <main id="main" class="main">
+        <div class="messages" aria-live="polite" role="status">
+            {% if messages %}
+            <ul class="message-list">
+                {% for message in messages %}
+                <li class="message message--{{ message.tags|default:'info' }}">
+                    <span class="message__prefix">{{ message.tags|default:'info'|capfirst }}:</span>
+                    {{ message }}
+                </li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+        </div>
         {% block content %}{% endblock %}
     </main>
     {% block scripts %}{% endblock %}

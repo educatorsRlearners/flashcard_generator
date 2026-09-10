@@ -112,6 +112,9 @@ a { color: var(--accent); }
     cursor: pointer;
 }
 .button:hover { background: #2559c9; }
+.url-list__delete { display: inline; margin-left: 0.5rem; }
+.button--danger { margin-top: 0; padding: 0.3rem 0.7rem; background: #b3261e; }
+.button--danger:hover { background: #8c1d18; }
 
 /* Lists */
 .batch-list, .url-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
