@@ -21,6 +21,17 @@ uv run playwright install chromium
 
 CI images will not have it unless this step runs.
 
+Semantic dedup (see *Deduplicate cards* below) uses `sentence-transformers`
+for local embeddings. It is installed by `uv sync`, but it pulls in `torch`
+and the model weights are a one-time download (tens of MB) that `uv sync`
+does **not** fetch:
+
+```
+uv run python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+```
+
+CI / test runs do not need the weights: the tests stub the encoder.
+
 ## Run
 
 ```
@@ -158,6 +169,37 @@ Behaviour on trouble:
 
 `Card` rows are visible in the Django admin (filterable by note type and
 batch, and inline on the `SubmittedURL` page).
+
+## Deduplicate cards
+
+After generation, each new `Card` is embedded locally (no API calls) and
+compared by cosine similarity against (a) cards already stored as `unique`
+from previous runs and (b) the other new cards in the same run. A card at
+or above `DEDUP_SIMILARITY_THRESHOLD` (in `submissions/dedup.py`, the single
+place to tune it) to another card is marked `duplicate`, with `duplicate_of`
+pointing at the card it matched, and is hidden from the default review grid
+(`Card.objects.for_review()`). Duplicates are never deleted. Within one run
+the lowest-pk card is kept `unique`. With nothing to compare against, every
+card is `unique` and its embedding is recorded.
+
+This runs automatically as the final step of `generate_cards`. It is also a
+standalone command:
+
+```
+uv run python manage.py dedup_cards --batch 1     # every card in a batch
+uv run python manage.py dedup_cards --id 42       # one card
+uv run python manage.py dedup_cards --all         # every card
+uv run python manage.py dedup_cards --all --force # ignore cached embeddings
+uv run python manage.py dedup_cards --all --include-duplicates  # also re-check duplicates
+```
+
+It prints one line per card (`unique` / `duplicate of card N`) and reuses
+each card's cached embedding unless `--force` is given. The embedding model
+(`all-MiniLM-L6-v2`) is loaded once per run; if its weights are missing the
+command exits non-zero and tells you to run the one-time download above
+(post-generation dedup instead logs a warning and is skipped). `dedup_status`,
+`duplicate_of` and `similarity_score` are shown and filterable in the Django
+admin.
 
 ## LLM client
 

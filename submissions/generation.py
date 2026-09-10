@@ -38,6 +38,7 @@ included. ``submitted_url`` is always the authoritative link.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -45,8 +46,10 @@ from typing import Any, Optional
 from django.db import transaction
 from django.utils import timezone
 
-from submissions import llm
+from submissions import dedup, llm
 from submissions.models import Card, SubmittedURL
+
+logger = logging.getLogger(__name__)
 
 # --- Named constants (no magic literals in the logic below) -------------
 
@@ -306,6 +309,18 @@ def generate_for(
             submitted_url.cards.all().delete()
         Card.objects.bulk_create(cards)
         _mark_generation_ok(submitted_url)
+
+    # Final step: local semantic dedup (#7). A missing embedding model must
+    # not fail generation - the standalone ``dedup_cards`` command is the
+    # place that hard-fails and tells the engineer to run the download.
+    try:
+        dedup.dedup_cards(cards)
+    except dedup.ModelLoadError as exc:
+        logger.warning(
+            "skipped post-generation dedup for %s: %s", submitted_url.url, exc
+        )
+    except Exception:  # noqa: BLE001 - dedup is best-effort here
+        logger.exception("post-generation dedup failed for %s", submitted_url.url)
 
     counts = {
         Card.NoteType.BASIC.value: sum(

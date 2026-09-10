@@ -73,9 +73,13 @@ class CardAdmin(admin.ModelAdmin):
         "source_term",
         "submitted_url",
         "batch",
+        "dedup_status",
+        "duplicate_of",
+        "similarity_score",
         "created_at",
     )
-    list_filter = ("note_type", "batch")
+    list_filter = ("note_type", "batch", "dedup_status")
     search_fields = ("source_term", "front", "back", "submitted_url__url")
-    readonly_fields = ("created_at",)
-    list_select_related = ("submitted_url", "batch")
+    readonly_fields = ("created_at", "similarity_score", "embedding")
+    list_select_related = ("submitted_url", "batch", "duplicate_of")
+    raw_id_fields = ("duplicate_of",)
