@@ -3,7 +3,9 @@
 import pytest
 from django.urls import reverse
 
+from submissions import anki
 from submissions.models import Batch, BatchRequest, Card, SubmittedURL
+from tests.test_anki import FakeAnki
 
 pytestmark = pytest.mark.django_db
 
@@ -127,12 +129,15 @@ def test_dedup_duplicates_excluded_from_grid(client):
     assert page.context["tally"]["total"] == 1
 
 
-def test_finish_with_undecided_requires_confirm(client):
+def test_finish_with_undecided_requires_confirm(client, monkeypatch):
     batch = Batch.objects.create()
     su = _url(batch)
     c1 = _card(su, batch)
     c2 = _card(su, batch, front="Q2", source_term="Y")
     _decide(client, batch, c1, "accepted")
+
+    fake = FakeAnki(existing_decks=["Flashcard Generator"])
+    monkeypatch.setattr(anki, "AnkiConnectClient", lambda *a, **k: fake)
 
     finish_url = reverse("submissions:card_review_finish", args=[batch.pk])
     resp = client.post(finish_url)
@@ -140,11 +145,103 @@ def test_finish_with_undecided_requires_confirm(client):
     assert resp.context["confirm_undecided"] == 1
     c2.refresh_from_db()
     assert c2.review_status == Card.ReviewStatus.UNDECIDED  # untouched
+    # issue #57: the confirm-needed re-render branch does not finish the
+    # batch, so it must not enqueue a push.
+    assert fake.calls == []
 
     resp = client.post(finish_url, {"confirm": "1"}, follow=True)
     assert resp.status_code == 200
     c2.refresh_from_db()
     assert c2.review_status == Card.ReviewStatus.UNDECIDED  # still undecided
+
+    # issue #57: the branch that actually finishes the batch enqueues a
+    # Huey task that pushes accepted+unsynced cards to Anki, inline here
+    # thanks to the autouse `_huey_immediate` fixture.
+    c1.refresh_from_db()
+    assert fake.notes_added() == [
+        {
+            "deckName": "Flashcard Generator",
+            "modelName": "Basic",
+            "fields": {"Front": "What is X?", "Back": "X is a thing."},
+            "tags": anki.card_tags(c1),
+            "options": {"allowDuplicate": False},
+        }
+    ]
+    assert c1.synced_at is not None
+
+
+def test_finish_with_zero_accepted_cards_is_safe_noop(client, monkeypatch):
+    """Finishing a batch where nothing was accepted still enqueues the
+    task safely; push_accepted_cards() on an empty queryset is a no-op."""
+    batch = Batch.objects.create()
+    su = _url(batch)
+    c1 = _card(su, batch)
+    _decide(client, batch, c1, "rejected")
+
+    fake = FakeAnki(existing_decks=["Flashcard Generator"])
+    monkeypatch.setattr(anki, "AnkiConnectClient", lambda *a, **k: fake)
+
+    finish_url = reverse("submissions:card_review_finish", args=[batch.pk])
+    resp = client.post(finish_url, follow=True)
+    assert resp.status_code == 200
+    assert fake.notes_added() == []
+
+
+def test_finish_response_unaffected_when_anki_unreachable(client, monkeypatch):
+    """issue #57: an unreachable Anki at push time never surfaces in the
+    finish response or leaves the card synced - it's a later backstop."""
+    batch = Batch.objects.create()
+    su = _url(batch)
+    c1 = _card(su, batch)
+    _decide(client, batch, c1, "accepted")
+
+    fake = FakeAnki(unreachable=True)
+    monkeypatch.setattr(anki, "AnkiConnectClient", lambda *a, **k: fake)
+
+    finish_url = reverse("submissions:card_review_finish", args=[batch.pk])
+    resp = client.post(finish_url, follow=True)
+    assert resp.status_code == 200
+
+    c1.refresh_from_db()
+    assert c1.synced_at is None
+
+
+def test_finishing_same_batch_twice_does_not_duplicate_notes(client, monkeypatch):
+    batch = Batch.objects.create()
+    su = _url(batch)
+    c1 = _card(su, batch)
+    _decide(client, batch, c1, "accepted")
+
+    fake = FakeAnki(existing_decks=["Flashcard Generator"])
+    monkeypatch.setattr(anki, "AnkiConnectClient", lambda *a, **k: fake)
+
+    finish_url = reverse("submissions:card_review_finish", args=[batch.pk])
+    client.post(finish_url, follow=True)
+    assert len(fake.notes_added()) == 1
+
+    # Double-click / re-POST: the second task run finds the card already
+    # synced and pushes nothing new.
+    client.post(finish_url, follow=True)
+    assert len(fake.notes_added()) == 1
+
+
+def test_accepting_cards_without_finishing_does_not_push(client, monkeypatch):
+    batch = Batch.objects.create()
+    su = _url(batch)
+    c1 = _card(su, batch)
+    c2 = _card(su, batch, front="Q2", source_term="Y")
+
+    fake = FakeAnki(existing_decks=["Flashcard Generator"])
+    monkeypatch.setattr(anki, "AnkiConnectClient", lambda *a, **k: fake)
+
+    _decide(client, batch, c1, "accepted")
+    _decide(client, batch, c2, "accepted")
+
+    assert fake.calls == []
+    c1.refresh_from_db()
+    c2.refresh_from_db()
+    assert c1.synced_at is None
+    assert c2.synced_at is None
 
 
 def test_review_grid_renders_card_image_by_placement(client):
