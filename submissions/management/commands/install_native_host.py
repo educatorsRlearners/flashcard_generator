@@ -5,23 +5,28 @@ absolute interpreter path baked in, plus a native-messaging-host manifest
 (``com.flashcard_generator.native_host.json``) naming the extension allowed
 to connect, into whichever of Chrome's/Brave's native-messaging-host
 directories are present on this machine (macOS only - see #43 for
-Linux/Windows). Also mints the extension auth token (#33) on first run, so
-a fresh checkout is fully ready after this one command.
+Linux/Windows). Also mints the extension auth token (#33) on first run, and
+writes ``EXTENSION_ID=<id>`` into ``.env`` (#52) so the backend's CORS
+allowlist matches the loaded extension without any hand-editing - a fresh
+checkout is fully ready after this one command.
 
 Re-running is idempotent: the wrapper and both manifest files are
 overwritten in place with the new ``--extension-id``, never left alongside
-stale copies under a different name.
+stale copies under a different name, and the ``.env`` ``EXTENSION_ID=``
+line is updated in place rather than duplicated.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import stat
 import sys
 from pathlib import Path
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from dotenv import set_key
 
 from submissions.extension_auth import mint_token
 
@@ -31,6 +36,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 NATIVE_HOST_DIR = PROJECT_ROOT / "native_host"
 HOST_SCRIPT_PATH = NATIVE_HOST_DIR / "host.py"
 WRAPPER_SCRIPT_PATH = NATIVE_HOST_DIR / "run_host.sh"
+
+ENV_PATH = PROJECT_ROOT / ".env"
+ENV_EXAMPLE_PATH = PROJECT_ROOT / ".env.example"
+
+RESTART_NOTE = (
+    "Restart any already-running backend process (manage.py dev, or "
+    "runserver/run_huey started manually) for the new EXTENSION_ID to take "
+    "effect - config/settings.py reads .env once at process start."
+)
 
 MANIFEST_NAME = "com.flashcard_generator.native_host"
 MANIFEST_FILENAME = f"{MANIFEST_NAME}.json"
@@ -89,6 +103,27 @@ def write_manifest(directory: Path, contents: dict) -> Path:
     return manifest_path
 
 
+def set_extension_id_in_env(extension_id: str) -> None:
+    """Add/update ``EXTENSION_ID=<extension_id>`` in the ``.env`` at ``ENV_PATH``.
+
+    If ``ENV_PATH`` doesn't exist yet, it's created first from
+    ``ENV_EXAMPLE_PATH``'s contents (or empty, if that template is itself
+    missing). Uses ``python-dotenv``'s ``set_key`` so any other
+    variables/comments/ordering already in the file survive untouched, and
+    re-running updates the existing ``EXTENSION_ID=`` line in place rather
+    than appending a second one.
+
+    Reads ``ENV_PATH``/``ENV_EXAMPLE_PATH`` as module globals (rather than
+    default-argument values) so tests can ``monkeypatch`` them per-case.
+    """
+    if not ENV_PATH.exists():
+        if ENV_EXAMPLE_PATH.exists():
+            ENV_PATH.write_text(ENV_EXAMPLE_PATH.read_text())
+        else:
+            ENV_PATH.touch()
+    set_key(str(ENV_PATH), "EXTENSION_ID", extension_id, quote_mode="never")
+
+
 class Command(BaseCommand):
     help = (
         "Write the native-messaging-host manifest and launcher wrapper so "
@@ -144,6 +179,8 @@ class Command(BaseCommand):
             except FileExistsError:
                 pass  # minted concurrently between the exists() check and here
 
+        set_extension_id_in_env(extension_id)
+
         self.stdout.write(f"Extension ID registered: {extension_id}")
         self.stdout.write(f"Wrapper script written: {WRAPPER_SCRIPT_PATH}")
         for label, manifest_path in written:
@@ -151,4 +188,14 @@ class Command(BaseCommand):
         for label, browser_dir in skipped:
             self.stdout.write(
                 f"{label} not found ({browser_dir}) - skipped."
+            )
+        self.stdout.write(f"EXTENSION_ID set in .env: {extension_id}")
+        self.stdout.write(RESTART_NOTE)
+        if os.environ.get("EXTENSION_ID"):
+            self.stdout.write(
+                "Warning: EXTENSION_ID is also set as a real environment "
+                "variable in this shell - that takes precedence over the "
+                "value just written to .env (config/settings.py calls "
+                "load_dotenv with its default override=False), so unset it "
+                "or update it too for the new ID to actually take effect."
             )

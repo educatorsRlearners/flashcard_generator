@@ -539,10 +539,21 @@ order:
    ```
    This writes `native_host/run_host.sh` (a wrapper script with an
    absolute interpreter path baked in) and registers the native-messaging
-   manifest with whichever of Chrome/Brave are installed, and mints the
-   extension auth token (#33) if one doesn't exist yet. Safe to re-run any
-   time the extension's ID changes (e.g. after an unpinned reload) -
-   re-running overwrites the wrapper and manifest(s) in place.
+   manifest with whichever of Chrome/Brave are installed, mints the
+   extension auth token (#33) if one doesn't exist yet, and writes
+   `EXTENSION_ID=<id>` into `.env` (creating it from `.env.example` first
+   if it doesn't exist yet) - the backend's CORS allowlist
+   (`config/settings.py` / `submissions/extension_api.py`) reads this, so
+   there's no need to set it by hand. Safe to re-run any time the
+   extension's ID changes (e.g. after an unpinned reload) - re-running
+   overwrites the wrapper, manifest(s), and the `.env` line in place.
+
+   **Restart any already-running backend** (`manage.py dev`, or
+   `runserver`/`run_huey` started manually) after this - `.env` is only
+   read once at process start, so a live process keeps using its old
+   `EXTENSION_ID` until restarted. If `EXTENSION_ID` is also set as a real
+   shell environment variable, that takes precedence over `.env`
+   (`load_dotenv`'s default `override=False`) - update or unset it too.
 4. If Chrome/Brave was already open when the manifest was written, reload
    the extension once more. Native messaging host manifests are read fresh
    per `connectNative` call, but a stale `chrome://extensions` page may not
