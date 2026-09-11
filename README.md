@@ -1,7 +1,15 @@
-# flashcard_generator
+![Flashcard Generator: turn any web page into reviewed, spaced-repetition Anki flashcards](assets/hero-banner.svg)
 
-Walking skeleton: a Django app on SQLite with one page that accepts URLs,
-persists them, and lists them back.
+![Python](https://img.shields.io/badge/Python-4338CA?style=flat-square)
+![Django](https://img.shields.io/badge/Django-6366F1?style=flat-square)
+![SQLite](https://img.shields.io/badge/SQLite-4338CA?style=flat-square)
+![Anthropic Claude](https://img.shields.io/badge/Anthropic%20Claude-7C3AED?style=flat-square)
+![Huey](https://img.shields.io/badge/Huey-4338CA?style=flat-square)
+![Playwright](https://img.shields.io/badge/Playwright-6366F1?style=flat-square)
+![Sentence Transformers](https://img.shields.io/badge/Sentence%20Transformers-7C3AED?style=flat-square)
+![AnkiConnect](https://img.shields.io/badge/AnkiConnect-4338CA?style=flat-square)
+
+Turn any web page into reviewed, spaced-repetition Anki flashcards.
 
 ## Setup
 
