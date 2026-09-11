@@ -37,14 +37,9 @@ uv run python manage.py migrate
 uv run python manage.py dev
 ```
 
-Then open http://127.0.0.1:8000/. See [Setup](#setup) and [Run](#run) for
-full detail.
+Then open http://127.0.0.1:8000/ — see [Setup](#setup) and [Run](#run) for full detail.
 
-Heavier optional setup (Playwright/Chromium, sentence-transformers weights,
-Tesseract for OCR, browser extension native-messaging setup) is not
-required for this basic flow — see [Setup](#setup) and
-[Browser extension setup (native messaging host)](#browser-extension-setup-native-messaging-host)
-further down.
+Heavier optional setup (Playwright/Chromium, sentence-transformers weights, Tesseract, browser extension native messaging) is not required for this basic flow — see [Setup](#setup) and [Browser extension setup (native messaging host)](#browser-extension-setup-native-messaging-host).
 
 ## Setup
 
