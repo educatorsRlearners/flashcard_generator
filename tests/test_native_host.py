@@ -406,6 +406,86 @@ def test_spawn_backend_raises_spawn_failed_on_oserror(tmp_path, monkeypatch):
         host.spawn_backend(tmp_path, tmp_path / "log.txt")
 
 
+# -- resolve_uv_binary / baked-in uv path (issue #55) -----------------
+
+
+def test_resolve_uv_binary_uses_env_var_when_set():
+    env = {host.UV_ENV_VAR: "/abs/path/to/uv"}
+    assert host.resolve_uv_binary(env) == "/abs/path/to/uv"
+
+
+def test_resolve_uv_binary_falls_back_to_bare_uv_when_unset():
+    assert host.resolve_uv_binary({}) == "uv"
+
+
+def test_resolve_uv_binary_falls_back_to_bare_uv_when_blank():
+    assert host.resolve_uv_binary({host.UV_ENV_VAR: "  "}) == "uv"
+
+
+def test_spawn_backend_uses_baked_in_uv_path(tmp_path, monkeypatch):
+    (tmp_path / "manage.py").write_text("")
+    monkeypatch.setenv(host.UV_ENV_VAR, "/opt/homebrew/bin/uv")
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+
+        class FakeProc:
+            pid = 1234
+
+        return FakeProc()
+
+    monkeypatch.setattr(host.subprocess, "Popen", fake_popen)
+    host.spawn_backend(tmp_path, tmp_path / "log.txt")
+
+    assert captured["cmd"][0] == "/opt/homebrew/bin/uv"
+
+
+def test_spawn_backend_raises_specific_message_for_stale_baked_in_path(tmp_path, monkeypatch):
+    (tmp_path / "manage.py").write_text("")
+    monkeypatch.setenv(host.UV_ENV_VAR, "/Users/x/.local/bin/uv")
+
+    def fake_popen(cmd, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(host.subprocess, "Popen", fake_popen)
+    with pytest.raises(host.SpawnFailed) as exc_info:
+        host.spawn_backend(tmp_path, tmp_path / "log.txt")
+
+    message = str(exc_info.value)
+    assert "/Users/x/.local/bin/uv" in message
+    assert "install_native_host" in message
+
+
+def test_get_token_uses_baked_in_uv_path(tmp_path, monkeypatch):
+    monkeypatch.setenv(host.UV_ENV_VAR, "/opt/homebrew/bin/uv")
+    calls = []
+
+    def fake_run(cmd, cwd, capture_output, text, timeout):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout="tok\n", stderr="")
+
+    monkeypatch.setattr(host.subprocess, "run", fake_run)
+    host.get_token(tmp_path)
+
+    assert calls[0][0] == "/opt/homebrew/bin/uv"
+
+
+def test_get_token_raises_specific_message_for_stale_baked_in_path(tmp_path, monkeypatch):
+    monkeypatch.setenv(host.UV_ENV_VAR, "/Users/x/.local/bin/uv")
+
+    def fake_run(cmd, cwd, capture_output, text, timeout):
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(host.subprocess, "run", fake_run)
+    with pytest.raises(host.TokenUnavailable) as exc_info:
+        host.get_token(tmp_path)
+
+    message = str(exc_info.value)
+    assert "/Users/x/.local/bin/uv" in message
+    assert "install_native_host" in message
+
+
 # -- handle_request (end-to-end within the module, all I/O faked) ------
 
 
