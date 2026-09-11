@@ -557,6 +557,9 @@ dependency beyond needing *an* ID (pinned or not) in hand first.
 macOS only (this repo's development and documented setup are macOS-only);
 Linux/Windows native-messaging support is tracked separately in #43.
 
+For the full manual verification checklist (cold start, error cases,
+review-tab regression), see `_docs/extension_manual_checklist.md`.
+
 ## Tests
 
 ```
