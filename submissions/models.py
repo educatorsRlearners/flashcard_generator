@@ -74,6 +74,7 @@ class SubmittedURL(models.Model):
         BROWSER = "browser", "Browser"
         DOCUMENT = "document", "Document"
         OCR = "ocr", "OCR"
+        EXTENSION = "extension", "Extension"
 
     class FailureKind(models.TextChoices):
         """Machine-readable category for a failed extraction.
