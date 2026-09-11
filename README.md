@@ -11,6 +11,41 @@
 
 Turn any web page into reviewed, spaced-repetition Anki flashcards.
 
+## Table of Contents
+
+- [Setup](#setup)
+- [Run](#run)
+- [Background processing (Huey)](#background-processing-huey)
+- [Extract content](#extract-content)
+- [Generate cards](#generate-cards)
+- [Deduplicate cards](#deduplicate-cards)
+- [Card images](#card-images)
+- [Review feedback (durable) + few-shot injection](#review-feedback-durable--few-shot-injection)
+- [Review grid](#review-grid)
+- [Push to Anki](#push-to-anki)
+- [Configuration (.env)](#configuration-env)
+- [LLM client](#llm-client)
+- [LLM usage (cost / latency observability)](#llm-usage-cost--latency-observability)
+- [Browser extension setup (native messaging host)](#browser-extension-setup-native-messaging-host)
+- [Tests](#tests)
+
+## Quick Start
+
+```
+uv sync
+uv run python manage.py migrate
+uv run python manage.py dev
+```
+
+Then open http://127.0.0.1:8000/. See [Setup](#setup) and [Run](#run) for
+full detail.
+
+Heavier optional setup (Playwright/Chromium, sentence-transformers weights,
+Tesseract for OCR, browser extension native-messaging setup) is not
+required for this basic flow — see [Setup](#setup) and
+[Browser extension setup (native messaging host)](#browser-extension-setup-native-messaging-host)
+further down.
+
 ## Setup
 
 ```
