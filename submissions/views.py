@@ -14,7 +14,7 @@ import time
 
 from .forms import URLSubmissionForm
 from .models import Batch, BatchRequest, Card, Feedback, SubmittedURL
-from .tasks import enqueue_batch
+from .tasks import enqueue_batch, push_accepted_cards_task
 
 
 def home(request):
@@ -856,4 +856,8 @@ def card_review_finish(request, pk):
         "Review finished: {accepted} accepted, {rejected} rejected, "
         "{undecided} left undecided.".format(**tally),
     )
+    # issue #57: finishing a batch fires a background Anki push. This never
+    # blocks the response - the task re-scans accepted-unsynced cards by
+    # query when it actually runs, so it always pushes current DB state.
+    push_accepted_cards_task()
     return redirect("submissions:batch_detail", pk=pk)
