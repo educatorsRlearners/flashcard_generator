@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import stat
 from pathlib import Path
 
@@ -60,6 +61,23 @@ def env_paths(tmp_path, monkeypatch):
     return {"env": env_path, "example": env_example_path}
 
 
+@pytest.fixture(autouse=True)
+def fake_uv_on_path(tmp_path, monkeypatch):
+    """Put a fake, resolvable ``uv`` on PATH for every test in this module.
+
+    Autouse so tests that don't care about #55 aren't broken by
+    depending on a real ``uv`` install's location; tests that do care
+    about #55 override PATH themselves (see the uv-specific tests below).
+    """
+    fake_bin_dir = tmp_path / "fake_uv_bin"
+    fake_bin_dir.mkdir()
+    fake_uv = fake_bin_dir / "uv"
+    fake_uv.write_text("#!/bin/sh\necho fake-uv\n")
+    fake_uv.chmod(fake_uv.stat().st_mode | stat.S_IRWXU)
+    monkeypatch.setenv("PATH", f"{fake_bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    return fake_uv
+
+
 @pytest.fixture
 def browser_dirs(tmp_path, monkeypatch):
     """Fake Chrome + Brave app-support directories, both present."""
@@ -79,8 +97,14 @@ def browser_dirs(tmp_path, monkeypatch):
 
 
 def test_wrapper_script_body_shape():
-    body = cmd.wrapper_script_body("/path/to/python3", cmd.Path("/proj/native_host/host.py"))
-    assert body == '#!/bin/sh\nexec /path/to/python3 /proj/native_host/host.py "$@"\n'
+    body = cmd.wrapper_script_body(
+        "/path/to/python3", cmd.Path("/proj/native_host/host.py"), "/path/to/uv"
+    )
+    assert body == (
+        "#!/bin/sh\n"
+        "export FLASHCARD_GENERATOR_UV=/path/to/uv\n"
+        'exec /path/to/python3 /proj/native_host/host.py "$@"\n'
+    )
 
 
 def test_manifest_contents_shape():
@@ -405,3 +429,64 @@ def test_prints_explicit_skip_message_for_missing_browser(native_host_dir, tmp_p
     output = out.getvalue()
     assert "Brave" in output
     assert str(brave_dir) in output
+
+
+# -- uv resolution / baking (issue #55) -------------------------------
+
+
+@pytest.mark.django_db
+def test_bakes_resolved_uv_absolute_path_into_wrapper_script(
+    native_host_dir, browser_dirs, fake_uv_on_path
+):
+    """Simulates `uv run python manage.py install_native_host ...`: PATH
+    contains the invoking uv at command-run time, and that exact absolute
+    path lands in run_host.sh (acceptance criterion: resolved via
+    shutil.which("uv") at install-command run time, not at spawn time)."""
+    call_command("install_native_host", "--extension-id", EXTENSION_ID)
+
+    wrapper = native_host_dir / "run_host.sh"
+    body = wrapper.read_text()
+    assert f"export FLASHCARD_GENERATOR_UV={fake_uv_on_path}\n" in body
+    lines = body.splitlines()
+    export_line = next(line for line in lines if line.startswith("export FLASHCARD_GENERATOR_UV"))
+    exec_line = next(line for line in lines if line.startswith("exec "))
+    assert lines.index(export_line) < lines.index(exec_line)
+
+
+@pytest.mark.django_db
+def test_uv_missing_at_install_time_raises_command_error(
+    native_host_dir, browser_dirs, monkeypatch
+):
+    monkeypatch.setenv("PATH", "")  # no uv anywhere, overriding fake_uv_on_path
+
+    with pytest.raises(CommandError) as exc_info:
+        call_command("install_native_host", "--extension-id", EXTENSION_ID)
+
+    message = str(exc_info.value)
+    assert "uv" in message.lower()
+    assert "not found" in message.lower()
+    assert not (native_host_dir / "run_host.sh").exists()  # no partial write
+
+
+@pytest.mark.django_db
+def test_rerun_overwrites_baked_in_uv_path(native_host_dir, browser_dirs, tmp_path, monkeypatch):
+    first_uv_dir = tmp_path / "first_uv"
+    first_uv_dir.mkdir()
+    first_uv = first_uv_dir / "uv"
+    first_uv.write_text("#!/bin/sh\n")
+    first_uv.chmod(first_uv.stat().st_mode | stat.S_IRWXU)
+    monkeypatch.setenv("PATH", str(first_uv_dir))
+    call_command("install_native_host", "--extension-id", EXTENSION_ID)
+    assert f"FLASHCARD_GENERATOR_UV={first_uv}" in (native_host_dir / "run_host.sh").read_text()
+
+    second_uv_dir = tmp_path / "second_uv"
+    second_uv_dir.mkdir()
+    second_uv = second_uv_dir / "uv"
+    second_uv.write_text("#!/bin/sh\n")
+    second_uv.chmod(second_uv.stat().st_mode | stat.S_IRWXU)
+    monkeypatch.setenv("PATH", str(second_uv_dir))
+    call_command("install_native_host", "--extension-id", EXTENSION_ID)
+
+    body = (native_host_dir / "run_host.sh").read_text()
+    assert f"FLASHCARD_GENERATOR_UV={second_uv}" in body
+    assert str(first_uv) not in body

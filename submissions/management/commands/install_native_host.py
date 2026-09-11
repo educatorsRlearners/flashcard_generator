@@ -1,7 +1,8 @@
 """Install the native-messaging-host manifest for Chrome/Brave (issue #38).
 
 Writes a launcher wrapper script (``native_host/run_host.sh``) with an
-absolute interpreter path baked in, plus a native-messaging-host manifest
+absolute interpreter path and an absolute ``uv`` path (issue #55) baked
+in, plus a native-messaging-host manifest
 (``com.flashcard_generator.native_host.json``) naming the extension allowed
 to connect, into whichever of Chrome's/Brave's native-messaging-host
 directories are present on this machine (macOS only - see #43 for
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import sys
 from pathlib import Path
@@ -46,6 +48,13 @@ RESTART_NOTE = (
     "effect - config/settings.py reads .env once at process start."
 )
 
+#: Env var run_host.sh exports before exec'ing host.py, carrying uv's
+#: install-time-resolved absolute path (issue #55). Duplicated here
+#: rather than imported - host.py is stdlib-only and never imported by
+#: submissions/config (see its module docstring) - so if this name ever
+#: changes, update native_host/host.py's UV_ENV_VAR to match.
+UV_ENV_VAR = "FLASHCARD_GENERATOR_UV"
+
 MANIFEST_NAME = "com.flashcard_generator.native_host"
 MANIFEST_FILENAME = f"{MANIFEST_NAME}.json"
 
@@ -68,9 +77,38 @@ CANDIDATE_BROWSERS = [
 ]
 
 
-def wrapper_script_body(python_executable: str, host_script: Path) -> str:
-    """The exact ``run_host.sh`` contents: exec the interpreter on host.py."""
-    return f'#!/bin/sh\nexec {python_executable} {host_script} "$@"\n'
+def resolve_uv_binary() -> str:
+    """Resolve ``uv``'s absolute path via the current PATH (issue #55).
+
+    Called at ``install_native_host`` run time, when a full user PATH
+    (the invoking shell's) is available - unlike host.py's runtime PATH
+    when launched by Brave/Chrome, which is launchd's minimal GUI-app
+    PATH and often lacks user-local uv install locations (e.g.
+    ``~/.local/bin``, installed by the astral.sh installer per this
+    repo's README).
+
+    If more than one ``uv`` is on PATH (e.g. a Homebrew install and an
+    astral.sh ``~/.local/bin`` install), whichever ``shutil.which("uv")``
+    returns first per PATH order is the one baked in - a deliberate
+    choice, not left implicit; no further disambiguation is added.
+
+    Returns None if ``uv`` is not found anywhere on PATH.
+    """
+    return shutil.which("uv")
+
+
+def wrapper_script_body(python_executable: str, host_script: Path, uv_binary: str) -> str:
+    """The exact ``run_host.sh`` contents: exec the interpreter on host.py.
+
+    Exports *uv_binary* (uv's install-time-resolved absolute path, issue
+    #55) as UV_ENV_VAR before the exec line, so host.py never has to
+    guess uv's location from the browser's stripped-down runtime PATH.
+    """
+    return (
+        f"#!/bin/sh\n"
+        f"export {UV_ENV_VAR}={uv_binary}\n"
+        f'exec {python_executable} {host_script} "$@"\n'
+    )
 
 
 def manifest_contents(wrapper_path: Path, extension_id: str) -> dict:
@@ -84,9 +122,11 @@ def manifest_contents(wrapper_path: Path, extension_id: str) -> dict:
     }
 
 
-def write_wrapper_script(path: Path, python_executable: str, host_script: Path) -> None:
+def write_wrapper_script(
+    path: Path, python_executable: str, host_script: Path, uv_binary: str
+) -> None:
     """Write the wrapper script at *path* and make it executable by owner."""
-    path.write_text(wrapper_script_body(python_executable, host_script))
+    path.write_text(wrapper_script_body(python_executable, host_script, uv_binary))
     # Ensure the owner-executable bit is set regardless of the file's prior
     # mode (umask on creation, or a leftover mode from a previous run).
     path.chmod(path.stat().st_mode | stat.S_IRWXU)
@@ -165,7 +205,14 @@ class Command(BaseCommand):
                 "Chrome or Brave, then re-run this command."
             )
 
-        write_wrapper_script(WRAPPER_SCRIPT_PATH, sys.executable, HOST_SCRIPT_PATH)
+        uv_binary = resolve_uv_binary()
+        if uv_binary is None:
+            raise CommandError(
+                "uv not found on PATH. Install it (see README) or ensure "
+                "it's on PATH, then re-run this command."
+            )
+
+        write_wrapper_script(WRAPPER_SCRIPT_PATH, sys.executable, HOST_SCRIPT_PATH, uv_binary)
 
         contents = manifest_contents(WRAPPER_SCRIPT_PATH, extension_id)
         written = [

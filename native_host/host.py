@@ -49,6 +49,16 @@ STALE_LOCK_THRESHOLD_S = READY_TIMEOUT_S + 5.0
 
 BACKEND_URL = "http://127.0.0.1:8000/"
 
+#: Env var install_native_host bakes uv's install-time-resolved absolute
+#: path into (issue #55) - written into run_host.sh alongside the
+#: existing sys.executable-baking for the same reason: a GUI-launched
+#: Chrome/Brave gives this process launchd's minimal PATH, which often
+#: lacks user-local uv install locations (e.g. ~/.local/bin). Read once
+#: per invocation via resolve_uv_binary() below; falls back to the bare
+#: string "uv" (ordinary PATH lookup) when unset, e.g. when host.py is
+#: run directly in dev/tests rather than via the wrapper script.
+UV_ENV_VAR = "FLASHCARD_GENERATOR_UV"
+
 #: Default backend origin when the BACKEND_URL env var is unset or blank
 #: (issue #47). BACKEND_URL above is kept equal to this default for
 #: backwards compatibility; runtime code must call resolve_backend_url()
@@ -70,6 +80,36 @@ def resolve_backend_url(env: dict | None = None) -> str:
     source = env if env is not None else os.environ
     raw = (source.get("BACKEND_URL", "") or "").strip()
     return raw or DEFAULT_BACKEND_URL
+
+
+def resolve_uv_binary(env: dict | None = None) -> str:
+    """Return the ``uv`` binary this process should invoke (issue #55).
+
+    Reads UV_ENV_VAR from *env* (default os.environ) - the absolute path
+    install_native_host baked into run_host.sh at install time, when a
+    full user PATH was available. Falls back to the bare string "uv"
+    (subprocess's own PATH lookup) when the env var is unset, e.g.
+    host.py run directly rather than via the wrapper script.
+    """
+    source = env if env is not None else os.environ
+    return (source.get(UV_ENV_VAR) or "").strip() or "uv"
+
+
+def _uv_not_found_message(uv_binary: str) -> str:
+    """Error text for a failed attempt to launch *uv_binary*.
+
+    Distinguishes "never resolved" (bare "uv", ordinary PATH lookup
+    failed) from "resolved once, now missing" (an absolute path baked in
+    by install_native_host that no longer exists - moved/reinstalled/
+    uninstalled since), so the popup names the actual problem instead of
+    today's generic ``[Errno 2] No such file or directory: 'uv'``.
+    """
+    if uv_binary == "uv":
+        return "uv not found on PATH"
+    return (
+        f"uv not found at {uv_binary} (it may have moved or been "
+        "uninstalled - re-run install_native_host)"
+    )
 
 
 def backend_url_to_addrport(url: str) -> str:
@@ -315,10 +355,11 @@ def spawn_backend(
 
     target_addrport = addrport or backend_url_to_addrport(resolve_backend_url())
     env = build_child_env(os.environ)
+    uv_binary = resolve_uv_binary(env)
     log_file = open(log_path, "a")
     try:
         return subprocess.Popen(
-            ["uv", "run", "python", "manage.py", "dev", "--addrport", target_addrport],
+            [uv_binary, "run", "python", "manage.py", "dev", "--addrport", target_addrport],
             cwd=str(project_root),
             stdout=log_file,
             stderr=log_file,
@@ -326,6 +367,8 @@ def spawn_backend(
             env=env,
             start_new_session=True,  # detach, matching dev.py's own children
         )
+    except FileNotFoundError as exc:
+        raise SpawnFailed(_uv_not_found_message(uv_binary)) from exc
     except OSError as exc:
         raise SpawnFailed(str(exc)) from exc
     finally:
@@ -345,14 +388,17 @@ def get_token(project_root: Path) -> str:
     if token_path.exists():
         return token_path.read_text().strip()
 
+    uv_binary = resolve_uv_binary()
     try:
         result = subprocess.run(
-            ["uv", "run", "python", "manage.py", "extension_token", "--mint"],
+            [uv_binary, "run", "python", "manage.py", "extension_token", "--mint"],
             cwd=str(project_root),
             capture_output=True,
             text=True,
             timeout=READY_TIMEOUT_S,
         )
+    except FileNotFoundError as exc:
+        raise TokenUnavailable(_uv_not_found_message(uv_binary)) from exc
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise TokenUnavailable(f"minting subprocess failed: {exc}") from exc
 
