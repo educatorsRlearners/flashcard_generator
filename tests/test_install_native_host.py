@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import json
 import stat
+from pathlib import Path
 
 import pytest
 from django.core.management import call_command
@@ -42,6 +43,21 @@ def native_host_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(cmd, "HOST_SCRIPT_PATH", host_script)
     monkeypatch.setattr(cmd, "WRAPPER_SCRIPT_PATH", wrapper_script)
     return directory
+
+
+@pytest.fixture(autouse=True)
+def env_paths(tmp_path, monkeypatch):
+    """Fake ``.env``/``.env.example`` under tmp_path, neither created yet.
+
+    Autouse so every test in this module - including ones that predate
+    #52 and never asked for this fixture - writes to a throwaway ``.env``
+    instead of the real project one.
+    """
+    env_path = tmp_path / ".env"
+    env_example_path = tmp_path / ".env.example"
+    monkeypatch.setattr(cmd, "ENV_PATH", env_path)
+    monkeypatch.setattr(cmd, "ENV_EXAMPLE_PATH", env_example_path)
+    return {"env": env_path, "example": env_example_path}
 
 
 @pytest.fixture
@@ -240,6 +256,133 @@ def test_prints_required_output(native_host_dir, browser_dirs):
             browser_dir / "NativeMessagingHosts" / "com.flashcard_generator.native_host.json"
         )
         assert str(manifest_path) in output
+
+
+# -- EXTENSION_ID / .env handling (#52) --------------------------------
+
+
+@pytest.mark.django_db
+def test_creates_env_from_example_when_missing(native_host_dir, browser_dirs, env_paths):
+    env_paths["example"].write_text(
+        "# comment\nANTHROPIC_API_KEY=\n\n# Optional overrides (see README):\n"
+    )
+    assert not env_paths["env"].exists()
+
+    call_command("install_native_host", "--extension-id", EXTENSION_ID)
+
+    contents = env_paths["env"].read_text()
+    assert "ANTHROPIC_API_KEY=" in contents
+    assert "# comment" in contents
+    assert f"EXTENSION_ID={EXTENSION_ID}" in contents
+
+
+@pytest.mark.django_db
+def test_creates_env_when_no_example_either(native_host_dir, browser_dirs, env_paths):
+    assert not env_paths["env"].exists()
+    assert not env_paths["example"].exists()
+
+    call_command("install_native_host", "--extension-id", EXTENSION_ID)
+
+    assert env_paths["env"].exists()
+    assert f"EXTENSION_ID={EXTENSION_ID}" in env_paths["env"].read_text()
+
+
+@pytest.mark.django_db
+def test_updates_only_extension_id_line_in_existing_env(native_host_dir, browser_dirs, env_paths):
+    env_paths["env"].write_text(
+        "ANTHROPIC_API_KEY=sk-ant-abc123\n# a comment\nLLM_MODEL=claude-sonnet-5\n"
+    )
+
+    call_command("install_native_host", "--extension-id", EXTENSION_ID)
+
+    contents = env_paths["env"].read_text()
+    assert "ANTHROPIC_API_KEY=sk-ant-abc123" in contents
+    assert "# a comment" in contents
+    assert "LLM_MODEL=claude-sonnet-5" in contents
+    assert f"EXTENSION_ID={EXTENSION_ID}" in contents
+
+
+@pytest.mark.django_db
+def test_rerun_with_different_id_updates_line_in_place_no_duplicate(
+    native_host_dir, browser_dirs, env_paths
+):
+    call_command("install_native_host", "--extension-id", "a" * 32)
+    call_command("install_native_host", "--extension-id", "p" * 32)
+
+    contents = env_paths["env"].read_text()
+    assert contents.count("EXTENSION_ID=") == 1
+    assert f"EXTENSION_ID={'p' * 32}" in contents
+    assert "a" * 32 not in contents
+
+
+@pytest.mark.django_db
+def test_prints_extension_id_set_in_env_line(native_host_dir, browser_dirs, env_paths):
+    out = io.StringIO()
+    call_command("install_native_host", "--extension-id", EXTENSION_ID, stdout=out)
+
+    assert f"EXTENSION_ID set in .env: {EXTENSION_ID}" in out.getvalue()
+
+
+@pytest.mark.django_db
+def test_prints_restart_note(native_host_dir, browser_dirs, env_paths):
+    out = io.StringIO()
+    call_command("install_native_host", "--extension-id", EXTENSION_ID, stdout=out)
+
+    output = out.getvalue()
+    assert "restart" in output.lower()
+    assert "manage.py dev" in output
+    assert "runserver" in output or "run_huey" in output
+
+
+@pytest.mark.django_db
+def test_warns_when_real_env_var_already_set(native_host_dir, browser_dirs, env_paths, monkeypatch):
+    monkeypatch.setenv("EXTENSION_ID", "shell-set-value")
+
+    out = io.StringIO()
+    call_command("install_native_host", "--extension-id", EXTENSION_ID, stdout=out)
+
+    output = out.getvalue()
+    assert "environment variable" in output.lower()
+    assert "precedence" in output.lower() or "takes precedence" in output.lower()
+
+
+@pytest.mark.django_db
+def test_no_env_var_warning_when_not_set_in_shell(
+    native_host_dir, browser_dirs, env_paths, monkeypatch
+):
+    monkeypatch.delenv("EXTENSION_ID", raising=False)
+
+    out = io.StringIO()
+    call_command("install_native_host", "--extension-id", EXTENSION_ID, stdout=out)
+
+    assert "precedence" not in out.getvalue().lower()
+
+
+def test_real_env_example_documents_extension_id():
+    """The actual repo .env.example (not a fixture) documents EXTENSION_ID."""
+    contents = Path(cmd.PROJECT_ROOT / ".env.example").read_text()
+    assert "EXTENSION_ID" in contents
+
+
+@pytest.mark.django_db
+def test_env_untouched_when_neither_browser_present(
+    native_host_dir, env_paths, tmp_path, monkeypatch
+):
+    chrome_dir = tmp_path / "Chrome"  # never created
+    brave_dir = tmp_path / "Brave-Browser"  # never created
+    monkeypatch.setattr(
+        cmd,
+        "CANDIDATE_BROWSERS",
+        [
+            ("Chrome", chrome_dir, chrome_dir / "NativeMessagingHosts"),
+            ("Brave", brave_dir, brave_dir / "NativeMessagingHosts"),
+        ],
+    )
+
+    with pytest.raises(CommandError):
+        call_command("install_native_host", "--extension-id", EXTENSION_ID)
+
+    assert not env_paths["env"].exists()
 
 
 @pytest.mark.django_db

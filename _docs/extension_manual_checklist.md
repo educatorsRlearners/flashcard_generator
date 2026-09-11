@@ -76,6 +76,8 @@ Extension ID registered: <id>
 Wrapper script written: /path/to/repo/native_host/run_host.sh
 Chrome manifest written: /Users/you/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.flashcard_generator.native_host.json
 Brave manifest written: /Users/you/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.flashcard_generator.native_host.json
+EXTENSION_ID set in .env: <id>
+Restart any already-running backend process (manage.py dev, or runserver/run_huey started manually) for the new EXTENSION_ID to take effect - config/settings.py reads .env once at process start.
 ```
 
 One "`<Browser> manifest written: ...`" line per browser it found
@@ -86,14 +88,13 @@ silent partial failure would instead look like the command exiting
 non-zero with a `CommandError` (e.g. "Neither Chrome nor Brave appears to
 be installed...").
 
-### 4. Set `EXTENSION_ID` for the backend
+### 4. Check that `EXTENSION_ID` was set for the backend
 
-Set the backend's `EXTENSION_ID` environment variable to the **same** ID
-from step 2, before starting the backend (`uv run python manage.py dev` or
-letting the native host spawn it). This is required for CORS: the backend
+Step 3's installer already writes the backend's `EXTENSION_ID` into `.env`
+for you — no hand-editing needed. This is required for CORS: the backend
 only emits `Access-Control-Allow-Origin` for
 `chrome-extension://<EXTENSION_ID>` when this setting matches the loaded
-extension's actual ID.
+extension's actual ID, so verify it landed correctly before moving on.
 
 **Check this first when something doesn't work.** A mismatched or unset
 `EXTENSION_ID` makes every `fetch()` from the popup fail its CORS
@@ -102,8 +103,13 @@ preflight, which surfaces in the popup as a generic
 backend actually being down. `popup.js`'s own code comments call this out
 as the single easiest thing to get wrong.
 
-**Pass**: `echo $EXTENSION_ID` (in the shell that starts the backend, or
-your `.env` file) prints the same ID noted in step 2.
+**Pass**: `.env` in the repo root contains an `EXTENSION_ID=<id>` line
+matching the ID noted in step 2 (e.g. `grep EXTENSION_ID .env`), and if a
+backend process was already running before step 3, it has been restarted
+since — `.env` is only read once at process start, so a still-running
+`manage.py dev`/`runserver`/`run_huey` keeps using its old value. Also
+confirm `EXTENSION_ID` isn't separately set as a real shell environment
+variable with a stale value — that would silently override `.env`.
 
 ### 5. Reload the extension once more
 
