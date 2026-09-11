@@ -7,6 +7,8 @@ __pycache__/
 .claude/
 .env
 .extension_token
+.native_host.log
+.native_host.lock
 huey.sqlite3-shm
 huey.sqlite3-wal
 db.sqlite3-shm
