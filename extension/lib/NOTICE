@@ -1,0 +1,15 @@
+This directory vendors Readability.js from Mozilla's readability project:
+
+    https://github.com/mozilla/readability
+
+Copyright (c) 2010 Arc90 Inc
+
+Licensed under the Apache License, Version 2.0. See LICENSE in this
+directory for the full license text.
+
+The upstream repository does not ship a separate NOTICE file (checked at
+tag 0.6.0 / commit 04fd32f72b448c12b02ba6c40928b67e510bac49); the
+copyright and license notice above is carried forward from the header
+comment of Readability.js itself and from the upstream LICENSE.md. This
+file exists to satisfy Apache License 2.0 Section 4(d) (reproducing
+attribution notices) alongside the vendored file, per issue #40.
