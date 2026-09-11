@@ -1,54 +1,59 @@
-<svg width="1200" height="300" viewBox="0 0 1200 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Flashcard Generator">
+<svg width="1200" height="300" viewBox="0 0 1200 300" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="Flashcard Generator: turn any web page into reviewed, spaced-repetition Anki flashcards">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#1e1b4b"/>
       <stop offset="55%" stop-color="#312e81"/>
       <stop offset="100%" stop-color="#0f172a"/>
     </linearGradient>
-    <linearGradient id="card1" x1="0%" y1="0%" x2="100%" y2="100%">
+    <linearGradient id="cardBack" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#6366f1"/>
       <stop offset="100%" stop-color="#4338ca"/>
     </linearGradient>
-    <linearGradient id="card2" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#a78bfa"/>
-      <stop offset="100%" stop-color="#7c3aed"/>
+    <linearGradient id="cardFront" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbfbff"/>
+      <stop offset="100%" stop-color="#e6e8fd"/>
     </linearGradient>
-    <linearGradient id="card3" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#f5f3ff"/>
-      <stop offset="100%" stop-color="#e0e7ff"/>
+    <linearGradient id="check" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#059669"/>
     </linearGradient>
+    <filter id="soft-shadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000000" flood-opacity="0.28"/>
+    </filter>
   </defs>
 
   <rect width="1200" height="300" fill="url(#bg)"/>
 
-  <!-- soft decorative dot grid -->
-  <g fill="#818cf8" opacity="0.18">
-    <circle cx="1080" cy="60" r="3"/>
-    <circle cx="1120" cy="90" r="3"/>
-    <circle cx="1150" cy="50" r="3"/>
-    <circle cx="1100" cy="130" r="3"/>
-    <circle cx="1150" cy="160" r="3"/>
-    <circle cx="1060" cy="200" r="3"/>
-    <circle cx="1140" cy="230" r="3"/>
+  <!-- soft decorative dot grid, top-right -->
+  <g fill="#818cf8" opacity="0.16">
+    <circle cx="1085" cy="55" r="3"/>
+    <circle cx="1123" cy="86" r="3"/>
+    <circle cx="1152" cy="48" r="3"/>
+    <circle cx="1100" cy="126" r="3"/>
+    <circle cx="1150" cy="155" r="3"/>
+    <circle cx="1062" cy="196" r="3"/>
+    <circle cx="1140" cy="228" r="3"/>
+    <circle cx="1180" cy="112" r="3"/>
   </g>
 
-  <!-- stacked flashcards icon -->
-  <g transform="translate(110,150)">
-    <rect x="-46" y="-6" width="150" height="98" rx="14" fill="url(#card1)" transform="rotate(-9)"/>
-    <rect x="-38" y="-18" width="150" height="98" rx="14" fill="url(#card2)" transform="rotate(-1)"/>
-    <rect x="-30" y="-30" width="150" height="98" rx="14" fill="url(#card3)"/>
-    <text x="45" y="12" font-family="Georgia, 'Times New Roman', serif" font-size="30" font-style="italic"
-          fill="#4c1d95" text-anchor="middle">Aa</text>
-    <line x1="-8" y1="30" x2="98" y2="30" stroke="#c7d2fe" stroke-width="4" stroke-linecap="round"/>
-    <line x1="-8" y1="44" x2="70" y2="44" stroke="#c7d2fe" stroke-width="4" stroke-linecap="round"/>
+  <!-- two-card stack + review checkmark -->
+  <g transform="translate(140,150)" filter="url(#soft-shadow)">
+    <rect x="-58" y="-14" width="150" height="104" rx="16" fill="url(#cardBack)" transform="rotate(-7)"/>
+    <rect x="-42" y="-38" width="150" height="104" rx="16" fill="url(#cardFront)"/>
+    <line x1="-20" y1="-14" x2="76" y2="-14" stroke="#4338ca" stroke-width="5" stroke-linecap="round" opacity="0.85"/>
+    <line x1="-20" y1="2"   x2="88" y2="2"   stroke="#818cf8" stroke-width="5" stroke-linecap="round" opacity="0.55"/>
+    <line x1="-20" y1="18"  x2="52" y2="18"  stroke="#818cf8" stroke-width="5" stroke-linecap="round" opacity="0.55"/>
+    <circle cx="88" cy="46" r="26" fill="url(#check)" stroke="#0f172a" stroke-width="3"/>
+    <path d="M 77 46 L 85 54 L 100 37" fill="none" stroke="#f0fdf4" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
   </g>
 
   <!-- wordmark -->
   <g font-family="'Helvetica Neue', Helvetica, Arial, sans-serif">
-    <text x="330" y="150" font-size="54" font-weight="700" fill="#f8fafc">Flashcard Generator</text>
-    <text x="332" y="188" font-size="21" fill="#c7d2fe">Any web page &#8594; reviewed, spaced-repetition cards &#8594; Anki</text>
+    <text x="330" y="146" font-size="52" font-weight="700" letter-spacing="-0.5" fill="#f8fafc">Flashcard Generator</text>
+    <text x="332" y="184" font-size="20" fill="#c7d2fe">Any web page &#8594; reviewed, spaced-repetition cards &#8594; Anki</text>
   </g>
 
   <!-- accent rule -->
-  <rect x="332" y="205" width="640" height="3" rx="1.5" fill="#818cf8" opacity="0.6"/>
+  <rect x="332" y="201" width="600" height="3" rx="1.5" fill="#818cf8" opacity="0.55"/>
 </svg>
