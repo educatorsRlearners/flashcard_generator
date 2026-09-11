@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Flashcard Generator",
+  "version": "1.0.0",
+  "description": "Generate flashcards from the page you're viewing.",
+  "key": "REPLACE_WITH_YOUR_OWN_OPENSSL_GENERATED_KEY",
+  "permissions": ["nativeMessaging", "activeTab", "scripting", "tabs"],
+  "host_permissions": ["http://127.0.0.1:8000/*"],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}
