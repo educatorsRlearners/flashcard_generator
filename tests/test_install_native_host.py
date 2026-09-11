@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import json
 import stat
+from pathlib import Path
 
 import pytest
 from django.core.management import call_command
@@ -355,6 +356,33 @@ def test_no_env_var_warning_when_not_set_in_shell(
     call_command("install_native_host", "--extension-id", EXTENSION_ID, stdout=out)
 
     assert "precedence" not in out.getvalue().lower()
+
+
+def test_real_env_example_documents_extension_id():
+    """The actual repo .env.example (not a fixture) documents EXTENSION_ID."""
+    contents = Path(cmd.PROJECT_ROOT / ".env.example").read_text()
+    assert "EXTENSION_ID" in contents
+
+
+@pytest.mark.django_db
+def test_env_untouched_when_neither_browser_present(
+    native_host_dir, env_paths, tmp_path, monkeypatch
+):
+    chrome_dir = tmp_path / "Chrome"  # never created
+    brave_dir = tmp_path / "Brave-Browser"  # never created
+    monkeypatch.setattr(
+        cmd,
+        "CANDIDATE_BROWSERS",
+        [
+            ("Chrome", chrome_dir, chrome_dir / "NativeMessagingHosts"),
+            ("Brave", brave_dir, brave_dir / "NativeMessagingHosts"),
+        ],
+    )
+
+    with pytest.raises(CommandError):
+        call_command("install_native_host", "--extension-id", EXTENSION_ID)
+
+    assert not env_paths["env"].exists()
 
 
 @pytest.mark.django_db

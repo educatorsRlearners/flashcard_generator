@@ -571,6 +571,31 @@ Linux/Windows native-messaging support is tracked separately in #43.
 For the full manual verification checklist (cold start, error cases,
 review-tab regression), see `_docs/extension_manual_checklist.md`.
 
+### Auth token + `EXTENSION_ID`
+
+Extension requests authenticate with a local shared-secret bearer token
+(`Authorization: Bearer <token>`, #33), minted on first installer run and
+stored git-ignored in `.extension_token` (`EXTENSION_TOKEN_FILE`):
+
+```
+uv run python manage.py extension_token --mint    # first time (fails if one exists)
+uv run python manage.py extension_token --show    # print current token
+uv run python manage.py extension_token --rotate  # replace it
+```
+
+CORS is hand-rolled (no dependency): every API response carries
+`Access-Control-Allow-Origin: chrome-extension://<EXTENSION_ID>` only when
+`EXTENSION_ID` (env var, `config/settings.py`) is set to the loaded
+extension's ID. `install_native_host` (step 3 above) sets this for you
+automatically in `.env` - there's no need to set it by hand. Unset or
+stale → header omitted (fail closed, browser blocks the response). If the
+popup reports it cannot reach the backend on first run, check this value
+first: a backend process already running when `.env` was updated keeps
+using its old `EXTENSION_ID` until restarted, and a real `EXTENSION_ID`
+shell environment variable takes precedence over `.env` and must be
+updated/unset too. The native host reads the token file and passes the
+token to the popup, so you never copy it by hand.
+
 ### Backend port configurability (BACKEND_URL)
 
 `BACKEND_URL` (default `http://127.0.0.1:8000`) is the single env var read
