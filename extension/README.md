@@ -11,8 +11,13 @@ for the full setup sequence.
 committed.** Chrome/Brave will refuse to derive a stable extension ID from
 it (or may refuse to load the extension at all). Before loading this
 extension, follow the root `README.md`'s "Browser extension setup" section,
-step 1: generate your own `openssl` signing keypair and replace this
-placeholder with that keypair's base64 public key. Do this first - the
-rest of that section's steps (loading the extension, running
-`install_native_host`) depend on the extension having a stable ID, which
-only a real pinned key provides.
+step 1:
+```
+uv run python manage.py generate_signing_key
+```
+This generates your own `openssl` signing keypair and replaces this
+placeholder with that keypair's base64 public key (pass `--force` to
+regenerate an already-real key). Do this first - the rest of that
+section's steps (loading the extension, running `install_native_host`)
+depend on the extension having a stable ID, which only a real pinned key
+provides.

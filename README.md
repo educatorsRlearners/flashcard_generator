@@ -524,10 +524,16 @@ messaging host (`native_host/host.py`, #37), which Chrome/Brave discover
 via a manifest file registered on your machine. One-time setup, in this
 order:
 
-1. Generate a signing keypair with `openssl` (manual, one-time - not
-   scripted by any command here) and put its base64 public key into
-   `extension/manifest.json`'s `"key"` field. Pinning a key keeps the
-   extension's ID stable across reloads.
+1. Generate a signing keypair and pin it into `extension/manifest.json`'s
+   `"key"` field:
+   ```
+   uv run python manage.py generate_signing_key
+   ```
+   Pinning a key keeps the extension's ID stable across reloads. The
+   private key is written to `.extension_signing_key.pem` at the project
+   root (gitignored). Re-running once a real key is already pinned fails
+   unless you pass `--force` (which regenerates both the private key and
+   the pinned public key, giving the extension a new ID - see steps 2-3).
 2. Load the extension unpacked: `chrome://extensions` (or
    `brave://extensions`) → enable Developer mode → "Load unpacked" →
    select the `extension/` directory. Note the extension ID Chrome/Brave
