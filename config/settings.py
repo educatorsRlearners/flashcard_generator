@@ -197,3 +197,10 @@ ANKI_CONNECT_URL = os.environ.get("ANKI_CONNECT_URL", "http://127.0.0.1:8765")
 # Seconds to wait on any single AnkiConnect HTTP call before treating Anki
 # as unreachable.
 ANKI_CONNECT_TIMEOUT = float(os.environ.get("ANKI_CONNECT_TIMEOUT", "10"))
+
+# --- Browser extension auth (submissions/extension_auth.py, issue #33) ---
+# Local shared-secret token file the extension presents to authenticate its
+# requests to this backend (checked by #35; minted/read by #37/#38's native
+# messaging host on first run). Minted/read/shown via
+# ``manage.py extension_token`` and ``submissions/extension_auth.py``.
+EXTENSION_TOKEN_FILE = BASE_DIR / ".extension_token"

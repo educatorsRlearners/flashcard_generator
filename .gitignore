@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 .claude/
 .env
+.extension_token
 huey.sqlite3-shm
 huey.sqlite3-wal
 db.sqlite3-shm
