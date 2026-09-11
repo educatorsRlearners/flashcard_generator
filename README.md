@@ -517,6 +517,46 @@ uv run python manage.py llm_usage --status failed  # failures only
 uv run python manage.py llm_usage --limit 10
 ```
 
+## Browser extension setup (native messaging host)
+
+The extension (`extension/`) reaches this backend through a native
+messaging host (`native_host/host.py`, #37), which Chrome/Brave discover
+via a manifest file registered on your machine. One-time setup, in this
+order:
+
+1. Generate a signing keypair with `openssl` (manual, one-time - not
+   scripted by any command here) and put its base64 public key into
+   `extension/manifest.json`'s `"key"` field. Pinning a key keeps the
+   extension's ID stable across reloads.
+2. Load the extension unpacked: `chrome://extensions` (or
+   `brave://extensions`) → enable Developer mode → "Load unpacked" →
+   select the `extension/` directory. Note the extension ID Chrome/Brave
+   assigns it - because the key is pinned in step 1, this ID stays stable
+   across future reloads.
+3. Run the installer with that ID:
+   ```
+   uv run python manage.py install_native_host --extension-id <id>
+   ```
+   This writes `native_host/run_host.sh` (a wrapper script with an
+   absolute interpreter path baked in) and registers the native-messaging
+   manifest with whichever of Chrome/Brave are installed, and mints the
+   extension auth token (#33) if one doesn't exist yet. Safe to re-run any
+   time the extension's ID changes (e.g. after an unpinned reload) -
+   re-running overwrites the wrapper and manifest(s) in place.
+4. If Chrome/Brave was already open when the manifest was written, reload
+   the extension once more. Native messaging host manifests are read fresh
+   per `connectNative` call, but a stale `chrome://extensions` page may not
+   reflect a just-loaded ID - if the popup reports it can't connect,
+   reloading the extension is the fix.
+
+`install_native_host --extension-id <id>` can be run before step 1's key
+exists - the ID is always supplied explicitly on the command line, never
+auto-discovered from the extension's files, so the two have no ordering
+dependency beyond needing *an* ID (pinned or not) in hand first.
+
+macOS only (this repo's development and documented setup are macOS-only);
+Linux/Windows native-messaging support is tracked separately in #43.
+
 ## Tests
 
 ```

@@ -9,6 +9,7 @@ __pycache__/
 .extension_token
 .native_host.log
 .native_host.lock
+native_host/run_host.sh
 huey.sqlite3-shm
 huey.sqlite3-wal
 db.sqlite3-shm
