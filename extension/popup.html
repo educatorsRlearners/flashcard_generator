@@ -11,6 +11,7 @@
         padding: 12px;
     }
     button {
+        box-sizing: border-box;
         width: 100%;
         padding: 8px;
         font-size: 14px;
@@ -20,9 +21,32 @@
         cursor: default;
         opacity: 0.6;
     }
-    #status {
+    .status-row {
         margin-top: 10px;
         min-height: 2.8em;
+        display: flex;
+        align-items: flex-start;
+    }
+    /* Lightweight CSS spinner shown next to the status text for every
+       in-progress stage (connecting / reading / generating) - a cold
+       start can leave the text unchanged for up to 30s, so this keeps the
+       popup from reading as frozen. Hidden (via the `hidden` attribute)
+       for the terminal Ready/Done/Error states. */
+    .spinner {
+        flex: none;
+        width: 12px;
+        height: 12px;
+        margin: 3px 8px 0 0;
+        border: 2px solid #ccc;
+        border-top-color: #333;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin {
+        to { transform: rotate(360deg); }
+    }
+    #status {
+        margin: 0;
         color: #333;
     }
     #status.status--error {
@@ -32,7 +56,10 @@
 </head>
 <body>
     <button id="generate" type="button">Generate flashcards from this page</button>
-    <p id="status">Ready.</p>
+    <div class="status-row">
+        <span id="spinner" class="spinner" aria-hidden="true" hidden></span>
+        <p id="status" role="status" aria-live="polite">Ready.</p>
+    </div>
     <script src="popup.js"></script>
 </body>
 </html>

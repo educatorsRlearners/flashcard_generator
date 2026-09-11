@@ -23,13 +23,23 @@
 
     var button = document.getElementById("generate");
     var statusEl = document.getElementById("status");
+    var spinnerEl = document.getElementById("spinner");
 
     function setStatus(text, isError) {
         statusEl.textContent = text;
         statusEl.classList.toggle("status--error", !!isError);
     }
 
+    // Shows/hides the CSS spinner next to the status text. Called for
+    // every in-progress stage (connecting/reading/generating) so a
+    // cold-start wait (up to ~30s with unchanged status text) doesn't
+    // read as frozen; turned off on every terminal state (done or error).
+    function setBusy(isBusy) {
+        spinnerEl.hidden = !isBusy;
+    }
+
     function showError(message) {
+        setBusy(false);
         setStatus(message, true);
         button.disabled = false;
     }
@@ -134,6 +144,7 @@
                 });
             }
             if (data.review_url) {
+                setBusy(false);
                 setStatus("Done — review tab opened.");
                 chrome.tabs.create({ url: data.review_url });
                 return; // leave the button disabled - nothing left to retry
@@ -166,6 +177,7 @@
 
     function runFlow() {
         button.disabled = true;
+        setBusy(true);
         setStatus("Connecting to backend…");
 
         return connectNativeHost().catch(function (err) {
