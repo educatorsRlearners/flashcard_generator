@@ -137,8 +137,8 @@ The OCR toolchain has two parts:
 1. **Native binary (outside `uv`):** install Tesseract —
    `brew install tesseract` (macOS) or
    `sudo apt install tesseract-ocr` (Debian/Ubuntu).
-2. **Python binding (inside `uv`):** `uv add pytesseract`
-   (pillow, needed to decode images, is already a dependency).
+2. **Python binding (inside `uv`):** `pytesseract` is already a dependency
+   (installed by `uv sync`; pillow, needed to decode images, likewise).
 
 OCR is enabled by default (`OCR_ENABLED=1`) and is purely local — no
 server, no API key. When the toolchain is absent (binding not installed or
@@ -188,7 +188,8 @@ the rate-limit clock across workers is part of background batch processing
 A URL that cannot be extracted ends `status = failed` with two fields: a
 machine-readable `failure_kind` (`dns`, `connection`, `http_client`,
 `blocked`, `blocked_by_robots`, `retries_exhausted`, `timeout`, `too_large`,
-`unsupported_type`, `no_content`, `unknown`) and a one-line `failure_reason`
+`unsupported_type`, `no_content`, `paywall`, `bot_wall`, `consent_wall`,
+`unknown`) and a one-line `failure_reason`
 with the specific detail (e.g. `HTTP 429 (rate limited)`). A bad URL never
 stops the run: the command skips
 it, moves to the next URL, and still exits 0. The batch detail page and the
@@ -202,6 +203,22 @@ chosen keeps `extraction_method = none`. The no-selector run
 `none` rows, so it **re-attempts every previously-failed URL** on each run.
 This is intentional - it is the way to retry transient failures - but it
 means a plain re-run is not idempotent for rows that keep failing.
+
+### Extension submissions (`extraction_method = extension`)
+
+Pages submitted from the browser extension skip the fetch stack above: the
+content script (`extension/content_extract.js`) extracts title/text in the
+live, already-rendered DOM with vendored Readability.js
+(`extension/lib/Readability.js`), falling back to
+`document.title` / `document.body.innerText` when Readability yields
+nothing. Before collecting, it runs a bounded lazy-image reveal pass (at
+most 10 viewport hops × 150 ms ≈ 1.5 s, scroll position restored,
+fail-soft) so IntersectionObserver-driven lazy images populate before
+candidate collection. Alongside the text it sends up to 25 candidate image
+URLs scoped to the Readability article (`images`, DOM order); the server
+stores them on `SubmittedURL.extension_image_urls` and they become the
+first-choice candidates in *Card images* below. The submit endpoint rejects
+text under the 200-non-whitespace-char threshold with `text too short`.
 
 ## Generate cards
 
@@ -313,14 +330,27 @@ admin.
 As the final step of `generate_cards`, each new `Card` gets **at most one**
 image (`submissions/images.py`):
 
-1. **Source page first.** The card's source page is re-fetched (reusing the
-   extraction fetch stack — politeness, size cap, retries) and its `<img>`
-   tags are scanned for a *usable* image.
-2. **Draw Things fallback.** If no source image is usable, one image is
+1. **Extension candidates first.** For extension submissions, the
+   `extension_image_urls` stored at submit time (live-DOM article images —
+   the only candidates on authenticated / JS-rendered pages) come first,
+   in received order, followed by the server-refetched candidates below.
+   Deduplicated across both lists, capped at `MAX_IMAGE_CANDIDATES` (25)
+   total. Both sources pass the same chrome-marker / usability filter.
+2. **Source page refetch.** The card's source page is re-fetched (reusing
+   the extraction fetch stack — politeness, size cap, retries) and its
+   `<img>` / `<source>` tags (`src`, `data-src`, `data-original`,
+   `data-lazy-src`, first `srcset` URL) are scanned for candidates.
+3. **Relevance ranking.** Candidates are reordered best-first, purely and
+   deterministically (stable sort, ties keep DOM/merge order):
+   hero `og:image` / `twitter:image` > term-match (card token in image
+   `alt` or URL slug) > larger declared `width × height` area
+   (missing = 0) > DOM order. Ranking reorders only — never admits or
+   rejects.
+4. **Draw Things fallback.** If no source image is usable, one image is
    requested from a local Draw Things over its Automatic1111-compatible
    `/sdapi/v1/txt2img` endpoint, with a prompt built from the card's own
    term / topic.
-3. **No image.** If neither yields anything the card is still produced,
+5. **No image.** If neither yields anything the card is still produced,
    with `image_source = none`. Image work never raises, never aborts the
    batch, and is bounded by a per-image timeout (`IMAGE_FETCH_TIMEOUT`)
    and a Draw Things timeout (`DRAW_THINGS_TIMEOUT`).
@@ -366,21 +396,61 @@ note type); a raw query works too, e.g.
 
 When a new batch generates cards, `submissions/generation.py` prepends a
 few-shot section to the generation system prompt, built from stored
-`Feedback`:
+`Feedback`. Default strategy is relevance-ranked and token-budgeted
+(`FEWSHOT_SELECTION_MODE=relevance`); `recency` reproduces the original
+most-recent-N-per-category pick:
 
-- The most recent `FEWSHOT_EXAMPLES_PER_CATEGORY` accepted rows and,
-  separately, the most recent `FEWSHOT_EXAMPLES_PER_CATEGORY` rejected rows
-  (named constant in `submissions/generation.py`, currently 3) - so the
-  section is capped at `2 x FEWSHOT_EXAMPLES_PER_CATEGORY` examples however
-  much feedback accumulates.
-- Selection is "most recent N per category" by timestamp; within the prompt
-  the examples are ordered oldest-first, so the assembled prompt string is
-  deterministic for the same stored data.
+- **relevance (default):** feedback examples are ranked by token-overlap
+  similarity to the current page text (offline default; a real embedding
+  backend can be plugged via `FEWSHOT_EMBED_FN`, a dotted path to
+  `fn(list[str]) -> list[list[float] | None]`) and added in rank order
+  until the next one would exceed `FEWSHOT_TOKEN_BUDGET` (default 2000
+  tokens, `~4` chars/token via `FEWSHOT_CHARS_PER_TOKEN`). The budget is
+  split so accepted examples get `FEWSHOT_ACCEPTED_SHARE` (default 0.5)
+  and rejected ones get the rest — one side cannot crowd out the other.
+  Examples shorter than `FEWSHOT_MIN_FEEDBACK_CHARS` (default 20
+  non-whitespace chars) are skipped. Any backend/counter failure degrades
+  to the recency pick, never a crash.
+- **recency fallback:** the most recent `FEWSHOT_EXAMPLES_PER_CATEGORY`
+  accepted rows and, separately, the most recent
+  `FEWSHOT_EXAMPLES_PER_CATEGORY` rejected rows (named constant in
+  `submissions/generation.py`, currently 3) — capped at
+  `2 x FEWSHOT_EXAMPLES_PER_CATEGORY` examples however much feedback
+  accumulates; ordered oldest-first so the prompt string is deterministic.
 - Each example shows the card; rejected examples also show the reason, or
   `(no reason given)` when the rejection had none (reason-less rejections
   are still used).
 - Zero feedback -> no section at all. Only-accepted or only-rejected
   feedback -> only that category's list is included; the other is omitted.
+
+Settings (`config/settings.py`, each also an env var of the same name):
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `FEWSHOT_TOKEN_BUDGET` | `2000` | max tokens for the whole few-shot section (both categories) |
+| `FEWSHOT_ACCEPTED_SHARE` | `0.5` | fraction of the budget reserved for accepted examples |
+| `FEWSHOT_SELECTION_MODE` | `relevance` | `relevance` or `recency` |
+| `FEWSHOT_MIN_FEEDBACK_CHARS` | `20` | shorter feedback examples are skipped |
+| `FEWSHOT_CHARS_PER_TOKEN` | `4` | chars-per-token approximation for the budget check |
+| `FEWSHOT_EMBED_FN` | `` | optional dotted path to an embedding backend |
+
+## Review grid
+
+`batch/<id>/review/` shows one batch's cards (`Card.objects.for_review()` —
+semantic duplicates hidden, never deleted). Per card, inline and without a
+page reload:
+
+- **Accept / Reject** (+ optional reason on reject; accepting clears it).
+  Every decision writes a durable `Feedback` snapshot above (`was_edited`
+  records whether the card had been edited).
+- **Edit text / revert.** Edit front/back; the first save snapshots
+  `original_front` / `original_back` so revert always restores the
+  generator output (`is_edited`, `edited_at` track state).
+- **Image:** pick from source candidates, regenerate via Draw Things,
+  remove, or revert to the automatic pick (`image_manually_set` /
+  `original_image` / `original_image_source` track state). Placement
+  follows `Card.image_placement` (cloze → question, basic → answer).
+- **Finish** → push accepted cards to Anki below.
 
 ## Push to Anki
 
@@ -559,6 +629,39 @@ Linux/Windows native-messaging support is tracked separately in #43.
 
 For the full manual verification checklist (cold start, error cases,
 review-tab regression), see `_docs/extension_manual_checklist.md`.
+
+### Auth token + `EXTENSION_ID`
+
+Extension requests authenticate with a local shared-secret bearer token
+(`Authorization: Bearer <token>`, #33), minted on first installer run and
+stored git-ignored in `.extension_token` (`EXTENSION_TOKEN_FILE`):
+
+```
+uv run python manage.py extension_token --mint    # first time (fails if one exists)
+uv run python manage.py extension_token --show    # print current token
+uv run python manage.py extension_token --rotate  # replace it
+```
+
+CORS is hand-rolled (no dependency): every API response carries
+`Access-Control-Allow-Origin: chrome-extension://<EXTENSION_ID>` only when
+`EXTENSION_ID` (env var, `config/settings.py`) is set to the loaded
+extension's ID. Unset → header omitted (fail closed, browser blocks the
+response). If the popup reports it cannot reach the backend on first run,
+check this value first. The native host reads the token file and passes
+the token to the popup, so you never copy it by hand.
+
+### Using it + API
+
+Click **Generate** in the popup on a regular webpage (`chrome://` and
+extension pages are unreadable): the popup gets token + `base_url` from
+the native host (spawning `manage.py dev` if needed), injects
+Readability + `content_extract.js`, POSTs `{url, title, text, images}` to
+`POST /api/extension/submit/` (auth + `EXTENSION_ID` CORS as above, 202
+with `{batch_id, submitted_url_id}`), polls
+`GET /api/extension/submit/<id>/status/` every 1 s until `terminal: true`,
+then opens `review_url`. Card generation is chained automatically
+(`process_extension_submission`). Closing the popup mid-flow aborts it;
+re-clicking starts a fresh submission safely.
 
 ### Backend port configurability (BACKEND_URL)
 
