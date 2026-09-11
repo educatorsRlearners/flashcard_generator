@@ -7,6 +7,7 @@ __pycache__/
 .claude/
 .env
 .extension_token
+.extension_signing_key.pem
 .native_host.log
 .native_host.lock
 native_host/run_host.sh
