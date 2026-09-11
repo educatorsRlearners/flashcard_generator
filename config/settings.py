@@ -204,3 +204,12 @@ ANKI_CONNECT_TIMEOUT = float(os.environ.get("ANKI_CONNECT_TIMEOUT", "10"))
 # messaging host on first run). Minted/read/shown via
 # ``manage.py extension_token`` and ``submissions/extension_auth.py``.
 EXTENSION_TOKEN_FILE = BASE_DIR / ".extension_token"
+# The unpacked extension's chrome-extension://<id> origin, set once after
+# loading the extension in developer mode (issue #35). A fixed, operator-set
+# value rather than reflecting the request's Origin header against an
+# allow-list: this is a single local developer's extension talking to a
+# single local backend, so a static value is simpler and fails closed (no
+# Access-Control-Allow-Origin header emitted, so the browser blocks the
+# response) if it is never configured, instead of an allow-list regex that
+# has to be gotten right to avoid accepting an unintended origin.
+EXTENSION_ID = os.environ.get("EXTENSION_ID", "")
