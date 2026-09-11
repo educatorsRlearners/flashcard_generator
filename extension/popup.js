@@ -16,7 +16,6 @@
 
 (function () {
     var NATIVE_HOST_NAME = "com.flashcard_generator.native_host";
-    var BACKEND_ORIGIN = "http://127.0.0.1:8000";
     // How often to re-poll GET .../status/ while waiting for generation to
     // finish. Not prescribed by #39; 1s is a reasonable default.
     var POLL_INTERVAL_MS = 1000;
@@ -120,7 +119,7 @@
         });
     }
 
-    function pollStatus(submittedUrlId, token) {
+    function pollStatus(submittedUrlId, token, baseUrl) {
         // NOTE (CORS gotcha): both endpoints below only answer this
         // extension's origin when the backend's EXTENSION_ID setting is
         // set to this extension's actual loaded ID. If it isn't, every
@@ -128,7 +127,7 @@
         // error indistinguishable from the backend being unreachable -
         // see README.md's "Browser extension setup" section.
         return fetchOrNetworkError(
-            BACKEND_ORIGIN + "/api/extension/submit/" + submittedUrlId + "/status/",
+            baseUrl + "/api/extension/submit/" + submittedUrlId + "/status/",
             { headers: { Authorization: "Bearer " + token } }
         ).then(function (response) {
             if (!response.ok) {
@@ -140,7 +139,7 @@
         }).then(function (data) {
             if (!data.terminal) {
                 return sleep(POLL_INTERVAL_MS).then(function () {
-                    return pollStatus(submittedUrlId, token);
+                    return pollStatus(submittedUrlId, token, baseUrl);
                 });
             }
             if (data.review_url) {
@@ -153,16 +152,16 @@
         });
     }
 
-    function submitContent(content, tabUrl, token) {
+    function submitContent(content, tabUrl, token, baseUrl) {
         // See the CORS note in pollStatus() above - it applies to this
         // fetch too.
-        return fetchOrNetworkError(BACKEND_ORIGIN + "/api/extension/submit/", {
+        return fetchOrNetworkError(baseUrl + "/api/extension/submit/", {
             method: "POST",
             headers: {
                 Authorization: "Bearer " + token,
                 "Content-Type": "application/json",
             },
-            body: JSON.stringify({ url: tabUrl, title: content.title || "", text: content.text }),
+            body: JSON.stringify({ url: tabUrl, title: content.title || "", text: content.text, images: content.images ?? [] }),
         }).then(function (response) {
             if (!response.ok) {
                 return errorFromResponse(response).then(function (message) {
@@ -171,7 +170,7 @@
             }
             return response.json();
         }).then(function (data) {
-            return pollStatus(data.submitted_url_id, token);
+            return pollStatus(data.submitted_url_id, token, baseUrl);
         });
     }
 
@@ -183,10 +182,14 @@
         return connectNativeHost().catch(function (err) {
             throw { kind: "native-connect", message: err && err.message };
         }).then(function (reply) {
-            if (!reply.ok) {
-                throw { kind: "native-error", message: reply.detail };
+            if (!reply || !reply.ok) {
+                throw { kind: "native-error", message: (reply && reply.detail) || "native host error" };
             }
             var token = reply.token;
+            var baseUrl = reply.base_url;
+            if (typeof baseUrl !== "string" || !baseUrl) {
+                throw { kind: "native-error", message: "invalid base_url from native host" };
+            }
 
             setStatus("Reading page…");
             return chrome.tabs.query({ active: true, currentWindow: true }).then(function (tabs) {
@@ -195,7 +198,7 @@
                     throw { kind: "extract" };
                 }).then(function (content) {
                     setStatus("Generating cards…");
-                    return submitContent(content, tab.url, token);
+                    return submitContent(content, tab.url, token, baseUrl);
                 });
             });
         }).catch(function (err) {

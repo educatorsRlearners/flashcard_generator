@@ -31,6 +31,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 from django.core.management.base import BaseCommand
@@ -42,6 +43,38 @@ WORKER_PREFIX = "[worker]"
 #: seconds means the worker is broken -> exit non-zero instead of looping.
 MAX_WORKER_RESTARTS = 5
 WORKER_RESTART_WINDOW = 60.0
+
+#: Default backend origin (issue #47). Same env var name and same default
+#: as native_host/host.py's DEFAULT_BACKEND_URL and config/settings.py's
+#: BACKEND_URL - that shared name+default is what keeps the three in sync.
+#: host.py stays stdlib-only so the parsing helper below is deliberately
+#: duplicated there instead of imported; if the default ever changes,
+#: update all three.
+DEFAULT_BACKEND_URL = "http://127.0.0.1:8000"
+
+
+def backend_url_to_addrport(url: str) -> str:
+    """Convert a backend origin URL to runserver ``addrport`` form.
+
+    ``"http://127.0.0.1:9000/"`` -> ``"127.0.0.1:9000"``. Mirrors
+    native_host/host.py's helper (duplicated: host.py is stdlib-only).
+    """
+    u = (url or "").strip().rstrip("/")
+    if not u:
+        return backend_url_to_addrport(DEFAULT_BACKEND_URL)
+    if "://" not in u:
+        return u
+    parts = urllib.parse.urlparse(u)
+    host = parts.hostname or "127.0.0.1"
+    port = parts.port or 80
+    return f"{host}:{port}"
+
+
+def default_addrport(env: dict | None = None) -> str:
+    """Addrport derived from the BACKEND_URL env var (issue #47)."""
+    source = env if env is not None else os.environ
+    raw = (source.get("BACKEND_URL", "") or "").strip()
+    return backend_url_to_addrport(raw or DEFAULT_BACKEND_URL)
 
 
 def project_manage_py() -> str:
@@ -85,8 +118,13 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument(
             "--addrport",
-            default="127.0.0.1:8000",
-            help="Address:port for runserver (default %(default)s).",
+            default=None,
+            help=(
+                "Address:port for runserver (default: addrport derived from "
+                "the BACKEND_URL env var, i.e. 127.0.0.1:8000 unless "
+                "overridden). An explicit --addrport always wins over the "
+                "env var."
+            ),
         )
         parser.add_argument(
             "--huey-args",
@@ -109,7 +147,7 @@ class Command(BaseCommand):
                 "(tests use Huey immediate mode)."
             )
             return
-        addrport = options["addrport"]
+        addrport = options["addrport"] or default_addrport()
         huey_args = (options["huey_args"] or "").split()
         code = self.run_supervised(
             addrport,

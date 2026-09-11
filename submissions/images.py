@@ -177,6 +177,43 @@ def _looks_excluded(url: str) -> bool:
     return any(marker in low for marker in EXCLUDE_URL_MARKERS)
 
 
+def _filter_absolute_candidates(urls: list[str]) -> list[str]:
+    """Apply the cheap exclusion rules to already-absolute candidate URLs.
+
+    Shared by :func:`image_candidates` (server-refetched HTML) and
+    :func:`attach_images` (extension-submitted URLs from issue #42), so
+    both sources are filtered by one consistent set of rules: only
+    ``http(s)`` URLs survive, chrome-marker URLs (favicons, logos, ads,
+    ...) and non-raster extensions are dropped. De-duplicated, DOM order
+    preserved, uncapped - callers apply :data:`MAX_IMAGE_CANDIDATES`.
+    Never raises on weird input.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for url in urls or []:
+        try:
+            if not isinstance(url, str) or not url:
+                continue
+            absolute = url.strip()
+            if not absolute.lower().startswith(("http://", "https://")):
+                continue
+            if _looks_excluded(absolute):
+                continue
+            path = urlsplit(absolute).path.lower()
+            if "." in path.rsplit("/", 1)[-1] and not path.endswith(
+                _RASTER_SUFFIXES
+            ):
+                continue
+            if absolute in seen:
+                continue
+            seen.add(absolute)
+            out.append(absolute)
+        except Exception:  # noqa: BLE001 - one bad URL never fails the batch
+            logger.debug("image: skipping bad candidate URL %r", url)
+            continue
+    return out
+
+
 def image_candidates(html: str | None, base_url: str) -> list[str]:
     """Ordered, de-duplicated list of absolute candidate image URLs from
     *html*, cheapest exclusions applied (data URIs, chrome markers,
@@ -190,26 +227,12 @@ def image_candidates(html: str | None, base_url: str) -> list[str]:
     except Exception:  # noqa: BLE001 - never fail on malformed markup
         logger.debug("image: HTML parse of %s failed", base_url, exc_info=True)
 
-    seen: set[str] = set()
-    out: list[str] = []
+    absolute_urls: list[str] = []
     for raw in collector.sources:
         if not raw or raw.startswith("data:"):
             continue
-        absolute = urljoin(base_url, raw)
-        if not absolute.lower().startswith(("http://", "https://")):
-            continue
-        if _looks_excluded(absolute):
-            continue
-        path = urlsplit(absolute).path.lower()
-        if "." in path.rsplit("/", 1)[-1] and not path.endswith(_RASTER_SUFFIXES):
-            continue
-        if absolute in seen:
-            continue
-        seen.add(absolute)
-        out.append(absolute)
-        if len(out) >= MAX_IMAGE_CANDIDATES:
-            break
-    return out
+        absolute_urls.append(urljoin(base_url, raw))
+    return _filter_absolute_candidates(absolute_urls)[:MAX_IMAGE_CANDIDATES]
 
 
 # --- Usable-image check ---------------------------------------------
@@ -449,8 +472,7 @@ def attach_images(
     if not cards:
         return
     client = draw_things or DrawThingsClient()
-    html = _fetch_page_html(submitted_url.url)
-    candidates = image_candidates(html, submitted_url.url)
+    candidates = _merged_candidates(submitted_url)
     for card in cards:
         try:
             outcome = choose_card_image(card, candidates, client)
@@ -459,3 +481,43 @@ def attach_images(
             logger.exception(
                 "image: unexpected failure attaching image to card %s", card.pk
             )
+
+
+def _merged_candidates(submitted_url) -> list[str]:
+    """Merge extension-submitted and server-refetched candidates (issue #42).
+
+    Extension-submitted URLs (collected by the content script from the
+    live DOM - the only candidates on authenticated / JS-rendered pages)
+    come first, in the order received, followed by the existing
+    server-refetch-derived candidates; deduplicated across both lists and
+    capped at :data:`MAX_IMAGE_CANDIDATES` total. Both sources pass
+    through the same :func:`_filter_absolute_candidates` exclusions.
+    Fail-soft: any problem yields just the server list (or ``[]``) -
+    never a raise.
+    """
+    try:
+        extension_raw = getattr(submitted_url, "extension_image_urls", None) or []
+    except Exception:  # noqa: BLE001 - unreadable field degrades to no extension list
+        logger.debug("image: could not read extension_image_urls", exc_info=True)
+        extension_raw = []
+    if not isinstance(extension_raw, list):
+        extension_raw = []
+    extension_candidates = _filter_absolute_candidates(extension_raw)
+    try:
+        html = _fetch_page_html(submitted_url.url)
+    except Exception:  # noqa: BLE001 - fetch failure degrades to extension-only list
+        logger.info(
+            "image: could not fetch source page %s", submitted_url.url, exc_info=True
+        )
+        html = None
+    server_candidates = image_candidates(html, submitted_url.url)
+    merged: list[str] = []
+    seen: set[str] = set()
+    for url in extension_candidates + server_candidates:
+        if url in seen:
+            continue
+        seen.add(url)
+        merged.append(url)
+        if len(merged) >= MAX_IMAGE_CANDIDATES:
+            break
+    return merged

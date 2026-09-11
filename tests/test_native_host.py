@@ -253,6 +253,7 @@ def test_reply_already_running():
         "ok": True,
         "already_running": True,
         "token": "tok",
+        "base_url": host.BACKEND_URL.rstrip("/"),
     }
 
 
@@ -261,6 +262,7 @@ def test_reply_spawned():
         "ok": True,
         "already_running": False,
         "token": "tok",
+        "base_url": host.BACKEND_URL.rstrip("/"),
     }
 
 
@@ -268,6 +270,7 @@ def test_reply_error_shapes():
     for error in ("bad_request", "spawn_failed", "timeout", "token_unavailable"):
         payload = host.reply_error(error, "details here")
         assert payload == {"ok": False, "error": error, "detail": "details here"}
+        assert "base_url" not in payload
 
 
 # -- get_token --------------------------------------------------------------
@@ -354,7 +357,15 @@ def test_spawn_backend_never_inherits_our_stdout(tmp_path, monkeypatch):
     monkeypatch.setattr(host.subprocess, "Popen", fake_popen)
     host.spawn_backend(tmp_path, tmp_path / "log.txt")
 
-    assert captured["cmd"] == ["uv", "run", "python", "manage.py", "dev"]
+    assert captured["cmd"] == [
+        "uv",
+        "run",
+        "python",
+        "manage.py",
+        "dev",
+        "--addrport",
+        host.backend_url_to_addrport(host.resolve_backend_url()),
+    ]
     assert captured["cwd"] == str(tmp_path)
     assert captured["start_new_session"] is True
     assert captured["stdin"] == subprocess.DEVNULL
@@ -416,7 +427,12 @@ def test_handle_request_already_running_fast_path_no_spawn(tmp_path, monkeypatch
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not spawn")),
     )
     reply = host.handle_request(project, opener, host.BACKEND_URL)
-    assert reply == {"ok": True, "already_running": True, "token": "tok-123"}
+    assert reply == {
+        "ok": True,
+        "already_running": True,
+        "token": "tok-123",
+        "base_url": host.BACKEND_URL.rstrip("/"),
+    }
 
 
 def test_handle_request_spawns_and_becomes_ready(tmp_path, monkeypatch):
@@ -440,7 +456,12 @@ def test_handle_request_spawns_and_becomes_ready(tmp_path, monkeypatch):
     monkeypatch.setattr(host, "poll_until_ready", lambda is_up_fn, **k: is_up_fn())
 
     reply = host.handle_request(project, opener, host.BACKEND_URL)
-    assert reply == {"ok": True, "already_running": False, "token": "tok-123"}
+    assert reply == {
+        "ok": True,
+        "already_running": False,
+        "token": "tok-123",
+        "base_url": host.BACKEND_URL.rstrip("/"),
+    }
     assert not (project / host.LOCK_FILENAME).exists()  # released
 
 

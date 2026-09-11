@@ -5,8 +5,10 @@ and exchanges exactly one request/response with it over stdio, framed as a
 4-byte little-endian length prefix followed by that many bytes of UTF-8
 JSON. Given one request, this script:
 
-* checks whether the Django backend answers at ``BACKEND_URL``;
-* if not, spawns ``uv run python manage.py dev`` (detached, matching
+* checks whether the Django backend answers at the configured
+  ``BACKEND_URL`` (env var, issue #47; default ``http://127.0.0.1:8000/``);
+* if not, spawns ``uv run python manage.py dev --addrport <addrport>``
+  with the addrport derived from that same URL (detached, matching
   ``dev.py``'s own conventions) and polls until it does, or times out;
 * reads (or mints, on first run) the extension auth token from #33; and
 * replies with a single framed JSON message, then exits.
@@ -29,6 +31,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -45,6 +48,46 @@ READY_TIMEOUT_S = 30.0
 STALE_LOCK_THRESHOLD_S = READY_TIMEOUT_S + 5.0
 
 BACKEND_URL = "http://127.0.0.1:8000/"
+
+#: Default backend origin when the BACKEND_URL env var is unset or blank
+#: (issue #47). BACKEND_URL above is kept equal to this default for
+#: backwards compatibility; runtime code must call resolve_backend_url()
+#: (reads the env at call time) rather than the module constant, so an
+#: override works without reimporting. config/settings.py and
+#: submissions/management/commands/dev.py read the same env var name with
+#: the same default - that shared name+default is what keeps them in sync.
+DEFAULT_BACKEND_URL = BACKEND_URL
+
+
+def resolve_backend_url(env: dict | None = None) -> str:
+    """Return the configured backend origin (issue #47).
+
+    Reads BACKEND_URL from *env* (default os.environ), falling back to
+    DEFAULT_BACKEND_URL when unset or blank. Never raises; surrounding
+    whitespace is stripped, trailing slash kept (callers strip it for the
+    origin form in replies).
+    """
+    source = env if env is not None else os.environ
+    raw = (source.get("BACKEND_URL", "") or "").strip()
+    return raw or DEFAULT_BACKEND_URL
+
+
+def backend_url_to_addrport(url: str) -> str:
+    """Convert a backend origin URL to runserver ``addrport`` form.
+
+    ``"http://127.0.0.1:9000/"`` -> ``"127.0.0.1:9000"``. A value with no
+    ``://`` is already addrport form and is returned (slash-stripped) as
+    is, so BACKEND_URL="127.0.0.1:9000" also works. stdlib only.
+    """
+    u = (url or "").strip().rstrip("/")
+    if not u:
+        return backend_url_to_addrport(DEFAULT_BACKEND_URL)
+    if "://" not in u:
+        return u
+    parts = urllib.parse.urlparse(u)
+    host = parts.hostname or "127.0.0.1"
+    port = parts.port or 80
+    return f"{host}:{port}"
 
 #: This script's grandparent directory - the directory containing manage.py.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -125,12 +168,22 @@ def write_message(obj: object, stream) -> None:
 # -- reply payload shapes ---------------------------------------------------
 
 
-def reply_already_running(token: str) -> dict:
-    return {"ok": True, "already_running": True, "token": token}
+def reply_already_running(token: str, base_url: str | None = None) -> dict:
+    return {
+        "ok": True,
+        "already_running": True,
+        "token": token,
+        "base_url": (base_url or resolve_backend_url()).rstrip("/"),
+    }
 
 
-def reply_spawned(token: str) -> dict:
-    return {"ok": True, "already_running": False, "token": token}
+def reply_spawned(token: str, base_url: str | None = None) -> dict:
+    return {
+        "ok": True,
+        "already_running": False,
+        "token": token,
+        "base_url": (base_url or resolve_backend_url()).rstrip("/"),
+    }
 
 
 def reply_error(error: str, detail: str) -> dict:
@@ -142,12 +195,13 @@ def reply_error(error: str, detail: str) -> dict:
 
 def is_up(
     opener=urllib.request.urlopen,
-    url: str = BACKEND_URL,
+    url: str | None = None,
     timeout: float = PROBE_TIMEOUT_S,
 ) -> bool:
     """True if *url* answers with any HTTP response within *timeout*."""
+    target = url or resolve_backend_url()
     try:
-        opener(url, timeout=timeout)
+        opener(target, timeout=timeout)
         return True
     except urllib.error.URLError:
         return False
@@ -240,8 +294,16 @@ def release_lock(lock_path: Path) -> None:
 # -- spawning manage.py dev -------------------------------------------------
 
 
-def spawn_backend(project_root: Path, log_path: Path) -> subprocess.Popen:
-    """Spawn ``uv run python manage.py dev``, detached, logging to *log_path*.
+def spawn_backend(
+    project_root: Path,
+    log_path: Path,
+    addrport: str | None = None,
+) -> subprocess.Popen:
+    """Spawn ``uv run python manage.py dev --addrport <addrport>``.
+
+    *addrport* defaults to the addrport derived from the configured
+    BACKEND_URL (issue #47), so the spawned backend always listens where
+    the readiness probe looks - no drift. Detached, logging to *log_path*.
 
     Raises ``SpawnFailed`` if ``manage.py`` is missing (misplaced script)
     or the subprocess could not be started at all (e.g. ``uv`` not on
@@ -251,11 +313,12 @@ def spawn_backend(project_root: Path, log_path: Path) -> subprocess.Popen:
     if not manage_py.exists():
         raise SpawnFailed(f"manage.py not found at {manage_py}")
 
+    target_addrport = addrport or backend_url_to_addrport(resolve_backend_url())
     env = build_child_env(os.environ)
     log_file = open(log_path, "a")
     try:
         return subprocess.Popen(
-            ["uv", "run", "python", "manage.py", "dev"],
+            ["uv", "run", "python", "manage.py", "dev", "--addrport", target_addrport],
             cwd=str(project_root),
             stdout=log_file,
             stderr=log_file,
@@ -310,31 +373,43 @@ def get_token(project_root: Path) -> str:
 def handle_request(
     project_root: Path = PROJECT_ROOT,
     opener=urllib.request.urlopen,
-    url: str = BACKEND_URL,
+    url: str | None = None,
 ) -> dict:
-    """Handle one request end-to-end and return the reply payload dict."""
+    """Handle one request end-to-end and return the reply payload dict.
+
+    *url* defaults to the configured BACKEND_URL (issue #47). Mismatch
+    policy: the configured URL always wins. If it answers, the reply is
+    already_running for it - a backend a user started by hand on some
+    other port is ignored, not adopted. If it is down, a backend is
+    spawned with the matching --addrport, even if another port answers.
+    """
     lock_path = project_root / LOCK_FILENAME
     log_path = project_root / LOG_FILENAME
+    target = url or resolve_backend_url()
 
     def probe() -> bool:
-        return is_up(opener, url)
+        return is_up(opener, target)
 
     try:
         # Fast path: already up -> no polling loop, no subprocess.
         if probe():
-            return reply_already_running(get_token(project_root))
+            return reply_already_running(get_token(project_root), target)
 
         # Re-probe immediately before spawning - closes most (not all) of
         # the double-connectNative race.
         if probe():
-            return reply_already_running(get_token(project_root))
+            return reply_already_running(get_token(project_root), target)
 
         acquired = acquire_lock(lock_path)
         spawn_error: SpawnFailed | None = None
         try:
             if acquired:
                 try:
-                    spawn_backend(project_root, log_path)
+                    spawn_backend(
+                        project_root,
+                        log_path,
+                        backend_url_to_addrport(target),
+                    )
                 except SpawnFailed as exc:
                     spawn_error = exc
             if spawn_error is None:
@@ -355,7 +430,7 @@ def handle_request(
                 "timeout",
                 f"backend did not become ready within {READY_TIMEOUT_S:.0f}s",
             )
-        return reply_spawned(get_token(project_root))
+        return reply_spawned(get_token(project_root), target)
     except TokenUnavailable as exc:
         return reply_error("token_unavailable", str(exc))
 

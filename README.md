@@ -560,6 +560,46 @@ Linux/Windows native-messaging support is tracked separately in #43.
 For the full manual verification checklist (cold start, error cases,
 review-tab regression), see `_docs/extension_manual_checklist.md`.
 
+### Backend port configurability (BACKEND_URL)
+
+`BACKEND_URL` (default `http://127.0.0.1:8000`) is the single env var read
+by both `native_host/host.py` (readiness probe, the `--addrport` it spawns
+`manage.py dev` with, and the `base_url` it returns to the extension) and
+`submissions/management/commands/dev.py` (its `--addrport` default, also
+exposed as `config/settings.py`'s `BACKEND_URL`). The shared name+default
+is what keeps them from drifting. An explicit `dev --addrport` flag always
+wins over the env var.
+
+To run everything on another port (e.g. 9000):
+
+1. Start the backend with the env var set:
+   ```
+   BACKEND_URL=http://127.0.0.1:9000 uv run python manage.py dev
+   ```
+2. Make the same value visible to the native host. The host is launched by
+   Chrome, so it reads Chrome's environment, not your terminal's — launch
+   Chrome from a terminal with the var set (e.g.
+   `BACKEND_URL=http://127.0.0.1:9000 open -a "Google Chrome"`), or set it
+   persistently for GUI apps.
+3. Hand-edit `extension/manifest.json`'s `host_permissions` to match the
+   new origin exactly (MV3 permissions are static at load time, so this
+   cannot be picked up at runtime):
+   ```
+   "host_permissions": ["http://127.0.0.1:9000/*"],
+   ```
+   then reload the extension at `chrome://extensions` (Developer mode →
+   Reload). No code or permission-prompt flow is involved.
+4. Re-run the manual checklist above; the popup follows the host's
+   `base_url` with no other change.
+
+Mismatch policy: the host's configured URL always wins. If it answers, the
+extension is pointed at it (`already_running`), even if you also started a
+backend by hand on a different port — that other backend is ignored, not
+adopted. If the configured URL is down, the host spawns its own backend on
+the matching port, even if another port answers. Keep both sides on the
+same `BACKEND_URL` (or pass `dev --addrport` explicitly) to avoid running
+two backends unknowingly.
+
 ## Tests
 
 ```

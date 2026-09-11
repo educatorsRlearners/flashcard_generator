@@ -125,6 +125,26 @@ def submit(request):
     if not isinstance(title, str):
         title = ""
 
+    # Optional candidate image URLs collected by the content script from
+    # the live DOM (issue #42). Missing / null / absent means "no
+    # extension candidates" (same as before this field existed).
+    # Malformed entries are dropped individually - never a whole-request
+    # failure - mirroring how title/text are coerced above. Deeper
+    # filtering (chrome markers, usability) stays server-side in
+    # images.attach_images and applies to both candidate sources.
+    raw_images = payload.get("images", [])
+    if raw_images is None:
+        raw_images = []
+    extension_image_urls: list[str] = []
+    if isinstance(raw_images, list):
+        for entry in raw_images:
+            if not isinstance(entry, str):
+                continue
+            candidate = entry.strip()
+            if not candidate.lower().startswith(("http://", "https://")):
+                continue
+            extension_image_urls.append(candidate)
+
     # Exactly the views.home sequence for turning one URL into a tracked
     # submission (a new Batch every call - including a re-submission of an
     # already-known URL, matching the double-submit behaviour that view
@@ -143,6 +163,7 @@ def submit(request):
     submitted_url.status = SubmittedURL.Status.OK
     submitted_url.failure_kind = ""
     submitted_url.failure_reason = ""
+    submitted_url.extension_image_urls = extension_image_urls
     submitted_url.save()
 
     process_extension_submission(submitted_url.pk)

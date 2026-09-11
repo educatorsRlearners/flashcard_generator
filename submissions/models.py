@@ -121,6 +121,10 @@ class SubmittedURL(models.Model):
         default=ExtractionMethod.NONE,
     )
     extracted_at = models.DateTimeField(null=True, blank=True)
+    #: Candidate image URLs submitted by the browser extension content
+    #: script (issue #42), in DOM order. Server-side filtering
+    #: (images.py markers / usability) still applies before use.
+    extension_image_urls = models.JSONField(default=list, blank=True)
 
     class GenerationStatus(models.TextChoices):
         """State of card generation (issue #6) for this URL.

@@ -352,6 +352,117 @@ def test_generation_still_succeeds_when_image_step_raises(monkeypatch):
     assert su.cards.count() == 1
 
 
+# --- extension-submitted candidates (issue #42) -----------------------
+
+
+def test_merged_candidates_without_extension_images_matches_server_list(
+    monkeypatch,
+):
+    su = make_url()
+    assert su.extension_image_urls == []
+    html = '<img src="/a.png" width="800" height="800">'
+    monkeypatch.setattr(images, "_fetch_page_html", lambda url: html)
+    assert images._merged_candidates(su) == ["https://example.com/a.png"]
+
+
+def test_attach_images_merges_extension_first_with_dedup(monkeypatch):
+    su = make_url()
+    ext_only = "https://example.com/ext-only.png"
+    shared = "https://example.com/shared.png"
+    server_only = "https://example.com/server-only.png"
+    su.extension_image_urls = [ext_only, shared]
+    su.save(update_fields=["extension_image_urls"])
+    html = (
+        f'<img src="{shared}" width="800" height="800">'
+        f'<img src="{server_only}" width="800" height="800">'
+    )
+    monkeypatch.setattr(images, "_fetch_page_html", lambda url: html)
+
+    calls: list[str] = []
+
+    def _fetch(url: str):
+        calls.append(url)
+        if url == server_only:
+            return images.FetchedImage(png_bytes(600, 600), "image/png")
+        raise httpx.ConnectError("boom")
+
+    monkeypatch.setattr(images, "_fetch_image", _fetch)
+    card = make_card(su)
+
+    images.attach_images(su, [card], draw_things=FakeDrawThings(None))
+
+    # Extension candidates first in order, shared URL fetched only once
+    # despite appearing in both sources, server-only candidate last.
+    assert calls == [ext_only, shared, server_only]
+    card.refresh_from_db()
+    assert card.image_source == Card.ImageSource.SOURCE_PAGE
+    assert bool(card.image) is True
+
+
+def test_attach_images_uses_extension_list_when_server_refetch_fails(
+    monkeypatch, fake_fetch
+):
+    su = make_url()
+    url = "https://example.com/ext-hero.png"
+    su.extension_image_urls = [url]
+    su.save(update_fields=["extension_image_urls"])
+    # Authenticated / JS-only page: the static re-fetch sees nothing.
+    monkeypatch.setattr(images, "_fetch_page_html", lambda page_url: None)
+    fake_fetch({url: images.FetchedImage(png_bytes(600, 600), "image/png")})
+    card = make_card(su)
+
+    images.attach_images(su, [card], draw_things=FakeDrawThings(None))
+
+    card.refresh_from_db()
+    assert card.image_source == Card.ImageSource.SOURCE_PAGE
+    assert bool(card.image) is True
+
+
+def test_merged_candidates_capped_at_max(monkeypatch):
+    su = make_url()
+    su.extension_image_urls = [f"https://example.com/e{i}.png" for i in range(20)]
+    su.save(update_fields=["extension_image_urls"])
+    html = "".join(
+        f'<img src="/s{i}.png" width="800" height="800">' for i in range(20)
+    )
+    monkeypatch.setattr(images, "_fetch_page_html", lambda url: html)
+
+    merged = images._merged_candidates(su)
+
+    assert len(merged) == images.MAX_IMAGE_CANDIDATES
+    assert merged[:20] == [f"https://example.com/e{i}.png" for i in range(20)]
+    assert merged[20:] == [f"https://example.com/s{i}.png" for i in range(5)]
+
+
+def test_merged_candidates_tolerates_missing_extension_field(monkeypatch):
+    class _Stub:
+        url = "https://example.com/article"
+
+    monkeypatch.setattr(
+        images,
+        "_fetch_page_html",
+        lambda url: '<img src="/a.png" width="800" height="800">',
+    )
+    assert images._merged_candidates(_Stub()) == ["https://example.com/a.png"]
+
+
+def test_filter_absolute_candidates_applies_server_exclusions():
+    candidates = [
+        "https://example.com/photo.jpg",
+        "https://cdn.example.com/site-logo.png",  # chrome marker
+        "https://example.com/tracking/pixel.gif",  # chrome marker
+        "data:image/gif;base64,AAA",  # not http(s)
+        "ftp://example.com/photo.jpg",  # not http(s)
+        "https://example.com/photo.jpg",  # duplicate
+        "https://example.com/vector.svg",  # non-raster extension
+        "https://example.com/extensionless-path",  # no extension -> kept
+    ]
+    assert images._filter_absolute_candidates(candidates) == [
+        "https://example.com/photo.jpg",
+        "https://example.com/extensionless-path",
+    ]
+
+
 # --- manual image replacement from the review grid (issue #26) ---------
 #
 # These tests exercise the review-grid endpoints (per-card POST / fetch),

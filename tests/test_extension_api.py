@@ -97,6 +97,92 @@ def test_valid_submit_title_optional_defaults_blank(client, submit_url, token):
     assert submitted_url.extracted_title == ""
 
 
+def test_valid_submit_with_images_persists_candidates(client, submit_url, token):
+    body = {
+        "url": "https://example.com/with-images",
+        "title": "T",
+        "text": LONG_TEXT,
+        "images": [
+            "https://example.com/img/a.png",
+            "https://cdn.example.com/photos/b.jpg",
+        ],
+    }
+    resp = client.post(
+        submit_url,
+        data=json.dumps(body),
+        content_type="application/json",
+        **auth_header(token),
+    )
+    assert resp.status_code == 202
+    submitted_url = SubmittedURL.objects.get(pk=resp.json()["submitted_url_id"])
+    assert submitted_url.extension_image_urls == [
+        "https://example.com/img/a.png",
+        "https://cdn.example.com/photos/b.jpg",
+    ]
+
+
+def test_submit_without_images_defaults_to_empty(client, submit_url, token):
+    body = {"url": "https://example.com/no-images", "text": LONG_TEXT}
+    resp = client.post(
+        submit_url,
+        data=json.dumps(body),
+        content_type="application/json",
+        **auth_header(token),
+    )
+    assert resp.status_code == 202
+    submitted_url = SubmittedURL.objects.get(pk=resp.json()["submitted_url_id"])
+    assert submitted_url.extension_image_urls == []
+
+
+def test_submit_null_images_defaults_to_empty(client, submit_url, token):
+    body = {
+        "url": "https://example.com/null-images",
+        "text": LONG_TEXT,
+        "images": None,
+    }
+    resp = client.post(
+        submit_url,
+        data=json.dumps(body),
+        content_type="application/json",
+        **auth_header(token),
+    )
+    assert resp.status_code == 202
+    submitted_url = SubmittedURL.objects.get(pk=resp.json()["submitted_url_id"])
+    assert submitted_url.extension_image_urls == []
+
+
+def test_submit_drops_malformed_image_entries_individually(
+    client, submit_url, token
+):
+    body = {
+        "url": "https://example.com/mixed-images",
+        "text": LONG_TEXT,
+        "images": [
+            "https://example.com/good.png",
+            123,
+            None,
+            {"url": "https://example.com/obj.png"},
+            "ftp://example.com/not-http.png",
+            "data:image/png;base64,AAA",
+            "",
+            "/relative/path.png",
+            "  https://example.com/spaced.png  ",
+        ],
+    }
+    resp = client.post(
+        submit_url,
+        data=json.dumps(body),
+        content_type="application/json",
+        **auth_header(token),
+    )
+    assert resp.status_code == 202
+    submitted_url = SubmittedURL.objects.get(pk=resp.json()["submitted_url_id"])
+    assert submitted_url.extension_image_urls == [
+        "https://example.com/good.png",
+        "https://example.com/spaced.png",
+    ]
+
+
 def test_submit_missing_auth_header_401(client, submit_url):
     body = {"url": "https://example.com/page", "text": LONG_TEXT}
     resp = client.post(submit_url, data=json.dumps(body), content_type="application/json")

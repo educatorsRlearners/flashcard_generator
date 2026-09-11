@@ -198,6 +198,15 @@ ANKI_CONNECT_URL = os.environ.get("ANKI_CONNECT_URL", "http://127.0.0.1:8765")
 # as unreachable.
 ANKI_CONNECT_TIMEOUT = float(os.environ.get("ANKI_CONNECT_TIMEOUT", "10"))
 
+# --- Backend origin (native host + dev supervisor, issue #47) -------------
+# Single env var shared by native_host/host.py (readiness probe, spawn
+# addrport, base_url reply) and submissions/management/commands/dev.py
+# (--addrport default). Same name and same default in all three places is
+# what keeps them from drifting; host.py duplicates the parsing helper
+# because it is stdlib-only. An explicit `dev --addrport` flag always wins
+# over this value.
+BACKEND_URL = os.environ.get("BACKEND_URL", "http://127.0.0.1:8000")
+
 # --- Browser extension auth (submissions/extension_auth.py, issue #33) ---
 # Local shared-secret token file the extension presents to authenticate its
 # requests to this backend (checked by #35; minted/read by #37/#38's native
