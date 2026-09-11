@@ -389,11 +389,18 @@ def test_attach_images_merges_extension_first_with_dedup(monkeypatch):
     monkeypatch.setattr(images, "_fetch_image", _fetch)
     card = make_card(su)
 
+    # The merge itself stays extension-first with cross-source dedup
+    # (issue #42, unchanged by #48 ranking).
+    assert images._merged_candidates(su) == [ext_only, shared, server_only]
+
     images.attach_images(su, [card], draw_things=FakeDrawThings(None))
 
-    # Extension candidates first in order, shared URL fetched only once
-    # despite appearing in both sources, server-only candidate last.
-    assert calls == [ext_only, shared, server_only]
+    # Issue #48 ranks per card before the unchanged first-usable-wins
+    # walk: shared/server-only declare 800x800 in the HTML while the
+    # extension-only URL has no declared size (area 0), so it sorts last
+    # and is never reached once server-only succeeds. Shared is still
+    # fetched only once despite appearing in both sources.
+    assert calls == [shared, server_only]
     card.refresh_from_db()
     assert card.image_source == Card.ImageSource.SOURCE_PAGE
     assert bool(card.image) is True
@@ -763,3 +770,163 @@ def test_cloze_replacement_preview_stays_on_question_side(client, monkeypatch):
     content = page.content.decode()
     assert "review-card__image--question" in content
     assert content.index(card.image.name) < content.index("review-card__cloze")
+
+
+# --- relevance ranking (issue #48) -----------------------------------
+#
+# Pure offline reordering: hero og:image/twitter:image > term-match
+# (alt or URL slug) > larger declared area > DOM order. Never admits or
+# rejects; ties keep DOM order.
+
+
+def test_rank_hero_meta_image_sorts_first():
+    hero = "https://example.com/img/hero-photo.jpg"
+    other = "https://example.com/img/other-photo.jpg"
+    third = "https://example.com/img/third-photo.jpg"
+    html = f"""
+      <meta property="og:image" content="{hero}">
+      <img src="/img/other-photo.jpg" width="800" height="600">
+      <img src="/img/hero-photo.jpg" width="100" height="100">
+      <img src="/img/third-photo.jpg" width="900" height="900">
+    """
+    ranked = images.rank_image_candidates(
+        [other, third, hero], html=html, base_url="https://example.com/article"
+    )
+    assert ranked[0] == hero
+    # Non-hero order still follows the remaining signals.
+    assert ranked == [hero, third, other]
+
+
+def test_rank_twitter_image_counts_as_hero():
+    hero = "https://example.com/img/social-hero.jpg"
+    other = "https://example.com/img/plain.jpg"
+    html = f"""
+      <meta name="twitter:image" content="{hero}">
+      <img src="/img/plain.jpg" width="900" height="900">
+      <img src="/img/social-hero.jpg" width="10" height="10">
+    """
+    ranked = images.rank_image_candidates(
+        [other, hero], html=html, base_url="https://example.com/article"
+    )
+    assert ranked == [hero, other]
+
+
+def test_rank_term_match_alt_sorts_before_non_match():
+    match = "https://example.com/img/a.jpg"
+    plain = "https://example.com/img/b.jpg"
+    html = """
+      <img src="/img/a.jpg" alt="Mitochondrion diagram" width="100" height="100">
+      <img src="/img/b.jpg" alt="A sunny beach" width="900" height="900">
+    """
+    ranked = images.rank_image_candidates(
+        [plain, match],
+        html=html,
+        base_url="https://example.com/article",
+        source_term="mitochondrion",
+    )
+    # Term-match beats declared size; the non-match is kept, not excluded.
+    assert ranked == [match, plain]
+
+
+def test_rank_term_match_url_slug_without_html():
+    match = "https://example.com/img/mitochondrion-diagram.jpg"
+    plain = "https://example.com/img/sunset.jpg"
+    ranked = images.rank_image_candidates(
+        [plain, match], source_term="mitochondrion"
+    )
+    assert ranked == [match, plain]
+
+
+def test_rank_larger_declared_area_first_missing_last_never_excluded():
+    big = "https://example.com/img/big.jpg"
+    small = "https://example.com/img/small.jpg"
+    unknown = "https://example.com/img/unknown.jpg"
+    html = """
+      <img src="/img/small.jpg" width="200" height="200">
+      <img src="/img/unknown.jpg">
+      <img src="/img/big.jpg" width="800" height="600">
+    """
+    ranked = images.rank_image_candidates(
+        [small, unknown, big],
+        html=html,
+        base_url="https://example.com/article",
+    )
+    assert ranked == [big, small, unknown]
+    assert set(ranked) == {big, small, unknown}
+
+
+def test_rank_combined_priority_hero_over_term_over_size_over_dom():
+    hero = "https://example.com/img/hero.jpg"
+    term_big = "https://example.com/img/mitochondrion-big.jpg"
+    big = "https://example.com/img/big.jpg"
+    plain_a = "https://example.com/img/plain-a.jpg"
+    plain_b = "https://example.com/img/plain-b.jpg"
+    html = f"""
+      <meta property="og:image" content="{hero}">
+      <img src="/img/plain-a.jpg" width="100" height="100">
+      <img src="/img/big.jpg" width="800" height="800">
+      <img src="/img/plain-b.jpg" width="100" height="100">
+      <img src="/img/mitochondrion-big.jpg" alt="tiny icon" width="50" height="50">
+      <img src="/img/hero.jpg" width="50" height="50">
+    """
+    ranked = images.rank_image_candidates(
+        [plain_a, plain_b, big, term_big, hero],
+        html=html,
+        base_url="https://example.com/article",
+        source_term="mitochondrion",
+    )
+    assert ranked == [hero, term_big, big, plain_a, plain_b]
+
+
+def test_rank_edge_cases_empty_singleton_malformed_and_unknown():
+    assert images.rank_image_candidates([]) == []
+    assert images.rank_image_candidates(None) == []
+    solo = ["https://example.com/img/solo.jpg"]
+    assert images.rank_image_candidates(solo) == solo
+    # None / malformed entries never raise; valid URLs survive in order.
+    good_a = "https://example.com/img/a.jpg"
+    good_b = "https://example.com/img/b.jpg"
+    ranked = images.rank_image_candidates(
+        [good_a, None, 123, "", good_b],
+        html=None,
+        base_url="https://example.com/article",
+    )
+    assert ranked == [good_a, good_b]
+    # Candidates absent from the page HTML keep DOM order (stable ties).
+    assert images.rank_image_candidates([good_a, good_b]) == [good_a, good_b]
+    assert images.rank_image_candidates(
+        [good_b, good_a], html="<html></html>"
+    ) == [good_b, good_a]
+
+
+def test_rank_is_pure_deterministic_and_malformed_html_safe():
+    cands = ["https://example.com/img/b.jpg", "https://example.com/img/a.jpg"]
+    first = images.rank_image_candidates(cands, html="<img <broken", source_term="x")
+    second = images.rank_image_candidates(cands, html="<img <broken", source_term="x")
+    assert first == second == cands
+
+
+def test_attach_images_picks_ranked_hero_first(monkeypatch, fake_fetch):
+    su = make_url()
+    hero = "https://example.com/hero.jpg"
+    other = "https://example.com/other.jpg"
+    html = f"""
+      <meta property="og:image" content="{hero}">
+      <img src="/other.jpg" width="900" height="900">
+      <img src="/hero.jpg" width="300" height="300">
+    """
+    monkeypatch.setattr(images, "_fetch_page_html", lambda url: html)
+    ordered: list[str] = []
+
+    def _fetch(url: str):
+        ordered.append(url)
+        return images.FetchedImage(png_bytes(600, 600), "image/png")
+
+    monkeypatch.setattr(images, "_fetch_image", _fetch)
+    card = make_card(su)
+
+    images.attach_images(su, [card], draw_things=FakeDrawThings(None))
+
+    assert ordered[0] == hero
+    card.refresh_from_db()
+    assert card.image_source == Card.ImageSource.SOURCE_PAGE

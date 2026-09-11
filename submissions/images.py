@@ -26,6 +26,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
@@ -233,6 +234,183 @@ def image_candidates(html: str | None, base_url: str) -> list[str]:
             continue
         absolute_urls.append(urljoin(base_url, raw))
     return _filter_absolute_candidates(absolute_urls)[:MAX_IMAGE_CANDIDATES]
+
+
+# --- Relevance ranking (issue #48) --------------------------------------
+
+
+class _RankingContextCollector(HTMLParser):
+    """Collect hero meta URLs + per-image alt / declared size from HTML.
+
+    Pure offline parse: records ``og:image`` / ``twitter:image`` contents
+    in document order and, for each ``<img>`` with a resolvable ``src``,
+    its ``alt`` text and declared ``width x height`` area. Never raises
+    out to callers (malformed markup is skipped).
+    """
+
+    #: Meta names/properties treated as the hero-image signal.
+    HERO_META_KEYS = frozenset(
+        {"og:image", "twitter:image", "twitter:image:src"}
+    )
+
+    def __init__(self, base_url: str = "") -> None:
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url or ""
+        self.hero_raw: list[str] = []
+        # absolute URL -> {"alt": str, "area": int}; first occurrence wins.
+        self.infos: dict[str, dict] = {}
+
+    def handle_starttag(self, tag, attrs):
+        try:
+            if tag == "meta":
+                d = {k.lower(): (v or "") for k, v in attrs}
+                key = (d.get("property") or d.get("name") or "").strip().lower()
+                if key in self.HERO_META_KEYS and d.get("content", "").strip():
+                    self.hero_raw.append(d["content"].strip())
+                return
+            if tag != "img":
+                return
+            d = {k.lower(): (v or "") for k, v in attrs}
+            raw = (
+                d.get("src")
+                or d.get("data-src")
+                or d.get("data-original")
+                or d.get("data-lazy-src")
+                or _first_srcset_url(d.get("srcset", ""))
+            )
+            if not raw or raw.strip().startswith("data:"):
+                return
+            try:
+                absolute = urljoin(self.base_url, raw.strip())
+            except Exception:  # noqa: BLE001 - one bad URL never fails parse
+                return
+            if absolute in self.infos:
+                return
+            self.infos[absolute] = {
+                "alt": d.get("alt", ""),
+                "area": _declared_area(d.get("width"), d.get("height")),
+            }
+        except Exception:  # noqa: BLE001 - ranking parse never raises
+            logger.debug("image: ranking parse skipped a tag", exc_info=True)
+
+
+def _declared_area(width: str | None, height: str | None) -> int:
+    """Declared ``width x height`` area, or 0 when missing/unparseable.
+
+    Never excludes: unparseable or missing dimensions simply score 0.
+    """
+    try:
+        w = int(str(width or "").strip().rstrip("px") or "0")
+        h = int(str(height or "").strip().rstrip("px") or "0")
+    except (ValueError, TypeError):
+        return 0
+    if w <= 0 or h <= 0:
+        return 0
+    return w * h
+
+
+def _term_tokens(source_term: str | None, front: str | None) -> list[str]:
+    """Lowercase alphanumeric tokens (len >= 3) from term/front text."""
+    text = f"{source_term or ''} {front or ''}".lower()
+    return [t for t in re.findall(r"[a-z0-9]+", text) if len(t) >= 3]
+
+
+def rank_image_candidates(
+    candidates,
+    *,
+    html: str | None = None,
+    base_url: str = "",
+    source_term: str = "",
+    front: str = "",
+) -> list[str]:
+    """Reorder *candidates* by relevance, best first (issue #48).
+
+    Pure and deterministic: no network, no DB, no settings reads. Ties
+    keep input (DOM/merge) order via a stable sort.
+
+    Signal priority (fixed): hero ``og:image`` / ``twitter:image`` >
+    term-match (card token in image ``alt`` or URL slug) >
+    larger declared ``width x height`` area (missing = 0) > DOM order.
+
+    Reorders only - never admits or rejects: every valid string in
+    *candidates* appears exactly once in the output. Fail-soft: any
+    problem degrades to the input order; ``None`` / malformed entries
+    never raise (non-string / empty entries are dropped).
+    """
+    try:
+        if not candidates:
+            return []
+        # Preserve input order; drop non-string / empty entries.
+        ordered: list[str] = []
+        for url in candidates:
+            try:
+                if isinstance(url, str) and url.strip():
+                    ordered.append(url)
+            except Exception:  # noqa: BLE001 - one bad entry never fails rank
+                continue
+        if len(ordered) <= 1:
+            return ordered
+
+        hero_urls: set[str] = set()
+        infos: dict[str, dict] = {}
+        try:
+            collector = _RankingContextCollector(base_url or "")
+            if html:
+                collector.feed(html)
+            for raw in collector.hero_raw:
+                try:
+                    hero_urls.add(urljoin(base_url or "", raw))
+                except Exception:  # noqa: BLE001 - skip one bad hero URL
+                    continue
+            infos = collector.infos
+        except Exception:  # noqa: BLE001 - parse failure -> no hero/size info
+            logger.debug("image: ranking HTML parse failed", exc_info=True)
+            hero_urls = set()
+            infos = {}
+
+        try:
+            tokens = _term_tokens(source_term, front)
+        except Exception:  # noqa: BLE001 - bad card text -> no term signal
+            tokens = []
+
+        def _term_match(url: str) -> bool:
+            if not tokens:
+                return False
+            try:
+                alt = str((infos.get(url) or {}).get("alt") or "").lower()
+                slug = urlsplit(url).path.lower()
+            except Exception:  # noqa: BLE001 - malformed URL -> no match
+                return False
+            for tok in tokens:
+                if tok in alt or tok in slug:
+                    return True
+            return False
+
+        def _area(url: str) -> int:
+            try:
+                return int((infos.get(url) or {}).get("area") or 0)
+            except Exception:  # noqa: BLE001 - never raise on bad info
+                return 0
+
+        scored = []
+        for index, url in enumerate(ordered):
+            try:
+                is_hero = url in hero_urls
+            except Exception:  # noqa: BLE001
+                is_hero = False
+            try:
+                match = _term_match(url)
+            except Exception:  # noqa: BLE001
+                match = False
+            scored.append((not is_hero, not match, -_area(url), index, url))
+        scored.sort(key=lambda row: (row[0], row[1], row[2], row[3]))
+        return [row[4] for row in scored]
+    except Exception:  # noqa: BLE001 - ranking never raises; degrade to input
+        logger.debug("image: ranking failed; keeping DOM order", exc_info=True)
+        try:
+            return [u for u in candidates if isinstance(u, str) and u]
+        except Exception:  # noqa: BLE001
+            return []
 
 
 # --- Usable-image check ---------------------------------------------
@@ -473,9 +651,29 @@ def attach_images(
         return
     client = draw_things or DrawThingsClient()
     candidates = _merged_candidates(submitted_url)
+    try:
+        page_html: str | None = _fetch_page_html(submitted_url.url)
+    except Exception:  # noqa: BLE001 - ranking context is best-effort only
+        logger.debug("image: ranking HTML refetch failed", exc_info=True)
+        page_html = None
+    try:
+        page_base = submitted_url.url
+    except Exception:  # noqa: BLE001
+        page_base = ""
     for card in cards:
         try:
-            outcome = choose_card_image(card, candidates, client)
+            try:
+                ordered = rank_image_candidates(
+                    candidates,
+                    html=page_html,
+                    base_url=page_base or "",
+                    source_term=getattr(card, "source_term", "") or "",
+                    front=getattr(card, "front", "") or "",
+                )
+            except Exception:  # noqa: BLE001 - ranking degrades to DOM order
+                logger.debug("image: ranking failed; keeping DOM order", exc_info=True)
+                ordered = candidates
+            outcome = choose_card_image(card, ordered, client)
             _store_card_image(card, outcome)
         except Exception:  # noqa: BLE001 - one card's image never breaks the rest
             logger.exception(
