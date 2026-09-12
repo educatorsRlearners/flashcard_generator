@@ -2,7 +2,7 @@ import re
 
 from django.contrib import messages
 from django.db.models import Count, Q
-from django.http import JsonResponse
+from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 from django.utils import timezone
@@ -43,6 +43,52 @@ def _batch_cards_ready(batch):
         generation_status=SubmittedURL.GenerationStatus.NOT_STARTED,
     )
     return not ok_pending_generation.exists()
+
+
+#: Message shown when a per-card review action targets a card whose
+#: ``dedup_status`` flipped to ``duplicate`` after the review grid was
+#: rendered (issue #78) - the dedup-timing race, not a real 404.
+_DEDUP_RACE_MESSAGE = (
+    "This card was just identified as a duplicate of another card and is "
+    "no longer part of the review; no action was taken. You can continue "
+    "with the rest of the batch."
+)
+
+
+def _review_card_or_error(request, batch, card_pk):
+    """Look up one card for a per-card review action (issue #78).
+
+    Returns ``(card, None)`` when the card is still reviewable. Returns
+    ``(None, response)`` when it is not - either it never existed / isn't
+    part of *batch* (a genuine 404, raised here exactly like
+    ``get_object_or_404`` would), or it did exist in the review grid but its
+    ``dedup_status`` has since flipped to ``duplicate`` (the #78 race
+    between the review page rendering and semantic dedup finishing): that
+    case gets a clear, handled response - JSON for the grid's XHR calls, an
+    error message + redirect otherwise - instead of letting a raw
+    ``Http404`` propagate, so the reviewer can keep working the rest of the
+    batch without a blank error page or a full page reload.
+    """
+    card = _batch_review_cards(batch).filter(pk=card_pk).first()
+    if card is not None:
+        return card, None
+
+    is_dedup_race = Card.objects.filter(
+        pk=card_pk,
+        submitted_url__requests__batch=batch,
+        dedup_status=Card.DedupStatus.DUPLICATE,
+    ).exists()
+    if not is_dedup_race:
+        raise Http404("No Card matches the given query.")
+
+    if _wants_json(request):
+        response = JsonResponse(
+            {"error": _DEDUP_RACE_MESSAGE, "dedup_duplicate": True}, status=409
+        )
+    else:
+        messages.error(request, _DEDUP_RACE_MESSAGE)
+        response = redirect("submissions:card_review", pk=batch.pk)
+    return None, response
 
 
 def _review_tally(cards):
@@ -140,7 +186,9 @@ def _render_finish_with_deck_error(request, batch, error, attempted=""):
 @require_POST
 def card_review_decision(request, batch_pk, card_pk):
     batch = get_object_or_404(Batch, pk=batch_pk)
-    card = get_object_or_404(_batch_review_cards(batch), pk=card_pk)
+    card, error_response = _review_card_or_error(request, batch, card_pk)
+    if error_response is not None:
+        return error_response
 
     decision = request.POST.get("decision", "")
     if decision not in Card.ReviewStatus.values:
@@ -228,7 +276,9 @@ def card_review_edit(request, batch_pk, card_pk):
     card's row is updated, so other cards' state is preserved.
     """
     batch = get_object_or_404(Batch, pk=batch_pk)
-    card = get_object_or_404(_batch_review_cards(batch), pk=card_pk)
+    card, error_response = _review_card_or_error(request, batch, card_pk)
+    if error_response is not None:
+        return error_response
 
     if card.note_type == Card.NoteType.CLOZE:
         front = request.POST.get("front", request.POST.get("text", ""))
@@ -289,7 +339,9 @@ def card_review_edit(request, batch_pk, card_pk):
 def card_review_revert_edit(request, batch_pk, card_pk):
     """Restore a card's generated text, clearing the edited indicator (#24)."""
     batch = get_object_or_404(Batch, pk=batch_pk)
-    card = get_object_or_404(_batch_review_cards(batch), pk=card_pk)
+    card, error_response = _review_card_or_error(request, batch, card_pk)
+    if error_response is not None:
+        return error_response
 
     if card.is_edited:
         card.front = card.original_front
@@ -352,7 +404,9 @@ def card_review_image_candidates(request, batch_pk, card_pk):
     from . import images as images_mod
 
     batch = get_object_or_404(Batch, pk=batch_pk)
-    card = get_object_or_404(_batch_review_cards(batch), pk=card_pk)
+    card, error_response = _review_card_or_error(request, batch, card_pk)
+    if error_response is not None:
+        return error_response
     source_url = card.submitted_url.url
     html = images_mod._fetch_page_html(source_url)
     candidates = images_mod.image_candidates(html, source_url)
@@ -371,7 +425,9 @@ def card_review_image_select(request, batch_pk, card_pk):
     from . import images as images_mod
 
     batch = get_object_or_404(Batch, pk=batch_pk)
-    card = get_object_or_404(_batch_review_cards(batch), pk=card_pk)
+    card, error_response = _review_card_or_error(request, batch, card_pk)
+    if error_response is not None:
+        return error_response
 
     candidate_url = (request.POST.get("candidate_url") or "").strip()
     if not candidate_url:
@@ -424,7 +480,9 @@ def card_review_image_regenerate(request, batch_pk, card_pk):
     from . import images as images_mod
 
     batch = get_object_or_404(Batch, pk=batch_pk)
-    card = get_object_or_404(_batch_review_cards(batch), pk=card_pk)
+    card, error_response = _review_card_or_error(request, batch, card_pk)
+    if error_response is not None:
+        return error_response
 
     if not dj_settings.DRAW_THINGS_ENABLED:
         error = "Draw Things generation is disabled; image unchanged."
@@ -464,7 +522,9 @@ def card_review_image_regenerate(request, batch_pk, card_pk):
 def card_review_image_remove(request, batch_pk, card_pk):
     """Set one card to no image, retaining the original reference (#26)."""
     batch = get_object_or_404(Batch, pk=batch_pk)
-    card = get_object_or_404(_batch_review_cards(batch), pk=card_pk)
+    card, error_response = _review_card_or_error(request, batch, card_pk)
+    if error_response is not None:
+        return error_response
 
     _snapshot_image_original(card)
     card.image = ""
@@ -488,7 +548,9 @@ def card_review_image_remove(request, batch_pk, card_pk):
 def card_review_image_revert(request, batch_pk, card_pk):
     """Restore the image #12 originally chose for one card (#26)."""
     batch = get_object_or_404(Batch, pk=batch_pk)
-    card = get_object_or_404(_batch_review_cards(batch), pk=card_pk)
+    card, error_response = _review_card_or_error(request, batch, card_pk)
+    if error_response is not None:
+        return error_response
 
     if card.image_manually_set:
         card.image = card.original_image.name or ""
