@@ -273,13 +273,21 @@ def submission_status(request, submitted_url_id):
 
     Generation = SubmittedURL.GenerationStatus
     generation_status = submitted_url.generation_status
-    terminal = (
-        submitted_url.status == SubmittedURL.Status.FAILED
-        or generation_status in (Generation.OK, Generation.FAILED)
+    # issue #78: generation finishing (generation_status == "ok") is not
+    # enough - dedup.dedup_cards() runs afterwards, in the same Huey task,
+    # and can still flip a just-generated card's dedup_status. Gate
+    # "terminal" on dedup having also been attempted (submitted_url.dedup_ready,
+    # set - success or failure - by generation.generate_for) so the review
+    # grid never opens on a card whose duplicate verdict isn't final yet. A
+    # zero-cards / failed generation (generation_status == "failed") never
+    # runs dedup at all, so it stays terminal immediately, unaffected.
+    generation_done = generation_status == Generation.FAILED or (
+        generation_status == Generation.OK and submitted_url.dedup_ready
     )
+    terminal = submitted_url.status == SubmittedURL.Status.FAILED or generation_done
 
     review_url = None
-    if generation_status == Generation.OK:
+    if generation_status == Generation.OK and submitted_url.dedup_ready:
         # Most recent BatchRequest, not submitted_url.batch (the stale
         # first-ever origin batch) - see the issue's decision.
         latest_request = submitted_url.requests.order_by("-created_at").first()
