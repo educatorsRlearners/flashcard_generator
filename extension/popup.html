@@ -69,16 +69,27 @@
         font-size: 12px;
         color: #666;
     }
+    .deck-hint {
+        margin: 4px 0 0;
+        font-size: 12px;
+        color: #666;
+    }
+    #deck-select:focus-visible, #deck-new:focus-visible {
+        outline: 2px solid #2f6fed;
+        outline-offset: 2px;
+    }
 </style>
 </head>
 <body>
     <button id="generate" type="button">Generate flashcards from this page</button>
     <label class="deck-label" for="deck-select">Anki deck (optional):</label>
-    <select id="deck-select" aria-label="Existing Anki deck">
+    <select id="deck-select" aria-describedby="deck-optional-hint">
         <option value="">Loading decks…</option>
     </select>
+    <p id="deck-optional-hint" class="deck-hint">Optional here — you can still choose at review Finish.</p>
     <label class="deck-label" for="deck-new">Or new deck name:</label>
-    <input id="deck-new" type="text" placeholder="Type a new deck name" autocomplete="off">
+    <input id="deck-new" type="text" placeholder="Type a new deck name" autocomplete="off" aria-describedby="deck-wins-hint deck-optional-hint">
+    <p id="deck-wins-hint" class="deck-hint">If both are filled, the new deck name wins.</p>
     <p id="deck-note" role="status" aria-live="polite"></p>
     <div class="status-row">
         <span id="spinner" class="spinner" aria-hidden="true" hidden></span>

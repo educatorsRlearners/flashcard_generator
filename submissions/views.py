@@ -92,10 +92,21 @@ def _deck_picker_context(batch):
     except Exception:
         deck_names = []
         unavailable = True
+    stored_raw = (getattr(batch, "deck_name", None) or "")
+    # Prefill exactly one field: dropdown when the stored deck is in the
+    # live list, otherwise free text only (never both).
+    if unavailable or (stored_raw and stored_raw not in deck_names):
+        return {
+            "deck_names": deck_names,
+            "deck_unavailable": unavailable,
+            "stored_deck": "",
+            "deck_text_value": stored_raw,
+        }
     return {
         "deck_names": deck_names,
         "deck_unavailable": unavailable,
-        "stored_deck": (getattr(batch, "deck_name", None) or ""),
+        "stored_deck": stored_raw,
+        "deck_text_value": "",
     }
 
 
@@ -114,9 +125,15 @@ def _render_finish_with_deck_error(request, batch, error, attempted=""):
     if undecided and request.POST.get("confirm") != "1":
         context["confirm_undecided"] = undecided
     context.update(
-        {k: v for k, v in _deck_picker_context(batch).items() if k != "stored_deck"}
+        {k: v for k, v in _deck_picker_context(batch).items() if k != "stored_deck" and k != "deck_text_value"}
     )
-    context["stored_deck"] = attempted or (getattr(batch, "deck_name", None) or "")
+    raw = attempted or (getattr(batch, "deck_name", None) or "")
+    if context.get("deck_unavailable") or (raw and raw not in context.get("deck_names", [])):
+        context["stored_deck"] = ""
+        context["deck_text_value"] = raw
+    else:
+        context["stored_deck"] = raw
+        context["deck_text_value"] = ""
     return render(request, "submissions/card_review.html", context)
 
 

@@ -79,11 +79,11 @@
         deckSelect.textContent = "";
         var opt = document.createElement("option");
         opt.value = "";
-        opt.textContent = "Deck list unavailable — type a name";
+        opt.textContent = "Deck list unavailable — type a deck name to continue.";
         deckSelect.appendChild(opt);
         deckSelect.disabled = true;
         if (deckNote) {
-            deckNote.textContent = "Deck list unavailable — type a deck name (submit still works).";
+            deckNote.textContent = "Deck list unavailable — type a deck name to continue.";
         }
     }
 

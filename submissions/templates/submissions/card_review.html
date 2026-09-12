@@ -134,34 +134,31 @@
               action="{% url 'submissions:card_review_finish' batch.pk %}">
             {% csrf_token %}
             <div class="review-finish__deck" id="review-finish-deck">
-                <label>Anki deck (required):
+                <label for="review-finish-deck-choice">Anki deck (required):</label>
                     {% if deck_unavailable %}
-                        <select name="deck_choice" disabled aria-disabled="true">
-                            <option value="">Deck list unavailable - type a name below</option>
+                        <select name="deck_choice" id="review-finish-deck-choice" disabled aria-disabled="true" aria-describedby="review-finish-deck-hint review-finish-deck-error">
+                            <option value="">Deck list unavailable — type a deck name to continue.</option>
                         </select>
                     {% else %}
-                        <select name="deck_choice">
+                        <select name="deck_choice" id="review-finish-deck-choice" aria-describedby="review-finish-deck-hint review-finish-deck-error">
                             <option value="">Select a deck…</option>
                             {% for deck in deck_names %}
                                 <option value="{{ deck }}" {% if deck == stored_deck %}selected{% endif %}>{{ deck }}</option>
                             {% endfor %}
-                            {% if stored_deck and stored_deck not in deck_names %}
-                                <option value="{{ stored_deck }}" selected>{{ stored_deck }}</option>
-                            {% endif %}
                         </select>
                     {% endif %}
-                </label>
-                <label>Or new deck name:
-                    <input type="text" name="deck_name" value="{{ stored_deck|default:'' }}"
-                           placeholder="Type a new deck name" autocomplete="off">
-                </label>
+                <label for="review-finish-deck-new">Or new deck name:</label>
+                    <input type="text" name="deck_name" id="review-finish-deck-new" value="{{ deck_text_value|default:'' }}"
+                           placeholder="Type a new deck name" autocomplete="off"
+                           aria-describedby="review-finish-deck-hint review-finish-deck-error">
+                <p class="review-finish__deck-hint" id="review-finish-deck-hint">If both are filled, the new deck name wins.</p>
                 {% if deck_unavailable %}
                     <p class="review-finish__deck-unavailable" id="review-finish-deck-unavailable">
-                        Deck list unavailable (Anki unreachable) - type a deck name to continue.
+                        Deck list unavailable — type a deck name to continue.
                     </p>
                 {% endif %}
                 {% if deck_error %}
-                    <p class="review-finish__deck-error" id="review-finish-deck-error">{{ deck_error }}</p>
+                    <p class="message message--error review-finish__deck-error" id="review-finish-deck-error" role="alert">{{ deck_error }}</p>
                 {% endif %}
             </div>
             {% if confirm_undecided %}

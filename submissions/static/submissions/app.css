@@ -67,7 +67,8 @@ a { color: var(--accent); }
 .message--warning { background: var(--warning-bg); color: var(--warning-fg); border-color: var(--warning-bd); }
 .message--error   { background: var(--error-bg);   color: var(--error-fg);   border-color: var(--error-bd); }
 
-.button:focus-visible, a:focus-visible, .review-btn:focus-visible {
+.button:focus-visible, a:focus-visible, .review-btn:focus-visible,
+select:focus-visible, input:focus-visible, textarea:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
@@ -208,6 +209,23 @@ a { color: var(--accent); }
 
 .review-finish { margin-top: 1rem; }
 .review-finish__confirm { font-weight: 600; }
+
+/* Deck picker at review Finish (issue #76): stacked labels + inputs in the
+   existing palette; error reuses the message--error colors/border. */
+.review-finish__deck { display: grid; gap: 0.4rem; margin-bottom: 0.75rem; }
+.review-finish__deck label { font-weight: 600; }
+.review-finish__deck select, .review-finish__deck input[type="text"] {
+    width: 100%;
+    padding: 0.45rem 0.6rem;
+    font: inherit;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+.review-finish__deck-hint { margin: 0; color: var(--muted); font-size: 0.9rem; }
+.review-finish__deck-unavailable { margin: 0; color: var(--muted); font-size: 0.9rem; }
+.review-finish__deck-error { margin: 0.25rem 0 0; }
 
 /* Per-card image in the review grid (issue #12) */
 .review-card__image {

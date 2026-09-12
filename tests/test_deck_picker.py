@@ -75,7 +75,8 @@ def test_review_get_lists_decks_and_marks_available(client, monkeypatch):
     assert page.context["deck_unavailable"] is False
     assert page.context["stored_deck"] == ""
     content = page.content.decode()
-    assert '<select name="deck_choice">' in content
+    assert '<select name="deck_choice"' in content
+    assert 'id="review-finish-deck-choice"' in content
     assert "<option" in content and "Alpha" in content
     assert 'name="deck_name"' in content
 
@@ -86,20 +87,28 @@ def test_review_get_prefills_stored_deck(client, monkeypatch):
     _patch_anki(monkeypatch, FakeAnki(existing_decks=["My Deck", "Other"]))
     page = client.get(reverse("submissions:card_review", args=[batch.pk]))
     assert page.context["stored_deck"] == "My Deck"
+    assert page.context["deck_text_value"] == ""
     content = page.content.decode()
     assert '<option value="My Deck" selected>' in content
-    assert 'value="My Deck"' in content  # free-text input pre-filled
+    # Prefill populates exactly one field: dropdown selected, text empty.
+    assert 'id="review-finish-deck-new"' in content
+    assert 'id="review-finish-deck-new" value=""' in content
 
 
-def test_review_get_stored_deck_not_in_live_list_still_selected(
+def test_review_get_stored_deck_not_in_live_list_goes_to_text_only(
     client, monkeypatch
 ):
     batch = Batch.objects.create(deck_name="Offline Deck")
     _card(_url(batch), batch)
     _patch_anki(monkeypatch, FakeAnki(existing_decks=["Other"]))
     page = client.get(reverse("submissions:card_review", args=[batch.pk]))
+    assert page.context["stored_deck"] == ""
+    assert page.context["deck_text_value"] == "Offline Deck"
     content = page.content.decode()
-    assert '<option value="Offline Deck" selected>' in content
+    assert '<option value="Offline Deck" selected>' not in content
+    assert 'value="Offline Deck"' in content
+    # Dropdown stays on the placeholder.
+    assert "<option value=\"\">Select a deck" in content
 
 
 def test_review_get_unreachable_degrades_dropdown_keeps_text_input(
@@ -114,6 +123,114 @@ def test_review_get_unreachable_degrades_dropdown_keeps_text_input(
     content = page.content.decode()
     assert "Deck list unavailable" in content
     assert 'name="deck_name"' in content  # free text still usable
+
+
+# --- UX fixes (Engineer B): hints, single-field prefill, a11y ------------
+
+
+def test_review_shows_typed_wins_hint(client, monkeypatch):
+    batch = Batch.objects.create()
+    _card(_url(batch), batch)
+    _patch_anki(monkeypatch, FakeAnki(existing_decks=["D1"]))
+    content = client.get(
+        reverse("submissions:card_review", args=[batch.pk])
+    ).content.decode()
+    assert "If both are filled, the new deck name wins." in content
+    assert 'id="review-finish-deck-hint"' in content
+
+
+def test_popup_shows_typed_wins_and_optional_hints():
+    from pathlib import Path
+
+    from django.conf import settings
+
+    html = Path(settings.BASE_DIR, "extension/popup.html").read_text()
+    assert "If both are filled, the new deck name wins." in html
+    assert "Optional here" in html
+    assert "review Finish" in html
+
+
+def test_popup_select_has_single_accessible_name():
+    from pathlib import Path
+
+    from django.conf import settings
+
+    html = Path(settings.BASE_DIR, "extension/popup.html").read_text()
+    assert 'for="deck-select"' in html
+    assert 'id="deck-select"' in html
+    assert 'aria-label="Existing Anki deck"' not in html
+    assert 'for="deck-new"' in html
+    assert 'id="deck-new"' in html
+
+
+def test_unavailable_wording_unified_em_dash():
+    from pathlib import Path
+
+    from django.conf import settings
+
+    sentence = "Deck list unavailable — type a deck name to continue."
+    review = Path(
+        settings.BASE_DIR, "submissions/templates/submissions/card_review.html"
+    ).read_text()
+    popup_js = Path(settings.BASE_DIR, "extension/popup.js").read_text()
+    assert sentence in review
+    assert sentence in popup_js
+    assert "type a name below" not in review
+    assert "(Anki unreachable) - type" not in review
+    assert "Deck list unavailable — type a name\";" not in popup_js
+    assert "(submit still works)" not in popup_js
+
+
+def test_review_unavailable_prefills_text_only(client, monkeypatch):
+    batch = Batch.objects.create(deck_name="Kept Deck")
+    _card(_url(batch), batch)
+    _patch_anki(monkeypatch, FakeAnki(unreachable=True))
+    page = client.get(reverse("submissions:card_review", args=[batch.pk]))
+    assert page.context["stored_deck"] == ""
+    assert page.context["deck_text_value"] == "Kept Deck"
+    assert 'value="Kept Deck"' in page.content.decode()
+
+
+def test_deck_error_uses_message_error_and_alert(client, monkeypatch):
+    batch = Batch.objects.create()
+    su = _url(batch)
+    _card(su, batch)
+    _patch_anki(monkeypatch, FakeAnki(existing_decks=["D1"]))
+    content = client.post(_finish_url(batch), {}).content.decode()
+    assert 'id="review-finish-deck-error"' in content
+    assert 'role="alert"' in content
+    assert "message--error" in content
+    assert 'for="review-finish-deck-choice"' in content
+    assert 'for="review-finish-deck-new"' in content
+    assert 'id="review-finish-deck-choice"' in content
+    assert 'id="review-finish-deck-new"' in content
+    assert "review-finish-deck-hint" in content
+    # Both controls link to hint + error ids.
+    assert content.count('aria-describedby="review-finish-deck-hint review-finish-deck-error"') >= 2
+
+
+def test_deck_error_rerender_prefills_single_field(client, monkeypatch):
+    batch = Batch.objects.create()
+    su = _url(batch)
+    _card(su, batch)
+    _patch_anki(monkeypatch, FakeAnki(existing_decks=["D1"]))
+    # Attempted value not in the live list -> text input only.
+    resp = client.post(_finish_url(batch), {"deck_name": 'bad"quote'})
+    assert resp.context["stored_deck"] == ""
+    assert resp.context["deck_text_value"] == 'bad"quote'
+
+
+def test_deck_picker_css_rules_and_focus_visible():
+    from pathlib import Path
+
+    from django.conf import settings
+
+    css = Path(settings.BASE_DIR, "submissions/static/submissions/app.css").read_text()
+    assert ".review-finish__deck" in css
+    assert ".review-finish__deck-hint" in css
+    assert ".review-finish__deck-error" in css
+    for control in ("select:focus-visible", "input:focus-visible", "textarea:focus-visible"):
+        assert control in css
 
 
 # --- Finish with no deck ---------------------------------------------------
