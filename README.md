@@ -25,9 +25,8 @@
 ## Table of Contents
 
 - [What it is](#what-it-is)
-- [How it works](#how-it-works)
-- [Quick Start](#quick-start)
-- [Browser extension setup (native messaging host)](#browser-extension-setup-native-messaging-host)
+- [Getting started](#getting-started)
+- [Extension internals](#extension-internals)
 - [Configuration & providers](#configuration--providers)
 - [Setup](#setup)
 - [Run](#run)
@@ -46,65 +45,82 @@
 
 ## What it is
 
-**The problem.** Turning a web page (or a PDF, a Word doc, a scanned image)
-into flashcards you'll actually review is manual and slow: read the page,
-decide what's worth remembering, write a front/back pair in your own words,
-find or make an image, and load it into your spaced-repetition tool — one at
-a time, for every source.
+Turning a web page into flashcards you'll actually review is normally
+manual and slow: read it, decide what's worth remembering, write a
+front/back pair, find an image, load it into your spaced-repetition tool —
+one at a time, for every source. This app automates that end to end: a
+Chrome/Brave browser extension is the front end — click its popup on a
+page you're reading, and a Django backend (reached through a native
+messaging host, never a browser tab) extracts the text, generates
+flashcards, dedupes and images them, and lets you accept, reject, or edit
+every card in a review grid before pushing the accepted ones into Anki.
+Nothing reaches Anki without going through review first. See
+[Getting started](#getting-started) below to install and try it.
 
-**This app** automates that pipeline end to end. A Chrome/Brave browser
-extension is the front end: you click the extension's popup on the page
-you're reading, and a Django backend running in the background — reached
-through a native messaging host, never opened in a browser tab — extracts
-the readable text (with OCR and browser-rendering fallbacks for the pages
-that need them), asks an LLM to turn that text into Anki-style basic/cloze
-cards in your own words, filters out cards that duplicate ones you already
-have, attaches a relevant image to each card, and lets you accept, reject,
-or edit every card in a review grid before pushing the accepted ones
-straight into Anki over AnkiConnect. Nothing is pushed to Anki without
-going through review first.
+## Getting started
 
-## How it works
+One-time install, then every-day use — top to bottom, no other section
+needed to finish this once.
 
-1. **Click the extension** — click the browser extension's popup on the
-   page you're reading; it extracts the page and hands it to a background
-   worker. See
-   [Browser extension setup (native messaging host)](#browser-extension-setup-native-messaging-host).
-2. **Extract** — fetch and pull the main text out of each URL (HTML, PDF,
-   `.docx`, or an image via OCR). See [Extract content](#extract-content).
-3. **Generate cards** — an LLM turns the extracted text into basic/cloze
-   flashcards. See [Generate cards](#generate-cards).
-4. **Dedup** — new cards are compared against existing ones and hidden if
-   they're near-duplicates. See [Deduplicate cards](#deduplicate-cards).
-5. **Images** — each card gets at most one relevant image, from the source
-   page or a local fallback generator. See [Card images](#card-images).
-6. **Review** — accept, reject, or edit every card in a live grid; every
-   decision is recorded as durable feedback. See
-   [Review grid](#review-grid) and
-   [Review feedback (durable) + few-shot injection](#review-feedback-durable--few-shot-injection).
-7. **Push to Anki** — accepted cards are sent into a single Anki deck over
-   AnkiConnect. See [Push to Anki](#push-to-anki).
+**Install** (macOS only — this repo's development and documented setup are
+macOS-only; Linux/Windows native-messaging support is tracked separately
+in #43):
 
-## Quick Start
+1. ```
+   uv sync
+   uv run python manage.py migrate
+   ```
+   Heavier optional pieces (Playwright/Chromium, sentence-transformer
+   weights, Tesseract) aren't required for this basic flow — see
+   [Setup](#setup) if a feature later asks for one of them.
+2. ```
+   uv run python manage.py generate_signing_key
+   ```
+   Generates a signing keypair and pins it into `extension/manifest.json`'s
+   `"key"` field, so the extension's ID stays stable across reloads. The
+   private key is written to `.extension_signing_key.pem` at the project
+   root (gitignored). Re-running once a real key is already pinned fails
+   unless you pass `--force` (which regenerates both keys and gives the
+   extension a new ID — repeat steps 3-4 below if you do this).
+3. Load the extension unpacked: `chrome://extensions` (or
+   `brave://extensions`) → enable Developer mode → "Load unpacked" →
+   select the `extension/` directory. Note the extension ID Chrome/Brave
+   assigns it — because the key is pinned in step 2, this ID stays stable
+   across future reloads.
+4. ```
+   uv run python manage.py install_native_host --extension-id <id>
+   ```
+   Registers the native messaging host, mints the extension auth token,
+   and writes `EXTENSION_ID=<id>` into `.env` for you (creating `.env` from
+   `.env.example` first if it doesn't exist yet). Full detail on what this
+   wires up lives in [Extension internals](#extension-internals).
 
-```
-uv sync
-uv run python manage.py migrate
-uv run python manage.py generate_signing_key
-```
+   **Restart any already-running backend** (`manage.py dev`, or
+   `runserver`/`run_huey` started manually) after this — `.env` is only
+   read once at process start, so a live process keeps using its old
+   `EXTENSION_ID` until restarted.
 
-Then:
+   If Chrome/Brave was already open when the manifest was written, reload
+   the extension once more before using it.
 
-1. Load the `extension/` directory unpacked at `chrome://extensions` (or
-   `brave://extensions`) and note the extension ID Chrome/Brave assigns it.
-2. `uv run python manage.py install_native_host --extension-id <id>`
-3. Click the extension's popup on any page.
+**Use:**
 
-Full detail for each of these steps — including what each command does and
-why the order matters — lives in
-[Browser extension setup (native messaging host)](#browser-extension-setup-native-messaging-host).
-Heavier optional setup (Playwright/Chromium, sentence-transformers weights,
-Tesseract) is not required for this basic flow — see [Setup](#setup).
+5. Click the extension's popup on any regular webpage you're reading
+   (`chrome://` and extension pages themselves are unreadable). This
+   extracts the page and hands it to the backend — see
+   [Extract content](#extract-content).
+6. The backend turns the extracted text into flashcards (see
+   [Generate cards](#generate-cards)), filters out ones that duplicate
+   cards you already have (see [Deduplicate cards](#deduplicate-cards)),
+   and attaches an image to each (see [Card images](#card-images)).
+7. The popup opens the batch's review grid. Accept, reject, or edit each
+   card — see [Review grid](#review-grid).
+8. Click **Finish** to push the accepted cards into a single Anki deck —
+   see [Push to Anki](#push-to-anki).
+
+If anything above doesn't behave as described, the full manual
+verification checklist (cold start, error cases, review-tab regression)
+is in `_docs/extension_manual_checklist.md`.
 
 ### Commands at a glance
 
@@ -116,65 +132,26 @@ Tesseract) is not required for this basic flow — see [Setup](#setup).
 | `uv run python manage.py run_huey` | Run the background task consumer alone (manual fallback; normally started automatically by `dev`) |
 | `uv run python manage.py push_to_anki` | Push accepted cards to Anki via AnkiConnect (idempotent) |
 
-## Browser extension setup (native messaging host)
+## Extension internals
 
-The extension (`extension/`) reaches this backend through a native
+The extension (`extension/`) reaches the backend through a native
 messaging host (`native_host/host.py`, #37), which Chrome/Brave discover
-via a manifest file registered on your machine. One-time setup, in this
-order:
+via a manifest file registered on your machine by
+`install_native_host` — see [Getting started](#getting-started) for the
+one-time setup steps. Reference detail on how the pieces talk to each
+other:
 
-1. Generate a signing keypair and pin it into `extension/manifest.json`'s
-   `"key"` field:
-   ```
-   uv run python manage.py generate_signing_key
-   ```
-   Pinning a key keeps the extension's ID stable across reloads. The
-   private key is written to `.extension_signing_key.pem` at the project
-   root (gitignored). Re-running once a real key is already pinned fails
-   unless you pass `--force` (which regenerates both the private key and
-   the pinned public key, giving the extension a new ID - see steps 2-3).
-2. Load the extension unpacked: `chrome://extensions` (or
-   `brave://extensions`) → enable Developer mode → "Load unpacked" →
-   select the `extension/` directory. Note the extension ID Chrome/Brave
-   assigns it - because the key is pinned in step 1, this ID stays stable
-   across future reloads.
-3. Run the installer with that ID:
-   ```
-   uv run python manage.py install_native_host --extension-id <id>
-   ```
-   This writes `native_host/run_host.sh` (a wrapper script with an
-   absolute interpreter path baked in) and registers the native-messaging
-   manifest with whichever of Chrome/Brave are installed, mints the
-   extension auth token (#33) if one doesn't exist yet, and writes
-   `EXTENSION_ID=<id>` into `.env` (creating it from `.env.example` first
-   if it doesn't exist yet) - the backend's CORS allowlist
-   (`config/settings.py` / `submissions/extension_api.py`) reads this, so
-   there's no need to set it by hand. Safe to re-run any time the
-   extension's ID changes (e.g. after an unpinned reload) - re-running
-   overwrites the wrapper, manifest(s), and the `.env` line in place.
-
-   **Restart any already-running backend** (`manage.py dev`, or
-   `runserver`/`run_huey` started manually) after this - `.env` is only
-   read once at process start, so a live process keeps using its old
-   `EXTENSION_ID` until restarted. If `EXTENSION_ID` is also set as a real
-   shell environment variable, that takes precedence over `.env`
-   (`load_dotenv`'s default `override=False`) - update or unset it too.
-4. If Chrome/Brave was already open when the manifest was written, reload
-   the extension once more. Native messaging host manifests are read fresh
-   per `connectNative` call, but a stale `chrome://extensions` page may not
-   reflect a just-loaded ID - if the popup reports it can't connect,
-   reloading the extension is the fix.
-
-`install_native_host --extension-id <id>` can be run before step 1's key
-exists - the ID is always supplied explicitly on the command line, never
-auto-discovered from the extension's files, so the two have no ordering
-dependency beyond needing *an* ID (pinned or not) in hand first.
-
-macOS only (this repo's development and documented setup are macOS-only);
-Linux/Windows native-messaging support is tracked separately in #43.
-
-For the full manual verification checklist (cold start, error cases,
-review-tab regression), see `_docs/extension_manual_checklist.md`.
+`install_native_host --extension-id <id>` can be run before the signing
+key exists — the ID is always supplied explicitly on the command line,
+never auto-discovered from the extension's files, so the two have no
+ordering dependency beyond needing *an* ID (pinned or not) in hand first.
+It's also safe to re-run any time the extension's ID changes (e.g. after
+an unpinned reload): re-running overwrites `native_host/run_host.sh` (a
+wrapper script with an absolute interpreter path baked in), the
+native-messaging manifest(s), and the `.env` line in place. Native
+messaging host manifests are read fresh per `connectNative` call, but a
+stale `chrome://extensions` page may not reflect a just-loaded ID — if the
+popup reports it can't connect, reloading the extension is the fix.
 
 ### Auth token + `EXTENSION_ID`
 
@@ -191,13 +168,13 @@ uv run python manage.py extension_token --rotate  # replace it
 CORS is hand-rolled (no dependency): every API response carries
 `Access-Control-Allow-Origin: chrome-extension://<EXTENSION_ID>` only when
 `EXTENSION_ID` (env var, `config/settings.py`) is set to the loaded
-extension's ID. `install_native_host` (step 3 above) sets this for you
-automatically in `.env` - there's no need to set it by hand. Unset or
-stale → header omitted (fail closed, browser blocks the response). If the
-popup reports it cannot reach the backend on first run, check this value
-first: a backend process already running when `.env` was updated keeps
-using its old `EXTENSION_ID` until restarted, and a real `EXTENSION_ID`
-shell environment variable takes precedence over `.env` and must be
+extension's ID. `install_native_host` sets this for you automatically in
+`.env` — there's no need to set it by hand. Unset or stale → header
+omitted (fail closed, browser blocks the response). If the popup reports
+it cannot reach the backend on first run, check this value first: a
+backend process already running when `.env` was updated keeps using its
+old `EXTENSION_ID` until restarted, and a real `EXTENSION_ID` shell
+environment variable takes precedence over `.env` and must be
 updated/unset too. The native host reads the token file and passes the
 token to the popup, so you never copy it by hand.
 
@@ -243,8 +220,8 @@ To run everything on another port (e.g. 9000):
    ```
    then reload the extension at `chrome://extensions` (Developer mode →
    Reload). No code or permission-prompt flow is involved.
-4. Re-run the manual checklist above; the popup follows the host's
-   `base_url` with no other change.
+4. Re-run the manual checklist (`_docs/extension_manual_checklist.md`);
+   the popup follows the host's `base_url` with no other change.
 
 Mismatch policy: the host's configured URL always wins. If it answers, the
 extension is pointed at it (`already_running`), even if you also started a
@@ -322,10 +299,9 @@ network call and need neither Draw Things nor internet.
 ## Run
 
 The extension is how you use this app day to day (see
-[Browser extension setup (native messaging host)](#browser-extension-setup-native-messaging-host));
-the native host spawns the backend for you. This section is for a
-contributor who wants to run the backend directly — e.g. to work on it
-without going through the extension:
+[Getting started](#getting-started)); the native host spawns the backend
+for you. This section is for a contributor who wants to run the backend
+directly — e.g. to work on it without going through the extension:
 
 ```
 uv run python manage.py migrate
