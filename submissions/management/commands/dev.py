@@ -35,6 +35,8 @@ import urllib.parse
 from pathlib import Path
 
 from django.core.management.base import BaseCommand
+from django.db import DEFAULT_DB_ALIAS, connections
+from django.db.migrations.executor import MigrationExecutor
 
 WEB_PREFIX = "[web]"
 WORKER_PREFIX = "[worker]"
@@ -75,6 +77,31 @@ def default_addrport(env: dict | None = None) -> str:
     source = env if env is not None else os.environ
     raw = (source.get("BACKEND_URL", "") or "").strip()
     return backend_url_to_addrport(raw or DEFAULT_BACKEND_URL)
+
+
+def pending_migrations(alias: str = DEFAULT_DB_ALIAS) -> list:
+    """Migration plan Django would apply for *alias* right now (issue #79).
+
+    Same executor + ``migration_plan(leaf_nodes())`` call ``manage.py
+    migrate --check`` itself uses, so this reflects what an actual
+    ``migrate`` would do - not ``makemigrations --check``, which answers a
+    different question (model changes with no migration file yet; out of
+    scope here). Covers every installed app, not just ``submissions``.
+    """
+    connection = connections[alias]
+    connection.prepare_database()
+    executor = MigrationExecutor(connection)
+    targets = executor.loader.graph.leaf_nodes()
+    return executor.migration_plan(targets)
+
+
+def format_pending_migrations(plan: list) -> str:
+    """Human-readable, impossible-to-miss message naming the pending migrations."""
+    names = ", ".join(f"{migration.app_label}.{migration.name}" for migration, _backwards in plan)
+    return (
+        "UNAPPLIED MIGRATIONS: "
+        f"{names}. Run `uv run python manage.py migrate` before `dev`."
+    )
 
 
 def project_manage_py() -> str:
@@ -162,6 +189,10 @@ class Command(BaseCommand):
         self, addrport: str, huey_args: list[str], restart_worker: bool = True
     ) -> int:
         """Spawn both children, stream prefixed logs, supervise. Returns exit code."""
+        plan = pending_migrations()
+        if plan:
+            self.stderr.write(format_pending_migrations(plan))
+            return 1
         if os.environ.get("HUEY_IMMEDIATE", "") == "1":
             self.stdout.write(
                 "WARNING: HUEY_IMMEDIATE=1 is set; unsetting it for dev children "

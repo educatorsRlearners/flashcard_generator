@@ -61,6 +61,50 @@ def test_handle_delegates_without_spawning(monkeypatch):
     assert called == []
 
 
+def test_pending_migrations_block_dev_startup(monkeypatch, capsys):
+    """Issue #79: unapplied migrations -> non-zero exit, no children spawned."""
+    fake_migration = type("Migration", (), {"app_label": "submissions", "name": "0099_fake"})()
+    monkeypatch.setattr(
+        dev_mod, "pending_migrations", lambda alias=None: [(fake_migration, False)]
+    )
+    spawned = []
+    monkeypatch.setattr(
+        dev_mod.Command,
+        "_spawn",
+        lambda self, cmd, env: spawned.append(cmd) or (_ for _ in ()).throw(
+            AssertionError("must not spawn")
+        ),
+    )
+    code = dev_mod.Command().run_supervised("127.0.0.1:8000", [])
+    assert code != 0
+    assert spawned == []
+    err = capsys.readouterr().err
+    assert "submissions.0099_fake" in err
+
+
+def test_no_pending_migrations_starts_normally(monkeypatch):
+    """Issue #79: no pending migrations -> normal startup, children spawned."""
+    monkeypatch.setattr(dev_mod, "pending_migrations", lambda alias=None: [])
+    spawned = []
+
+    class FakeProc:
+        def __init__(self):
+            self.stdout = iter([])
+
+        def poll(self):
+            return 0
+
+    def fake_spawn(self, cmd, env):
+        spawned.append(cmd)
+        return FakeProc()
+
+    monkeypatch.setattr(dev_mod.Command, "_spawn", fake_spawn)
+    dev_mod.Command().run_supervised("127.0.0.1:8000", [])
+    assert len(spawned) == 2
+    assert spawned[0][-2:] == ["runserver", "127.0.0.1:8000"]
+    assert spawned[1][-1] == "run_huey"
+
+
 def test_handle_refuses_under_pytest(monkeypatch, capsys):
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_dev_command.py::x")
     import subprocess
