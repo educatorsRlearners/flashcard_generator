@@ -151,6 +151,18 @@ class SubmittedURL(models.Model):
     #: skip reason for a URL that produced no cards). Cleared on success.
     generation_error = models.TextField(blank=True, default="")
 
+    #: True once ``dedup.dedup_cards()`` has been attempted (successfully or
+    #: not - it is best-effort, see ``generation.generate_for``) for this
+    #: URL's most recently generated cards (issue #78). Meaningless while
+    #: ``generation_status != "ok"``; reset to ``False`` whenever generation
+    #: (re)runs so the extension status endpoint
+    #: (``extension_api.submission_status``) can gate ``terminal`` on dedup
+    #: completion, not just generation completion - closing the race where
+    #: the review grid could render (and be acted on) while
+    #: ``dedup_cards()`` was still flipping a card's ``dedup_status`` in the
+    #: same Huey worker process.
+    dedup_ready = models.BooleanField(default=False)
+
     #: Short human-readable forms of ``FailureKind`` for use in running
     #: prose (e.g. the batch by-kind breakdown). The full ``.label`` values
     #: are used verbatim for per-row display via ``get_failure_kind_display``.

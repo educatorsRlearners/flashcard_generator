@@ -207,6 +207,21 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
     min-width: 0;
 }
 
+/* Dedup-race Accept/Reject error (issue #78): force onto its own row like
+   .review-card__reason-wrap, instead of squeezing into the button row, and
+   use the same error palette as .message--error / .review-card--rejected. */
+.review-card__decision-error {
+    flex-basis: 100%;
+    margin: 0.3rem 0 0;
+    padding: 0.5rem 0.65rem;
+    color: var(--error-fg);
+    background: var(--error-bg);
+    border: 1px solid var(--error-bd);
+    border-radius: 6px;
+    font-weight: 600;
+}
+.review-card__decision-error[hidden] { display: none; }
+
 .review-finish { margin-top: 1rem; }
 .review-finish__confirm { font-weight: 600; }
 

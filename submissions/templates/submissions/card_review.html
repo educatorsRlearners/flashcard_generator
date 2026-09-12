@@ -125,6 +125,7 @@
                             Save reason
                         </button>
                     </span>
+                    <p class="review-card__decision-error" data-role="decision-error" hidden></p>
                 </form>
             </li>
         {% endfor %}
@@ -227,9 +228,17 @@
                 "Content-Type": "application/x-www-form-urlencoded",
             },
             body: body.toString(),
-        }).then(function (r) { return r.json(); }).then(function (data) {
-            applyCard(li, data.review_status, data.rejection_reason);
-            setTally(data.tally);
+        }).then(function (r) {
+            return r.json().then(function (data) { return { ok: r.ok, data: data }; });
+        }).then(function (res) {
+            var errorEl = li.querySelector('[data-role="decision-error"]');
+            if (res.ok) {
+                if (errorEl) { errorEl.hidden = true; errorEl.textContent = ""; }
+                applyCard(li, res.data.review_status, res.data.rejection_reason);
+                setTally(res.data.tally);
+            } else if (errorEl) {
+                showError(errorEl, res.data.error);
+            }
         }).catch(function () { form.submit(); });
     }
 
