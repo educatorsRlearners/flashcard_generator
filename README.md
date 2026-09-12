@@ -91,8 +91,9 @@ in #43):
    uv run python manage.py install_native_host --extension-id <id>
    ```
    Registers the native messaging host, mints the extension auth token,
-   and writes `EXTENSION_ID=<id>` into `.env` for you. Full detail on what
-   this wires up lives in [Extension internals](#extension-internals).
+   and writes `EXTENSION_ID=<id>` into `.env` for you (creating `.env` from
+   `.env.example` first if it doesn't exist yet). Full detail on what this
+   wires up lives in [Extension internals](#extension-internals).
 
    **Restart any already-running backend** (`manage.py dev`, or
    `runserver`/`run_huey` started manually) after this — `.env` is only
@@ -841,5 +842,3 @@ uv run python manage.py dev          # dev entrypoint: runserver + Huey consumer
 Huey tests run in immediate mode (no consumer needed). See
 [Background processing (Huey)](#background-processing-huey) for
 `run_huey`, the manual fallback, and `HUEY_IMMEDIATE=1`.
-</content>
-</invoke>
