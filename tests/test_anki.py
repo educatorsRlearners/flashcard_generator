@@ -1,9 +1,14 @@
-"""Tests for the AnkiConnect push (issue #11).
+"""Tests for the AnkiConnect push (issue #11, per-batch deck #76).
 
 No network: :class:`FakeAnki` stands in for :class:`AnkiConnectClient`,
 recording every ``invoke`` call and returning canned results. It is passed
 straight into ``push_accepted_cards`` (or monkeypatched onto the module for
 the management-command path).
+
+Per-batch deck (#76): cards live on batches with a stored ``deck_name``;
+``_card`` creates such a batch by default. Single-batch tests push with
+``batch=...`` (one :class:`PushResult`); the unscoped path groups by stored
+deck (see ``tests/test_batch_deck.py``).
 """
 
 import pytest
@@ -67,7 +72,9 @@ class FakeAnki:
 
 
 def _card(review_status=Card.ReviewStatus.ACCEPTED, note_type=Card.NoteType.BASIC, **kw):
-    batch = kw.pop("batch", None) or Batch.objects.create()
+    batch = kw.pop("batch", None)
+    if batch is None:
+        batch = Batch.objects.create(deck_name="Test Deck")
     su = kw.pop("submitted_url", None) or SubmittedURL.objects.create(
         url=f"https://example.com/{Card.objects.count()}-{id(kw)}",
         status=SubmittedURL.Status.OK,
@@ -94,30 +101,33 @@ def _card(review_status=Card.ReviewStatus.ACCEPTED, note_type=Card.NoteType.BASI
 
 
 def test_only_accepted_cards_are_sent():
-    _card(review_status=Card.ReviewStatus.ACCEPTED)
-    _card(review_status=Card.ReviewStatus.REJECTED)
-    _card(review_status=Card.ReviewStatus.UNDECIDED)
+    batch = Batch.objects.create(deck_name="Test Deck")
+    _card(batch=batch, review_status=Card.ReviewStatus.ACCEPTED)
+    _card(batch=batch, review_status=Card.ReviewStatus.REJECTED)
+    _card(batch=batch, review_status=Card.ReviewStatus.UNDECIDED)
 
-    fake = FakeAnki(existing_decks=["Flashcard Generator"])
-    result = push_accepted_cards(client=fake)
+    fake = FakeAnki(existing_decks=["Test Deck"])
+    result = push_accepted_cards(client=fake, batch=batch)
 
     assert len(fake.notes_added()) == 1
     assert result.added_count == 1
 
 
 def test_deck_created_when_missing():
-    _card()
+    batch = Batch.objects.create(deck_name="My Deck")
+    _card(batch=batch)
     fake = FakeAnki(existing_decks=[])
-    result = push_accepted_cards(client=fake)
+    result = push_accepted_cards(client=fake, batch=batch)
 
-    assert ("createDeck", {"deck": "Flashcard Generator"}) in fake.calls
+    assert ("createDeck", {"deck": "My Deck"}) in fake.calls
     assert result.deck_created is True
 
 
 def test_deck_not_recreated_when_present():
-    _card()
-    fake = FakeAnki(existing_decks=["Flashcard Generator"])
-    result = push_accepted_cards(client=fake)
+    batch = Batch.objects.create(deck_name="My Deck")
+    _card(batch=batch)
+    fake = FakeAnki(existing_decks=["My Deck"])
+    result = push_accepted_cards(client=fake, batch=batch)
 
     assert all(a != "createDeck" for a, _ in fake.calls)
     assert result.deck_created is False
@@ -126,7 +136,7 @@ def test_deck_not_recreated_when_present():
 def test_note_types_mapped():
     _card(note_type=Card.NoteType.BASIC)
     _card(note_type=Card.NoteType.CLOZE)
-    fake = FakeAnki(existing_decks=["Flashcard Generator"])
+    fake = FakeAnki(existing_decks=["Test Deck"])
     push_accepted_cards(client=fake)
 
     models = {n["modelName"] for n in fake.notes_added()}
@@ -137,7 +147,7 @@ def test_note_types_mapped():
 
 def test_tags_present_on_notes():
     _card()
-    fake = FakeAnki(existing_decks=["Flashcard Generator"])
+    fake = FakeAnki(existing_decks=["Test Deck"])
     push_accepted_cards(client=fake)
 
     tags = fake.notes_added()[0]["tags"]
@@ -148,7 +158,7 @@ def test_tags_present_on_notes():
 
 def test_tags_fall_back_to_card_fields_when_meta_missing():
     c = _card(tags={})
-    fake = FakeAnki(existing_decks=["Flashcard Generator"])
+    fake = FakeAnki(existing_decks=["Test Deck"])
     push_accepted_cards(client=fake)
     tags = fake.notes_added()[0]["tags"]
     assert f"source:{c.submitted_url.url}" in tags
@@ -158,7 +168,7 @@ def test_tags_fall_back_to_card_fields_when_meta_missing():
 
 def test_sync_fields_recorded_on_success():
     c = _card()
-    fake = FakeAnki(existing_decks=["Flashcard Generator"])
+    fake = FakeAnki(existing_decks=["Test Deck"])
     push_accepted_cards(client=fake)
 
     c.refresh_from_db()
@@ -167,12 +177,13 @@ def test_sync_fields_recorded_on_success():
 
 
 def test_rerun_pushes_nothing_new():
-    _card()
-    fake1 = FakeAnki(existing_decks=["Flashcard Generator"])
-    push_accepted_cards(client=fake1)
+    batch = Batch.objects.create(deck_name="Test Deck")
+    _card(batch=batch)
+    fake1 = FakeAnki(existing_decks=["Test Deck"])
+    push_accepted_cards(client=fake1, batch=batch)
 
-    fake2 = FakeAnki(existing_decks=["Flashcard Generator"])
-    result = push_accepted_cards(client=fake2)
+    fake2 = FakeAnki(existing_decks=["Test Deck"])
+    result = push_accepted_cards(client=fake2, batch=batch)
 
     assert fake2.notes_added() == []
     assert result.added_count == 0
@@ -193,16 +204,17 @@ def test_unreachable_anki_clean_error_nothing_synced():
 
 
 def test_per_note_error_is_isolated():
-    good = _card(front="good?")
-    bad = _card(front="bad?")
+    batch = Batch.objects.create(deck_name="Test Deck")
+    good = _card(batch=batch, front="good?")
+    bad = _card(batch=batch, front="bad?")
 
     def add_note(note):
         if note["fields"].get("Front") == "bad?":
             return AnkiConnectError("model was not found: NoSuchType")
         return 4242
 
-    fake = FakeAnki(existing_decks=["Flashcard Generator"], add_note=add_note)
-    result = push_accepted_cards(client=fake)
+    fake = FakeAnki(existing_decks=["Test Deck"], add_note=add_note)
+    result = push_accepted_cards(client=fake, batch=batch)
 
     assert result.added_count == 1
     assert result.failed_count == 1
@@ -216,16 +228,17 @@ def test_per_note_error_is_isolated():
 
 
 def test_duplicate_is_skipped_not_fatal():
-    dup = _card(front="dup?")
-    ok = _card(front="ok?")
+    batch = Batch.objects.create(deck_name="Test Deck")
+    dup = _card(batch=batch, front="dup?")
+    ok = _card(batch=batch, front="ok?")
 
     def add_note(note):
         if note["fields"].get("Front") == "dup?":
             return AnkiConnectError("cannot create note because it is a duplicate")
         return 777
 
-    fake = FakeAnki(existing_decks=["Flashcard Generator"], add_note=add_note)
-    result = push_accepted_cards(client=fake)
+    fake = FakeAnki(existing_decks=["Test Deck"], add_note=add_note)
+    result = push_accepted_cards(client=fake, batch=batch)
 
     assert result.added_count == 1
     assert result.failed_count == 0
@@ -239,12 +252,13 @@ def test_duplicate_is_skipped_not_fatal():
 
 
 def test_result_counts():
-    _card(front="a?")
-    _card(front="b?")
-    _card(front="dup?")
-    _card(front="fail?")
+    batch = Batch.objects.create(deck_name="Test Deck")
+    _card(batch=batch, front="a?")
+    _card(batch=batch, front="b?")
+    _card(batch=batch, front="dup?")
+    _card(batch=batch, front="fail?")
     # one already-synced accepted card
-    synced = _card(front="old?")
+    synced = _card(batch=batch, front="old?")
     synced.synced_at = synced.created_at
     synced.anki_note_id = 1
     synced.save()
@@ -257,8 +271,8 @@ def test_result_counts():
             return AnkiConnectError("some other error")
         return 9000
 
-    fake = FakeAnki(existing_decks=["Flashcard Generator"], add_note=add_note)
-    result = push_accepted_cards(client=fake)
+    fake = FakeAnki(existing_decks=["Test Deck"], add_note=add_note)
+    result = push_accepted_cards(client=fake, batch=batch)
 
     assert result.added_count == 2
     assert result.skipped_already_synced == 1
@@ -349,7 +363,7 @@ def _image_card(data: bytes, name="pic.png", **kw):
 def test_media_happy_path_upload_then_note_references_bare_filename():
     data = b"\x89PNG-happy-path-bytes"
     card = _image_card(data)
-    fake = MediaFakeAnki(existing_decks=["Flashcard Generator"])
+    fake = MediaFakeAnki(existing_decks=["Test Deck"])
 
     result = push_accepted_cards(client=fake)
 
@@ -382,7 +396,7 @@ def test_media_skip_when_identical_content_already_in_anki():
     data = b"shared-bytes"
     filename = anki.media_filename_for_bytes(data, "png")
     card = _image_card(data)
-    fake = MediaFakeAnki(existing_decks=["Flashcard Generator"], media={filename: data})
+    fake = MediaFakeAnki(existing_decks=["Test Deck"], media={filename: data})
 
     result = push_accepted_cards(client=fake)
 
@@ -395,7 +409,7 @@ def test_media_same_bytes_across_two_cards_uploaded_once():
     data = b"same-bytes-two-cards"
     _image_card(data, name="one.png")
     _image_card(data, name="two.png")
-    fake = MediaFakeAnki(existing_decks=["Flashcard Generator"])
+    fake = MediaFakeAnki(existing_decks=["Test Deck"])
 
     result = push_accepted_cards(client=fake)
 
@@ -405,17 +419,18 @@ def test_media_same_bytes_across_two_cards_uploaded_once():
 
 
 def test_media_rerun_pushes_no_duplicate_media():
+    batch = Batch.objects.create(deck_name="Test Deck")
     data = b"rerun-bytes"
-    card = _image_card(data)
-    fake1 = MediaFakeAnki(existing_decks=["Flashcard Generator"])
-    push_accepted_cards(client=fake1)
+    card = _image_card(data, batch=batch)
+    fake1 = MediaFakeAnki(existing_decks=["Test Deck"])
+    push_accepted_cards(client=fake1, batch=batch)
     assert len(fake1.store_calls()) == 1
 
     # card stays synced -> re-run sends nothing (no duplicate media/note)
     fake2 = MediaFakeAnki(
-        existing_decks=["Flashcard Generator"], media=dict(fake1.media)
+        existing_decks=["Test Deck"], media=dict(fake1.media)
     )
-    result = push_accepted_cards(client=fake2)
+    result = push_accepted_cards(client=fake2, batch=batch)
     assert fake2.store_calls() == []
     assert fake2.notes_added() == []
     assert result.skipped_already_synced == 1
@@ -424,15 +439,16 @@ def test_media_rerun_pushes_no_duplicate_media():
 
 
 def test_media_store_failure_fails_card_without_broken_reference():
-    good = _image_card(b"good-bytes", name="good.png", front="good?")
-    bad = _image_card(b"bad-bytes", name="bad.png", front="bad?")
+    batch = Batch.objects.create(deck_name="Test Deck")
+    good = _image_card(b"good-bytes", name="good.png", batch=batch, front="good?")
+    bad = _image_card(b"bad-bytes", name="bad.png", batch=batch, front="bad?")
     bad_filename = anki.media_filename_for_bytes(b"bad-bytes", "png")
     fake = MediaFakeAnki(
-        existing_decks=["Flashcard Generator"],
+        existing_decks=["Test Deck"],
         store_failures={bad_filename: "disk full"},
     )
 
-    result = push_accepted_cards(client=fake)
+    result = push_accepted_cards(client=fake, batch=batch)
 
     assert result.failed_count == 1
     assert result.failed[0][0] == bad.pk
@@ -449,7 +465,7 @@ def test_media_store_failure_fails_card_without_broken_reference():
 
 def test_no_image_card_pushes_without_media_calls():
     _card()
-    fake = MediaFakeAnki(existing_decks=["Flashcard Generator"])
+    fake = MediaFakeAnki(existing_decks=["Test Deck"])
 
     result = push_accepted_cards(client=fake)
 
@@ -542,7 +558,7 @@ def test_live_deck_near_duplicate_marked_with_matched_note(stub_model):
     new = _gen_card("mitochondrion powerhouse of the cell")
     other = _gen_card("unrelated photosynthesis topic here")
 
-    result = anki.dedup_cards_against_anki([new, other], client=deck)
+    result = anki.dedup_cards_against_anki([new, other], client=deck, deck_name="Test Deck")
 
     new.refresh_from_db()
     other.refresh_from_db()
@@ -560,11 +576,11 @@ def test_live_deck_near_duplicate_marked_with_matched_note(stub_model):
 def test_live_deck_results_cached_not_per_card(stub_model):
     deck = DeckFakeAnki(notes=[_deck_note(11, "something entirely different")])
     first = _gen_card("brand new card alpha")
-    anki.dedup_cards_against_anki([first], client=deck)
+    anki.dedup_cards_against_anki([first], client=deck, deck_name="Test Deck")
     assert deck.deck_call_count() == 2
 
     second = _gen_card("brand new card beta")
-    result = anki.dedup_cards_against_anki([second], client=deck)
+    result = anki.dedup_cards_against_anki([second], client=deck, deck_name="Test Deck")
     assert deck.deck_call_count() == 2  # cache hit: zero new Anki calls
     assert result.from_cache is True
 
@@ -574,7 +590,7 @@ def test_live_deck_threshold_is_shared_single_source_of_truth(stub_model, monkey
     card = _gen_card("mitochondrion powerhouse of the cell")
     monkeypatch.setattr(_dedup, "DEDUP_SIMILARITY_THRESHOLD", 0.9999)
 
-    result = anki.dedup_cards_against_anki([card], client=deck, use_cache=False)
+    result = anki.dedup_cards_against_anki([card], client=deck, deck_name="Test Deck", use_cache=False)
 
     card.refresh_from_db()
     assert result.duplicates == 0
@@ -585,7 +601,7 @@ def test_live_deck_unreachable_falls_back_local_only(stub_model):
     deck = DeckFakeAnki(unreachable=True)
     card = _gen_card("mitochondrion powerhouse of the cell")
 
-    result = anki.dedup_cards_against_anki([card], client=deck)
+    result = anki.dedup_cards_against_anki([card], client=deck, deck_name="Test Deck")
 
     card.refresh_from_db()
     assert card.dedup_status == Card.DedupStatus.UNIQUE  # untouched

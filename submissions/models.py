@@ -3,6 +3,10 @@ from django.db import models
 
 class Batch(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
+    #: Anki deck chosen by the reviewer for this batch (issue #76). NULL /
+    #: empty means "not chosen yet" - such batches are never pushed and
+    #: never fall back to ANKI_DECK_NAME.
+    deck_name = models.CharField(max_length=255, null=True, blank=True, default=None)
 
     class Meta:
         ordering = ["-created_at", "-id"]

@@ -476,7 +476,7 @@ def test_generate_for_surfaces_anki_match_in_result_and_summary(
     install_llm([_card("basic", "What is chlorophyll?", "The green pigment.", "chlorophyll")])
     su = _make_url()
 
-    def fake_dedup(cards):
+    def fake_dedup(cards, deck_name=None, *a, **k):
         card = list(cards)[0]
         card.dedup_status = Card.DedupStatus.DUPLICATE
         card.similarity_score = 0.95
@@ -516,7 +516,7 @@ def test_generate_for_truncates_long_matched_note_text(install_llm, monkeypatch)
     su = _make_url()
     long_text = "x" * (generation.ANKI_MATCH_TEXT_PREVIEW_CHARS + 50)
 
-    def fake_dedup(cards):
+    def fake_dedup(cards, deck_name=None, *a, **k):
         card = list(cards)[0]
         return _anki.AnkiDedupResult(
             matches=[
@@ -543,7 +543,7 @@ def test_generate_for_propagates_unreachable_anki_warning(
     su = _make_url()
     warning = "Anki deck dedup skipped (Anki unreachable: boom); local-only dedup applied."
 
-    def fake_dedup(cards):
+    def fake_dedup(cards, deck_name=None, *a, **k):
         return _anki.AnkiDedupResult(warning=warning)
 
     _stub_anki_dedup(monkeypatch, fake_dedup)

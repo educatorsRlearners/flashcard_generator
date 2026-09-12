@@ -293,7 +293,79 @@ def ensure_media_uploaded(
     return True
 
 
-# --- live-deck semantic dedup (issue #29) -------------------------------
+# --- deck-name validation (issue #76) -------------------------------------
+
+#: Max deck-name length, mirrors ``Batch.deck_name`` (the model is the
+#: single source of truth; this constant is only the non-model fallback).
+MAX_DECK_NAME_LENGTH = 255
+
+
+class DeckNameError(ValueError):
+    """A deck name failed server-side validation."""
+
+
+def deck_name_max_length() -> int:
+    """Max allowed deck-name length (from the ``Batch`` model field)."""
+    try:
+        field = Card._meta.get_field("batch").related_model._meta.get_field(
+            "deck_name"
+        )
+        return int(field.max_length or MAX_DECK_NAME_LENGTH)
+    except Exception:
+        return MAX_DECK_NAME_LENGTH
+
+
+def validate_deck_name(value: object) -> str:
+    """Strip + validate *value* as an Anki deck name; return the stripped name.
+
+    Rules: non-empty after stripping, within the model max length, no
+    embedded quote / newline / carriage return, no empty ``::`` segments
+    (covers leading / trailing ``::`` and ``::::``), and no blank segment
+    around ``::``. The stored value is used verbatim for ``deckName`` /
+    ``deck:"..."`` queries. Raises :class:`DeckNameError` on violation.
+    """
+    stripped = str(value or "").strip()
+    if not stripped:
+        raise DeckNameError("Choose an Anki deck (dropdown or new name).")
+    if len(stripped) > deck_name_max_length():
+        raise DeckNameError(
+            f"Deck name is too long (max {deck_name_max_length()} characters)."
+        )
+    if '"' in stripped or "\n" in stripped or "\r" in stripped:
+        raise DeckNameError('Deck name must not contain quotes or newlines.')
+    if stripped.startswith("::") or stripped.endswith("::"):
+        raise DeckNameError('Deck name must not start or end with "::".')
+    for segment in stripped.split("::"):
+        if not segment.strip():
+            raise DeckNameError('Deck name must not contain empty "::" segments.')
+    return stripped
+
+
+def resolve_deck_choice(new: object = "", existing: object = "") -> str:
+    """Resolve the picker choice: typed free text wins over the dropdown.
+
+    Returns the stripped choice ("" when neither is given); validation is
+    the caller's job via :func:`validate_deck_name`.
+    """
+    typed = str(new or "").strip()
+    if typed:
+        return typed
+    return str(existing or "").strip()
+
+
+def normalize_deck_name(value: object) -> str:
+    """Strip *value* to its stored-deck form ("" when None / blank).
+
+    No validation - use :func:`validate_deck_name` when the name must be
+    Anki-legal (e.g. reviewer input). Used wherever a stored ``deck_name``
+    is read back for grouping / querying.
+    """
+    return str(value or "").strip()
+
+
+def escape_deck_query(deck_name: str) -> str:
+    """Escape *deck_name* for a ``deck:"..."`` AnkiConnect query."""
+    return str(deck_name or "").replace("\\", "\\\\").replace('"', '\\"')
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -336,7 +408,7 @@ def fetch_deck_note_texts(
     """
     if use_cache and deck_name in _DECK_NOTES_CACHE:
         return _DECK_NOTES_CACHE[deck_name], True
-    note_ids = client.invoke("findNotes", query=f'deck:"{deck_name}"') or []
+    note_ids = client.invoke("findNotes", query=f'deck:"{escape_deck_query(deck_name)}"') or []
     if not note_ids:
         notes: list[dict] = []
         if use_cache:
@@ -396,6 +468,11 @@ def dedup_cards_against_anki(
     is fetched once per deck (cached); embeddings are computed in one
     ``model.encode`` call. Similarity uses
     :data:`submissions.dedup.DEDUP_SIMILARITY_THRESHOLD`.
+
+    The deck is the batch's stored ``deck_name`` (issue #76) - never
+    ``settings.ANKI_DECK_NAME``. When *deck_name* is None it is inferred
+    from the cards' ``batch`` link; a missing / empty deck skips live dedup
+    with a warning (local-only applies) instead of checking the default deck.
     """
     from submissions.dedup import DEDUP_SIMILARITY_THRESHOLD, load_embedding_model
 
@@ -407,8 +484,19 @@ def dedup_cards_against_anki(
     ]
     if not candidates:
         return AnkiDedupResult()
+    deck = deck_name
+    if deck is None:
+        first_batch = getattr(candidates[0], "batch", None)
+        deck = getattr(first_batch, "deck_name", None)
+    deck = normalize_deck_name(deck)
+    if not deck:
+        warning = (
+            "Anki deck dedup skipped (no deck chosen for this batch); "
+            "local-only dedup applied."
+        )
+        logger.warning("%s", warning)
+        return AnkiDedupResult(warning=warning)
     client = client or AnkiConnectClient()
-    deck = deck_name or settings.ANKI_DECK_NAME
     try:
         deck_notes, from_cache = fetch_deck_note_texts(client, deck, use_cache=use_cache)
     except AnkiError as exc:
@@ -489,44 +577,29 @@ class PushResult:
         return lines
 
 
-def accepted_unsynced_cards():
-    return Card.objects.filter(
+def accepted_unsynced_cards(batch=None):
+    """Accepted + not-yet-synced cards, optionally scoped to one batch.
+
+    The batch scope matches the review grid (``Card.batch`` or any
+    ``BatchRequest`` for the batch), so Finish pushes exactly what the
+    reviewer saw.
+    """
+    from django.db.models import Q
+
+    qs = Card.objects.filter(
         review_status=Card.ReviewStatus.ACCEPTED,
         synced_at__isnull=True,
-    ).select_related("submitted_url").order_by("pk")
+    )
+    if batch is not None:
+        batch_id = getattr(batch, "pk", batch)
+        qs = qs.filter(
+            Q(batch_id=batch_id) | Q(submitted_url__requests__batch_id=batch_id)
+        ).distinct()
+    return qs.select_related("submitted_url").order_by("pk")
 
 
-def push_accepted_cards(client: AnkiConnectClient | None = None) -> PushResult:
-    """Push every ``accepted`` + not-yet-synced card to the configured deck.
-
-    Raises :class:`AnkiUnreachableError` (before touching any card) if Anki
-    cannot be contacted. A per-note AnkiConnect error is caught: that card
-    is reported failed (or skipped-duplicate) and the batch continues.
-    A per-card media failure (unreadable image bytes, ``storeMediaFile``
-    error) likewise fails just that card - retryable, since the card stays
-    unsynced - and never writes a note with a broken image reference.
-    """
-    client = client or AnkiConnectClient()
-    deck_name = settings.ANKI_DECK_NAME
-    result = PushResult(deck_name=deck_name, url=client.url)
-    media_uploaded: set[str] = set()
-
-    result.skipped_already_synced = Card.objects.filter(
-        review_status=Card.ReviewStatus.ACCEPTED,
-        synced_at__isnull=False,
-    ).count()
-
-    cards = list(accepted_unsynced_cards())
-    if not cards:
-        return result
-
-    # Connectivity check + deck creation. An AnkiUnreachableError here
-    # propagates with nothing marked synced.
-    existing_decks = client.invoke("deckNames") or []
-    if deck_name not in existing_decks:
-        client.invoke("createDeck", deck=deck_name)
-        result.deck_created = True
-
+def _push_cards_to_deck(client, deck_name, cards, result, media_uploaded) -> None:
+    """Push *cards* to *deck_name*, recording into *result* (per-card isolation)."""
     for card in cards:
         try:
             image_data = card_image_bytes(card)
@@ -559,4 +632,142 @@ def push_accepted_cards(client: AnkiConnectClient | None = None) -> PushResult:
         card.save(update_fields=["anki_note_id", "synced_at"])
         result.added.append((card.pk, note_id))
 
+
+def _ensure_deck(client, deck_name, result) -> None:
+    existing_decks = client.invoke("deckNames") or []
+    if deck_name not in existing_decks:
+        client.invoke("createDeck", deck=deck_name)
+        result.deck_created = True
+
+
+def push_batch_accepted_cards(batch, client: AnkiConnectClient | None = None) -> PushResult:
+    """Push one batch's accepted+unsynced cards to its stored ``deck_name``.
+
+    Creates the deck when missing. A batch with no stored deck (NULL/empty)
+    is never pushed and never falls back to ``ANKI_DECK_NAME`` - an empty
+    :class:`PushResult` (``deck_name == ""``) is returned and the cards stay
+    unsynced. Raises :class:`AnkiUnreachableError` before touching any card
+    when Anki cannot be contacted.
+    """
+    from .models import Batch as BatchModel
+
+    client = client or AnkiConnectClient()
+    if not isinstance(batch, BatchModel):
+        batch = BatchModel.objects.filter(pk=getattr(batch, "pk", batch)).first()
+    deck_name = normalize_deck_name(getattr(batch, "deck_name", None))
+    result = PushResult(deck_name=deck_name, url=client.url)
+    if batch is None or not deck_name:
+        return result
+    batch_id = batch.pk
+    from django.db.models import Q as _Q
+
+    result.skipped_already_synced = Card.objects.filter(
+        review_status=Card.ReviewStatus.ACCEPTED,
+        synced_at__isnull=False,
+    ).filter(
+        _Q(batch_id=batch_id) | _Q(submitted_url__requests__batch_id=batch_id),
+    ).distinct().count()
+    cards = list(accepted_unsynced_cards(batch=batch))
+    if not cards:
+        return result
+    # Connectivity check + deck creation. An AnkiUnreachableError here
+    # propagates with nothing marked synced.
+    _ensure_deck(client, deck_name, result)
+    _push_cards_to_deck(client, deck_name, cards, result, set())
     return result
+
+
+@dataclass
+class MultiPushResult:
+    """Grouped outcome of pushing every deck-assigned batch (CLI / all-batch path)."""
+
+    results: list = field(default_factory=list)  # [PushResult], one per deck
+    skipped_no_deck: int = 0
+    url: str = ""
+
+    @property
+    def added_count(self) -> int:
+        return sum(len(r.added) for r in self.results)
+
+    @property
+    def failed_count(self) -> int:
+        return sum(len(r.failed) for r in self.results)
+
+    def summary_lines(self) -> list[str]:
+        lines: list[str] = []
+        for result in self.results:
+            lines.extend(result.summary_lines())
+        if self.skipped_no_deck:
+            lines.append(
+                f"skipped {self.skipped_no_deck} card(s) with no deck chosen (not pushed)"
+            )
+        else:
+            lines.append("skipped 0 card(s) with no deck chosen")
+        return lines
+
+
+def push_all_deck_batches(client: AnkiConnectClient | None = None) -> MultiPushResult:
+    """Push every batch with a stored deck, grouped per deck (CLI path).
+
+    Batches with NULL/empty ``deck_name`` are counted in
+    ``skipped_no_deck`` and never pushed. Cards are grouped by stored deck
+    name so two batches with different decks land in two decks. Raises
+    :class:`AnkiUnreachableError` with nothing marked synced when Anki is
+    unreachable.
+    """
+    from .models import Batch as BatchModel
+
+    client = client or AnkiConnectClient()
+    grouped = MultiPushResult(url=client.url)
+    deck_to_cards: dict[str, list] = {}
+    deck_order: list[str] = []
+    for card in accepted_unsynced_cards():
+        deck = ""
+        batch = getattr(card, "batch", None)
+        if batch is not None:
+            try:
+                deck = normalize_deck_name(getattr(batch, "deck_name", ""))
+            except Exception:
+                deck = ""
+        if not deck:
+            grouped.skipped_no_deck += 1
+            continue
+        if deck not in deck_to_cards:
+            deck_to_cards[deck] = []
+            deck_order.append(deck)
+        deck_to_cards[deck].append(card)
+    if not deck_to_cards:
+        return grouped
+    # One connectivity check up front so unreachable pushes nothing.
+    existing_decks = client.invoke("deckNames") or []
+    media_uploaded: set[str] = set()
+    for deck in deck_order:
+        result = PushResult(deck_name=deck, url=client.url)
+        if deck not in existing_decks:
+            client.invoke("createDeck", deck=deck)
+            result.deck_created = True
+            existing_decks.append(deck)
+        _push_cards_to_deck(client, deck, deck_to_cards[deck], result, media_uploaded)
+        grouped.results.append(result)
+    return grouped
+
+
+def push_accepted_cards(
+    client: AnkiConnectClient | None = None, batch=None, batch_id=None
+) -> PushResult | MultiPushResult:
+    """Push accepted+unsynced cards to their batch's stored deck (issue #76).
+
+    * With ``batch`` / ``batch_id``: pushes only that batch (see
+      :func:`push_batch_accepted_cards`).
+    * Without either: pushes every deck-assigned batch grouped per deck
+      (see :func:`push_all_deck_batches`); deck-less cards are skipped,
+      never sent to ``ANKI_DECK_NAME``.
+
+    ``ANKI_DECK_NAME`` is never used as a push target.
+    """
+    if batch is None and batch_id is not None:
+        batch = batch_id
+    if batch is not None:
+        return push_batch_accepted_cards(batch, client=client)
+    # Legacy / unscoped call: group across batches by stored deck.
+    return push_all_deck_batches(client=client)

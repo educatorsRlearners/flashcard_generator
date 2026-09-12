@@ -952,18 +952,20 @@ def generate_for(
         logger.exception("post-generation dedup failed for %s", submitted_url.url)
 
     # Live-deck semantic dedup (#29): compare the new cards against the notes
-    # currently in the target Anki deck. Best-effort like local dedup - an
-    # unreachable Anki falls back to local-only; the returned
-    # ``AnkiDedupResult`` is stored on the ``GenerationResult`` (never
-    # discarded) so the command output surfaces the matched note / warning.
-    # Generation always completes.
+    # currently in the batch's stored Anki deck (#76), never ANKI_DECK_NAME.
+    # Best-effort like local dedup - no stored deck skips live dedup with a
+    # warning (local-only applies), an unreachable Anki falls back to
+    # local-only; the returned ``AnkiDedupResult`` is stored on the
+    # ``GenerationResult`` (never discarded) so the command output surfaces
+    # the matched note / warning. Generation always completes.
     anki_duplicates = 0
     anki_matches: list = []
     anki_warnings: list[str] = []
     try:
         from submissions import anki as _anki
 
-        anki_result = _anki.dedup_cards_against_anki(cards)
+        batch_deck = getattr(getattr(submitted_url, "batch", None), "deck_name", None)
+        anki_result = _anki.dedup_cards_against_anki(cards, deck_name=batch_deck)
         anki_duplicates = int(anki_result.duplicates or 0)
         anki_matches = [
             {

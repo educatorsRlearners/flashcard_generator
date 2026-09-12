@@ -20,7 +20,7 @@ class CardInline(admin.TabularInline):
 
 @admin.register(Batch)
 class BatchAdmin(admin.ModelAdmin):
-    list_display = ("id", "created_at", "url_count", "overall_status")
+    list_display = ("id", "created_at", "deck_name", "url_count", "overall_status")
     inlines = (SubmittedURLInline,)
 
 
