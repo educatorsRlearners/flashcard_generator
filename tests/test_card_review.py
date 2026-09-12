@@ -196,6 +196,47 @@ def test_decision_on_other_cards_unaffected_by_one_dedup_race(client):
     assert other.review_status == Card.ReviewStatus.ACCEPTED
 
 
+def test_review_grid_renders_decision_error_element(client):
+    """The Accept/Reject form has somewhere to surface a dedup-race error
+    (#78 QA follow-up) - mirrors the edit/image controls' error elements."""
+    batch = Batch.objects.create()
+    su = _url(batch)
+    _card(su, batch)
+    page = client.get(reverse("submissions:card_review", args=[batch.pk]))
+    content = page.content.decode()
+    assert 'data-role="decision-error"' in content
+
+
+def test_decision_submit_js_branches_on_response_ok():
+    """The Accept/Reject JS must check ``res.ok`` and surface ``data.error``
+    (like the edit/image controls already do) instead of blindly calling
+    ``applyCard`` with fields that are ``undefined`` on a 409 dedup-race
+    response (#78 QA follow-up)."""
+    from pathlib import Path
+
+    from django.conf import settings
+
+    template = Path(
+        settings.BASE_DIR,
+        "submissions/templates/submissions/card_review.html",
+    ).read_text()
+
+    # Isolate the `submit()` function used by the accept/reject/save-reason
+    # buttons.
+    start = template.index("function submit(li, decision)")
+    end = template.index("\n    }", start)
+    submit_fn = template[start:end]
+
+    assert "res.ok" in submit_fn or ".ok" in submit_fn
+    assert "decision-error" in submit_fn
+    assert "showError" in submit_fn
+    # The regression: applyCard must not run unconditionally on the raw
+    # fetch response - it must be gated on success.
+    applied_at = submit_fn.index("applyCard(")
+    ok_check_at = submit_fn.index("res.ok")
+    assert ok_check_at < applied_at
+
+
 def test_decision_on_truly_nonexistent_card_still_404s(client):
     """A card that never existed / isn't in this batch is still a real
     404 - only the dedup-race case is special-cased (#78)."""
