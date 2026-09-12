@@ -15,6 +15,12 @@ DEBUG = True
 
 ALLOWED_HOSTS = ["*"]
 
+# "submissions" is listed before "huey.contrib.djhuey" on purpose (issue
+# #80): Django resolves a management command name to the
+# earliest-listed app that provides it, so this order lets
+# submissions/management/commands/run_huey.py override the vendored
+# huey.contrib.djhuey run_huey command (adding the pending-migrations
+# fail-fast check) without editing the vendored file.
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -22,8 +28,8 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    "huey.contrib.djhuey",
     "submissions",
+    "huey.contrib.djhuey",
 ]
 
 MIDDLEWARE = [
