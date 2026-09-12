@@ -42,6 +42,7 @@
 - [LLM usage (cost / latency observability)](#llm-usage-cost--latency-observability)
 - [Architecture](#architecture)
 - [Development](#development)
+- [License](#license)
 
 ## What it is
 
@@ -842,3 +843,7 @@ uv run python manage.py dev          # dev entrypoint: runserver + Huey consumer
 Huey tests run in immediate mode (no consumer needed). See
 [Background processing (Huey)](#background-processing-huey) for
 `run_huey`, the manual fallback, and `HUEY_IMMEDIATE=1`.
+
+## License
+
+[MIT](./LICENSE) © 2026 Evan Simpson
