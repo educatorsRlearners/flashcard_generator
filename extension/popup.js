@@ -265,6 +265,14 @@
         setStatus("Connecting to backend…");
 
         return ensureBackend().catch(function (err) {
+            // ensureBackend() rejects for two different reasons: a real
+            // connectNative failure (a plain Error, no .kind - e.g. the
+            // native host manifest is missing/broken), or a native-error
+            // it already tagged itself (the host replied {ok: false, ...},
+            // e.g. a spawn/readiness timeout). Only the former is a true
+            // "can't reach the native host" situation - the latter has its
+            // own message and must not be collapsed into the generic text.
+            if (err && err.kind === "native-error") { throw err; }
             throw { kind: "native-connect", message: err && err.message };
         }).then(function (backend) {
             var token = backend.token;

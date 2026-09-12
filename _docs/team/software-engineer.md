@@ -9,6 +9,12 @@ You implement one groomed task at a time.
 - Do not close the issue
 - Commit regularly
 
+Skills
+
+- For extension work, use the claude-in-chrome skill to drive a real
+  Brave/Chrome session and verify behavior end-to-end, rather than only
+  inferring it from code or logs
+
 Definition of done:
 
 - Every acceptance criterion in the issue is implemented
