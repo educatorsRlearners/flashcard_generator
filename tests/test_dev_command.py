@@ -372,3 +372,260 @@ def test_ctrl_c_wins_over_pending_env_restart(monkeypatch, tmp_path):
     code = dev_mod.Command().run_supervised("127.0.0.1:8000", [])
     assert code == 0
     assert len(spawned) == 2  # no restart: shutdown won over the env change
+
+
+# -- issue #81: periodic mid-session migration recheck ---------------------
+
+
+def _fake_migration(app_label, name):
+    return type("Migration", (), {"app_label": app_label, "name": name})()
+
+
+def _run_supervised_with_migration_watch(
+    monkeypatch, tmp_path, plan_sequence, monotonic_sequence, sleep_side_effects
+):
+    """Common harness: fakes spawn/env-watch, scripts ``pending_migrations()``
+    return values (one per call - first call is the startup check, later
+    calls are periodic rechecks) and ``time.monotonic()``/``time.sleep()``
+    (one of each per supervision-loop tick)."""
+    monkeypatch.setattr(dev_mod, "env_path", lambda: tmp_path / ".env")
+
+    plan_calls = iter(plan_sequence)
+    last_plan = {"value": []}
+    call_count = {"n": 0}
+
+    def fake_pending_migrations(alias=dev_mod.DEFAULT_DB_ALIAS):
+        call_count["n"] += 1
+        try:
+            last_plan["value"] = next(plan_calls)
+        except StopIteration:
+            pass  # repeat the last scripted plan if called more than scripted
+        return last_plan["value"]
+
+    monkeypatch.setattr(dev_mod, "pending_migrations", fake_pending_migrations)
+
+    mono_calls = iter(monotonic_sequence)
+    monkeypatch.setattr(dev_mod.time, "monotonic", lambda: next(mono_calls))
+
+    spawned = []
+
+    def fake_spawn(self, cmd, env):
+        spawned.append(cmd)
+        return _FakeProc()
+
+    monkeypatch.setattr(dev_mod.Command, "_spawn", fake_spawn)
+    monkeypatch.setattr(dev_mod.Command, "_pump", lambda self, proc, prefix: None)
+    monkeypatch.setattr(dev_mod.Command, "_terminate", lambda self, proc: None)
+
+    sleep_calls = iter(sleep_side_effects)
+
+    def fake_sleep(_seconds):
+        effect = next(sleep_calls, None)
+        if effect is not None:
+            effect()
+
+    monkeypatch.setattr(dev_mod.time, "sleep", fake_sleep)
+    code = dev_mod.Command().run_supervised("127.0.0.1:8000", [])
+    return code, spawned, call_count["n"]
+
+
+def test_migration_recheck_gated_by_interval_not_every_tick(monkeypatch, tmp_path):
+    """No recheck (no extra pending_migrations() call) until the interval
+    has actually elapsed against the loop's own clock."""
+    migration = _fake_migration("submissions", "0100_new")
+
+    def stop():
+        raise KeyboardInterrupt
+
+    # baseline=0.0; tick1 now=2.0 (elapsed 2 < interval, no recheck);
+    # tick2 now=6.0 (elapsed 6 >= interval, recheck fires).
+    code, spawned, calls = _run_supervised_with_migration_watch(
+        monkeypatch,
+        tmp_path,
+        plan_sequence=[[], [(migration, False)]],
+        monotonic_sequence=[0.0, 2.0, 6.0],
+        sleep_side_effects=[None, stop],
+    )
+    assert code == 0
+    assert len(spawned) == 2  # never restarted/respawned
+    # 1 startup call + exactly 1 recheck (at tick2, not tick1).
+    assert calls == 2
+
+
+def test_migration_recheck_warns_once_on_new_pending_plan(monkeypatch, tmp_path, capsys):
+    migration = _fake_migration("submissions", "0100_new")
+
+    def stop():
+        raise KeyboardInterrupt
+
+    code, _, _ = _run_supervised_with_migration_watch(
+        monkeypatch,
+        tmp_path,
+        plan_sequence=[[], [(migration, False)]],
+        monotonic_sequence=[0.0, 6.0, 6.1],
+        sleep_side_effects=[stop],
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "[migrations]" in out
+    assert "submissions.0100_new" in out
+
+
+def test_migration_recheck_no_duplicate_warning_on_unchanged_plan(
+    monkeypatch, tmp_path, capsys
+):
+    """Same pending plan across multiple elapsed-interval rechecks -> warned
+    exactly once, not once per tick."""
+    migration = _fake_migration("submissions", "0100_new")
+    plan = [(migration, False)]
+
+    def stop():
+        raise KeyboardInterrupt
+
+    # Three rechecks all see the identical (unchanged) plan.
+    code, _, _ = _run_supervised_with_migration_watch(
+        monkeypatch,
+        tmp_path,
+        plan_sequence=[[], plan, plan, plan],
+        monotonic_sequence=[0.0, 6.0, 12.0, 18.0, 18.1],
+        sleep_side_effects=[None, None, stop],
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert out.count("[migrations]") == 1
+    assert out.count("submissions.0100_new") == 1
+
+
+def test_migration_recheck_prints_resolved_when_plan_clears(monkeypatch, tmp_path, capsys):
+    migration = _fake_migration("submissions", "0100_new")
+
+    def stop():
+        raise KeyboardInterrupt
+
+    # Warn once (non-empty plan), then a later recheck finds it applied
+    # elsewhere (empty plan) -> resolved message, warned-state cleared.
+    code, _, _ = _run_supervised_with_migration_watch(
+        monkeypatch,
+        tmp_path,
+        plan_sequence=[[], [(migration, False)], []],
+        monotonic_sequence=[0.0, 6.0, 12.0, 12.1],
+        sleep_side_effects=[None, stop],
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "submissions.0100_new" in out
+    assert "resolved" in out.lower()
+
+
+def test_migration_recheck_warns_again_after_resolved_then_new_pending(
+    monkeypatch, tmp_path, capsys
+):
+    """Resolved-then-new-pending warns again instead of staying suppressed."""
+    first = _fake_migration("submissions", "0100_new")
+    second = _fake_migration("submissions", "0101_another")
+
+    def stop():
+        raise KeyboardInterrupt
+
+    code, _, _ = _run_supervised_with_migration_watch(
+        monkeypatch,
+        tmp_path,
+        plan_sequence=[[], [(first, False)], [], [(second, False)]],
+        monotonic_sequence=[0.0, 6.0, 12.0, 18.0, 18.1],
+        sleep_side_effects=[None, None, stop],
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "submissions.0100_new" in out
+    assert "submissions.0101_another" in out
+    assert "resolved" in out.lower()
+
+
+def test_migration_recheck_never_touches_crash_loop_state(monkeypatch, tmp_path):
+    """A detected mid-session migration must never consume the worker
+    crash-loop budget (restarts/MAX_WORKER_RESTARTS/WORKER_RESTART_WINDOW)."""
+    migration = _fake_migration("submissions", "0100_new")
+    seen_restarts = []
+
+    real_prune_restarts = dev_mod.prune_restarts
+
+    def spying_prune_restarts(timestamps, now, window):
+        seen_restarts.append(list(timestamps))
+        return real_prune_restarts(timestamps, now, window)
+
+    monkeypatch.setattr(dev_mod, "prune_restarts", spying_prune_restarts)
+
+    def stop():
+        raise KeyboardInterrupt
+
+    code, spawned, _ = _run_supervised_with_migration_watch(
+        monkeypatch,
+        tmp_path,
+        plan_sequence=[[], [(migration, False)]],
+        monotonic_sequence=[0.0, 6.0, 6.1],
+        sleep_side_effects=[stop],
+    )
+    assert code == 0
+    assert len(spawned) == 2  # no _terminate/_spawn from the migration path
+    assert seen_restarts == []  # prune_restarts never even called
+
+
+def test_migration_recheck_does_not_fire_on_tick_zero(monkeypatch, tmp_path, capsys):
+    """The periodic recheck must not fire immediately when children start -
+    only the (unchanged) startup check runs at tick 0."""
+    migration = _fake_migration("submissions", "0100_new")
+
+    def stop():
+        raise KeyboardInterrupt
+
+    # Elapsed time on the very first tick is ~0 (baseline == first tick's
+    # now), well under MIGRATION_CHECK_INTERVAL.
+    code, spawned, _ = _run_supervised_with_migration_watch(
+        monkeypatch,
+        tmp_path,
+        plan_sequence=[[], [(migration, False)]],
+        monotonic_sequence=[0.0, 0.05],
+        sleep_side_effects=[stop],
+    )
+    assert code == 0
+    assert len(spawned) == 2
+    assert "[migrations]" not in capsys.readouterr().out
+
+
+def test_migration_recheck_suppressed_during_shutdown(monkeypatch, tmp_path, capsys):
+    """A recheck that would land during shutdown never prints and never
+    delays exit: the SIGTERM arrives *during* the ``pending_migrations()``
+    DB call itself, mirroring the existing .env-vs-shutdown race test."""
+    migration = _fake_migration("submissions", "0100_new")
+    monkeypatch.setattr(dev_mod, "env_path", lambda: tmp_path / ".env")
+
+    state = {"calls": 0}
+
+    def fake_pending_migrations(alias=dev_mod.DEFAULT_DB_ALIAS):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            return []  # startup check: nothing pending
+        # The periodic recheck's DB round trip - shutdown lands mid-call.
+        os.kill(os.getpid(), signal.SIGTERM)
+        return [(migration, False)]
+
+    monkeypatch.setattr(dev_mod, "pending_migrations", fake_pending_migrations)
+
+    mono_calls = iter([0.0, 6.0])
+    monkeypatch.setattr(dev_mod.time, "monotonic", lambda: next(mono_calls))
+
+    spawned = []
+
+    def fake_spawn(self, cmd, env):
+        spawned.append(cmd)
+        return _FakeProc()
+
+    monkeypatch.setattr(dev_mod.Command, "_spawn", fake_spawn)
+    monkeypatch.setattr(dev_mod.Command, "_pump", lambda self, proc, prefix: None)
+    monkeypatch.setattr(dev_mod.Command, "_terminate", lambda self, proc: None)
+    monkeypatch.setattr(dev_mod.time, "sleep", lambda _s: None)
+
+    code = dev_mod.Command().run_supervised("127.0.0.1:8000", [])
+    assert code == 0
+    assert len(spawned) == 2  # never restarted/respawned
+    assert "[migrations]" not in capsys.readouterr().out

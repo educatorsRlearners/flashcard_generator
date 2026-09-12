@@ -42,11 +42,19 @@ from django.db.migrations.executor import MigrationExecutor
 WEB_PREFIX = "[web]"
 WORKER_PREFIX = "[worker]"
 ENV_PREFIX = "[env]"
+MIGRATIONS_PREFIX = "[migrations]"
 
 #: Crash-loop guard: more than this many worker restarts inside this many
 #: seconds means the worker is broken -> exit non-zero instead of looping.
 MAX_WORKER_RESTARTS = 5
 WORKER_RESTART_WINDOW = 60.0
+
+#: How often (seconds), while children are already running, the supervision
+#: loop rechecks the DB for newly-pending migrations (issue #81). Gated by
+#: elapsed time against the loop's existing ~0.2s tick, same pattern as the
+#: .env content-hash check (issue #54) - not a separate thread or a
+#: filesystem watch on migration files.
+MIGRATION_CHECK_INTERVAL = 5.0
 
 #: Default backend origin (issue #47). Same env var name and same default
 #: as native_host/host.py's DEFAULT_BACKEND_URL and config/settings.py's
@@ -175,6 +183,18 @@ def format_pending_migrations(plan: list) -> str:
     )
 
 
+def migration_plan_key(plan: list) -> list:
+    """Comparable snapshot of a migration plan (issue #81).
+
+    ``Migration`` objects don't define ``__eq__``, and a fresh
+    ``MigrationExecutor`` is built on every ``pending_migrations()`` call, so
+    two calls returning "the same" plan never compare equal by identity.
+    This reduces a plan to plain, comparable ``(app_label, name)`` pairs so
+    the periodic recheck can tell "unchanged" from "changed" plans.
+    """
+    return [(migration.app_label, migration.name) for migration, _backwards in plan]
+
+
 def project_manage_py() -> str:
     """Absolute path to manage.py (children are spawned via this file)."""
     return str(Path(__file__).resolve().parents[3] / "manage.py")
@@ -293,8 +313,34 @@ class Command(BaseCommand):
 
         restarts: list[float] = []
         env_hash: str | None | object = _UNSET
+        # Baseline set only once children are running, so the periodic
+        # recheck never fires on tick 0 (issue #81); the startup check above
+        # already covers "pending before anything starts".
+        last_migration_check = time.monotonic()
+        last_warned_plan: list | None = None
         try:
             while not stop.is_set():
+                now_m = time.monotonic()
+                if not stop.is_set() and now_m - last_migration_check >= MIGRATION_CHECK_INTERVAL:
+                    last_migration_check = now_m
+                    recheck_plan = pending_migrations()
+                    if stop.is_set():
+                        # Shutdown wins: never print/act on a recheck that
+                        # lands during Ctrl-C/SIGTERM teardown.
+                        break
+                    plan_key = migration_plan_key(recheck_plan)
+                    if plan_key and plan_key != last_warned_plan:
+                        last_warned_plan = plan_key
+                        self.stdout.write(
+                            f"{MIGRATIONS_PREFIX} "
+                            f"{format_pending_migrations(recheck_plan)}"
+                        )
+                    elif not plan_key and last_warned_plan is not None:
+                        last_warned_plan = None
+                        self.stdout.write(
+                            f"{MIGRATIONS_PREFIX} Pending migrations resolved; "
+                            "previously-warned migrations are now applied."
+                        )
                 current_env_hash = hash_env_file()
                 if env_hash is _UNSET:
                     # First tick establishes the baseline; never restart on it.
