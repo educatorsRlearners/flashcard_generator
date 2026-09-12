@@ -85,16 +85,25 @@ in #43):
    extension a new ID — repeat steps 3-4 below if you do this).
 3. Load the extension unpacked: `brave://extensions` (or
    `chrome://extensions`) → enable Developer mode → "Load unpacked" →
-   select the `extension/` directory. Note the extension ID Brave/Chrome
-   assigns it — because the key is pinned in step 2, this ID stays stable
-   across future reloads.
+   select the `extension/` directory. Because the key is pinned in step 2,
+   the ID Brave/Chrome assigns stays stable across future reloads — you
+   don't need to copy it down, the next step derives it itself.
 4. ```
-   uv run python manage.py install_native_host --extension-id <id>
+   uv run python manage.py install_native_host
    ```
-   Registers the native messaging host, mints the extension auth token,
-   and writes `EXTENSION_ID=<id>` into `.env` for you (creating `.env` from
+   Derives the extension ID from `extension/manifest.json`'s pinned key
+   (printed to stdout as `Extension ID derived from
+   extension/manifest.json: <id>` so you can cross-check it against the ID
+   shown on `brave://extensions`/`chrome://extensions`), registers the
+   native messaging host, mints the extension auth token, and writes
+   `EXTENSION_ID=<id>` into `.env` for you (creating `.env` from
    `.env.example` first if it doesn't exist yet). Full detail on what this
    wires up lives in [Extension internals](#extension-internals).
+
+   Pass `--extension-id <id>` explicitly only to override the derived ID
+   (e.g. testing/multi-profile setups) — if it disagrees with the ID
+   derived from the manifest, a warning naming both is printed but the
+   explicit value still wins.
 
    **Restart any already-running backend** (`manage.py dev`, or
    `runserver`/`run_huey` started manually) after this — `.env` is only
@@ -142,12 +151,17 @@ via a manifest file registered on your machine by
 one-time setup steps. Reference detail on how the pieces talk to each
 other:
 
-`install_native_host --extension-id <id>` can be run before the signing
-key exists — the ID is always supplied explicitly on the command line,
-never auto-discovered from the extension's files, so the two have no
-ordering dependency beyond needing *an* ID (pinned or not) in hand first.
-It's also safe to re-run any time the extension's ID changes (e.g. after
-an unpinned reload): re-running overwrites `native_host/run_host.sh` (a
+`install_native_host` derives the extension ID itself from
+`extension/manifest.json`'s pinned `"key"` field, using the same
+deterministic algorithm Chrome/Brave use (SHA-256 of the key's DER bytes,
+first 16 bytes, hex nibbles mapped through `0123456789abcdef` →
+`abcdefghijklmnop`) — so a real key must be pinned first (`generate_signing_key`,
+step 2 above) or the command exits with a `CommandError` telling you to
+run it. Pass `--extension-id <id>` explicitly to override the derived
+value instead (e.g. testing/multi-profile setups); if a real pinned key
+disagrees with the explicit value, a warning naming both is printed but
+the explicit `--extension-id` still wins. Re-running is always safe, with
+or without `--extension-id`: it overwrites `native_host/run_host.sh` (a
 wrapper script with an absolute interpreter path baked in), the
 native-messaging manifest(s), and the `.env` line in place. Native
 messaging host manifests are read fresh per `connectNative` call, but a

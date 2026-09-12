@@ -160,7 +160,7 @@ class Command(BaseCommand):
         self.stdout.write(f"Public key written to: {MANIFEST_PATH}")
         self.stdout.write(
             "Chrome/Brave derives a new extension ID from a new key: "
-            "reload the unpacked extension and re-run "
-            "`install_native_host --extension-id <new-id>` with that new "
-            "ID (see root README.md steps 2-3)."
+            "reload the unpacked extension, then re-run "
+            "`install_native_host` with no flags - it now derives the new "
+            "ID from this key automatically (see root README.md steps 3-4)."
         )

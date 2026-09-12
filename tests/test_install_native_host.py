@@ -10,10 +10,12 @@ the PR description).
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -30,6 +32,46 @@ EXTENSION_ID = "abcdefghijklmnopabcdefghijklmnop"
 def token_file(tmp_path, settings):
     """Point the token file at a tmp path so the suite never touches a real one."""
     settings.EXTENSION_TOKEN_FILE = tmp_path / ".extension_token"
+
+
+@pytest.fixture(autouse=True)
+def extension_manifest_path(tmp_path, monkeypatch):
+    """Point EXTENSION_MANIFEST_PATH at a non-existent tmp path by default.
+
+    Autouse so tests that only care about the pre-#53 explicit
+    ``--extension-id`` behaviour aren't coupled to whatever key happens to
+    be pinned in the real repo's ``extension/manifest.json`` - a missing
+    manifest is harmless when an explicit ID is always given (see
+    ``read_manifest_key``'s CommandError being swallowed in that case).
+    Tests that exercise derivation/placeholder/invalid-manifest behaviour
+    override this with their own path.
+    """
+    path = tmp_path / "extension" / "manifest.json"
+    monkeypatch.setattr(cmd, "EXTENSION_MANIFEST_PATH", path)
+    return path
+
+
+def _write_manifest_key(path: Path, key: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"key": key}, indent=2) + "\n")
+
+
+def _generate_real_key_base64() -> str:
+    """A real RSA public key's base64 DER encoding, via openssl.
+
+    Matches generate_signing_key's own test pattern (freshly generated
+    real keypair, not a fixed dummy string).
+    """
+    genrsa = subprocess.run(
+        ["openssl", "genrsa", "2048"], capture_output=True, check=True
+    )
+    pubout = subprocess.run(
+        ["openssl", "rsa", "-pubout", "-outform", "DER"],
+        input=genrsa.stdout,
+        capture_output=True,
+        check=True,
+    )
+    return base64.b64encode(pubout.stdout).decode("ascii")
 
 
 @pytest.fixture
@@ -122,9 +164,133 @@ def test_manifest_contents_shape():
 
 
 @pytest.mark.django_db
-def test_requires_extension_id_flag():
-    with pytest.raises(CommandError):
+def test_placeholder_key_without_explicit_id_raises(extension_manifest_path):
+    _write_manifest_key(extension_manifest_path, cmd.PLACEHOLDER_KEY)
+
+    with pytest.raises(CommandError, match="generate_signing_key"):
         call_command("install_native_host")
+
+
+@pytest.mark.django_db
+def test_missing_manifest_without_explicit_id_raises(extension_manifest_path):
+    assert not extension_manifest_path.exists()
+
+    with pytest.raises(CommandError, match=str(extension_manifest_path)):
+        call_command("install_native_host")
+
+
+@pytest.mark.django_db
+def test_invalid_json_manifest_without_explicit_id_raises(extension_manifest_path):
+    extension_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    extension_manifest_path.write_text("{not valid json")
+
+    with pytest.raises(CommandError, match="not valid JSON"):
+        call_command("install_native_host")
+
+
+@pytest.mark.django_db
+def test_manifest_missing_key_field_without_explicit_id_raises(extension_manifest_path):
+    extension_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    extension_manifest_path.write_text(json.dumps({"manifest_version": 3}))
+
+    with pytest.raises(CommandError, match='"key" field'):
+        call_command("install_native_host")
+
+
+@pytest.mark.django_db
+def test_missing_manifest_with_explicit_id_still_works(
+    extension_manifest_path, native_host_dir, browser_dirs
+):
+    assert not extension_manifest_path.exists()
+
+    call_command("install_native_host", "--extension-id", EXTENSION_ID)  # no raise
+
+
+@pytest.mark.django_db
+def test_derives_extension_id_from_real_pinned_key(
+    extension_manifest_path, native_host_dir, browser_dirs
+):
+    key = _generate_real_key_base64()
+    _write_manifest_key(extension_manifest_path, key)
+    expected_id = cmd.derive_extension_id(key)
+
+    out = io.StringIO()
+    call_command("install_native_host", stdout=out)
+
+    output = out.getvalue()
+    assert (
+        f"Extension ID derived from {extension_manifest_path}: {expected_id}"
+        in output
+    )
+    for browser_dir in browser_dirs.values():
+        manifest_path = (
+            browser_dir / "NativeMessagingHosts" / "com.flashcard_generator.native_host.json"
+        )
+        contents = json.loads(manifest_path.read_text())
+        assert contents["allowed_origins"] == [f"chrome-extension://{expected_id}/"]
+
+
+@pytest.mark.django_db
+def test_explicit_extension_id_used_verbatim_no_derivation(
+    extension_manifest_path, native_host_dir, browser_dirs
+):
+    key = _generate_real_key_base64()
+    _write_manifest_key(extension_manifest_path, key)
+    derived_id = cmd.derive_extension_id(key)
+    assert derived_id != EXTENSION_ID
+
+    out = io.StringIO()
+    call_command("install_native_host", "--extension-id", EXTENSION_ID, stdout=out)
+
+    output = out.getvalue()
+    assert f"Extension ID registered: {EXTENSION_ID}" in output
+    assert "Warning" in output
+    assert derived_id in output
+    assert EXTENSION_ID in output
+    for browser_dir in browser_dirs.values():
+        manifest_path = (
+            browser_dir / "NativeMessagingHosts" / "com.flashcard_generator.native_host.json"
+        )
+        contents = json.loads(manifest_path.read_text())
+        assert contents["allowed_origins"] == [f"chrome-extension://{EXTENSION_ID}/"]
+
+
+@pytest.mark.django_db
+def test_explicit_extension_id_matching_derived_prints_no_warning(
+    extension_manifest_path, native_host_dir, browser_dirs
+):
+    key = _generate_real_key_base64()
+    _write_manifest_key(extension_manifest_path, key)
+    derived_id = cmd.derive_extension_id(key)
+
+    out = io.StringIO()
+    call_command("install_native_host", "--extension-id", derived_id, stdout=out)
+
+    assert "disagrees" not in out.getvalue()
+
+
+# -- derive_extension_id --------------------------------------------------
+
+
+def test_derive_extension_id_returns_32_char_a_to_p_string():
+    key = _generate_real_key_base64()
+    extension_id = cmd.derive_extension_id(key)
+
+    assert len(extension_id) == 32
+    assert set(extension_id) <= set("abcdefghijklmnop")
+
+
+def test_derive_extension_id_deterministic():
+    key = _generate_real_key_base64()
+
+    assert cmd.derive_extension_id(key) == cmd.derive_extension_id(key)
+
+
+def test_derive_extension_id_differs_for_different_keys():
+    key_a = _generate_real_key_base64()
+    key_b = _generate_real_key_base64()
+
+    assert cmd.derive_extension_id(key_a) != cmd.derive_extension_id(key_b)
 
 
 @pytest.mark.django_db

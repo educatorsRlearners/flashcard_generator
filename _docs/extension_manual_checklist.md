@@ -58,27 +58,44 @@ mode** → **Load unpacked** → select the `extension/` directory.
 
 **Pass**: the extension appears in the list as "Flashcard Generator" with
 no load errors, and the extensions page shows an **ID** field under it — a
-32-character lowercase string. Note this ID; you need it for the next two
-steps.
+32-character lowercase string. Note this ID; you need it to cross-check
+against the derived ID in the next step (and in step 3a below).
 
 ### 3. Run the native host installer
 
 ```
-uv run python manage.py install_native_host --extension-id <id>
+uv run python manage.py install_native_host
 ```
 
-using the ID from step 2.
+No `--extension-id` needed — the installer derives the ID itself from
+`extension/manifest.json`'s pinned key (step 1).
 
 **Pass**: the command exits 0 and prints something like:
 
 ```
-Extension ID registered: <id>
+Extension ID derived from /path/to/repo/extension/manifest.json: <id>
 Wrapper script written: /path/to/repo/native_host/run_host.sh
 Chrome manifest written: /Users/you/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.flashcard_generator.native_host.json
 Brave manifest written: /Users/you/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.flashcard_generator.native_host.json
 EXTENSION_ID set in .env: <id>
 Restart any already-running backend process (manage.py dev, or runserver/run_huey started manually) for the new EXTENSION_ID to take effect - config/settings.py reads .env once at process start.
 ```
+
+where the derived `<id>` matches the ID noted in step 2.
+
+### 3a. One-time check: derived ID matches Chrome/Brave's assigned ID
+
+This confirms the derivation algorithm (issue #53) against a real
+browser — something the automated test suite cannot do itself, since it
+never loads a real extension. Do this once; it doesn't need repeating on
+every future reload as long as the signing key stays the same.
+
+**Pass**: the `<id>` printed by step 3 (`Extension ID derived from
+extension/manifest.json: <id>`) is character-for-character identical to
+the **ID** field shown for the extension on `chrome://extensions` /
+`brave://extensions` (step 2). If they differ, something is wrong with
+the derivation or with which key is actually pinned — do not proceed
+past this step until they match.
 
 One "`<Browser> manifest written: ...`" line per browser it found
 installed, plus one "`<Browser> not found (...) - skipped.`" line per

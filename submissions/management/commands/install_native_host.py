@@ -19,6 +19,8 @@ line is updated in place rather than duplicated.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import shutil
@@ -57,6 +59,63 @@ UV_ENV_VAR = "FLASHCARD_GENERATOR_UV"
 
 MANIFEST_NAME = "com.flashcard_generator.native_host"
 MANIFEST_FILENAME = f"{MANIFEST_NAME}.json"
+
+#: The extension's own manifest, whose pinned "key" field (issue #51) the
+#: extension ID is derived from.
+EXTENSION_MANIFEST_PATH = PROJECT_ROOT / "extension" / "manifest.json"
+
+#: The placeholder value extension/manifest.json ships with before
+#: `generate_signing_key` has been run. Duplicated from
+#: generate_signing_key.py's PLACEHOLDER_KEY rather than imported - the two
+#: commands are otherwise independent modules, and this string is part of
+#: the repo's committed template, not something expected to change; if it
+#: ever does, update both.
+PLACEHOLDER_KEY = "REPLACE_WITH_YOUR_OWN_OPENSSL_GENERATED_KEY"
+
+#: Chrome/Brave's own hex-nibble-to-letter mapping for extension IDs: each
+#: nibble 0-15 of the SHA-256 digest's first 16 bytes maps to a letter
+#: a-p (nibble N -> chr(ord("a") + N)), so a hex digit through
+#: ``"0123456789abcdef"`` maps 1:1 onto ``"abcdefghijklmnop"``.
+_HEX_TO_EXTENSION_ID_CHARS = str.maketrans("0123456789abcdef", "abcdefghijklmnop")
+
+
+def derive_extension_id(key_base64: str) -> str:
+    """Derive the Chrome/Brave extension ID from manifest.json's ``"key"``.
+
+    Chrome's algorithm: SHA-256 of the raw (base64-decoded) public key
+    bytes, take the first 16 bytes, then map each byte's two hex nibbles
+    through ``0123456789abcdef`` -> ``abcdefghijklmnop`` to get a
+    32-character a-p string. Stdlib only (``base64``, ``hashlib``) - no
+    new dependency, per AGENTS.md.
+    """
+    key_der = base64.b64decode(key_base64)
+    digest = hashlib.sha256(key_der).digest()
+    hex_prefix = digest[:16].hex()
+    return hex_prefix.translate(_HEX_TO_EXTENSION_ID_CHARS)
+
+
+def read_manifest_key(path: Path) -> str:
+    """Read and validate the extension manifest, returning its ``"key"``.
+
+    Raises ``CommandError`` naming the specific problem and *path* if the
+    file is missing, not valid JSON, or has no ``"key"`` field - matching
+    generate_signing_key.py's own error style for the same checks.
+    """
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        raise CommandError(f"Extension manifest not found at {path}.")
+
+    try:
+        manifest = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise CommandError(f"Extension manifest at {path} is not valid JSON: {exc}")
+
+    if "key" not in manifest:
+        raise CommandError(f"Extension manifest at {path} has no \"key\" field.")
+
+    return manifest["key"]
+
 
 #: (browser label, browser's own directory, its NativeMessagingHosts dir).
 #: The browser directory's existence is the evidence used to decide whether
@@ -174,15 +233,56 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument(
             "--extension-id",
-            required=True,
+            required=False,
+            default=None,
             help=(
-                "The extension ID Chrome/Brave assigned when the unpacked "
-                "extension was loaded (chrome://extensions)."
+                "Override the extension ID instead of deriving it from "
+                "extension/manifest.json's \"key\" field. Normally not "
+                "needed - omit this flag and the ID is derived "
+                "automatically (issue #53)."
             ),
         )
 
     def handle(self, *args, **options):
-        extension_id = options["extension_id"]
+        explicit_extension_id = options["extension_id"]
+
+        derived_extension_id = None
+        manifest_key = None
+        try:
+            manifest_key = read_manifest_key(EXTENSION_MANIFEST_PATH)
+        except CommandError:
+            if explicit_extension_id is None:
+                raise
+            # An explicit --extension-id is a full override - a missing/
+            # invalid manifest doesn't matter when we're not deriving from it.
+        else:
+            if manifest_key == PLACEHOLDER_KEY:
+                if explicit_extension_id is None:
+                    raise CommandError(
+                        f"{EXTENSION_MANIFEST_PATH} still has the placeholder "
+                        "signing key - run `generate_signing_key` first to "
+                        "pin a real key (so the extension ID can be "
+                        "derived), or pass --extension-id explicitly."
+                    )
+            else:
+                derived_extension_id = derive_extension_id(manifest_key)
+
+        if explicit_extension_id is not None:
+            extension_id = explicit_extension_id
+            if derived_extension_id is not None and derived_extension_id != explicit_extension_id:
+                self.stdout.write(
+                    "Warning: --extension-id "
+                    f"{explicit_extension_id!r} disagrees with the ID "
+                    f"derived from {EXTENSION_MANIFEST_PATH} "
+                    f"({derived_extension_id!r}); using the explicit "
+                    "--extension-id value."
+                )
+        else:
+            extension_id = derived_extension_id
+            self.stdout.write(
+                f"Extension ID derived from {EXTENSION_MANIFEST_PATH}: "
+                f"{extension_id}"
+            )
 
         candidates = [
             (label, native_dir)
