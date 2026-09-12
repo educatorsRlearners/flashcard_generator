@@ -23,6 +23,9 @@
     var button = document.getElementById("generate");
     var statusEl = document.getElementById("status");
     var spinnerEl = document.getElementById("spinner");
+    var deckSelect = document.getElementById("deck-select");
+    var deckNew = document.getElementById("deck-new");
+    var deckNote = document.getElementById("deck-note");
 
     function setStatus(text, isError) {
         statusEl.textContent = text;
@@ -47,6 +50,85 @@
         return new Promise(function (resolve) { setTimeout(resolve, ms); });
     }
 
+    // Deck picker (issue #76): dropdown of live decks via the backend
+    // passthrough plus free-text new-deck input; typed name wins. A cached
+    // backend promise so the deck list (loaded on popup open) and submit
+    // share one native-host handshake.
+    var backendPromise = null;
+
+    function ensureBackend() {
+        if (!backendPromise) {
+            backendPromise = connectNativeHost().then(function (reply) {
+                if (!reply || !reply.ok) {
+                    throw { kind: "native-error", message: (reply && reply.detail) || "native host error" };
+                }
+                if (typeof reply.base_url !== "string" || !reply.base_url) {
+                    throw { kind: "native-error", message: "invalid base_url from native host" };
+                }
+                return { token: reply.token, baseUrl: reply.base_url };
+            });
+            // A failed handshake must not poison later retries (the Generate
+            // click reconnects instead of reusing the rejection).
+            backendPromise.catch(function () { backendPromise = null; });
+        }
+        return backendPromise;
+    }
+
+    function setDecksUnavailable() {
+        // Unreachable deck list => free-text only, submit NOT blocked.
+        deckSelect.textContent = "";
+        var opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "Deck list unavailable — type a name";
+        deckSelect.appendChild(opt);
+        deckSelect.disabled = true;
+        if (deckNote) {
+            deckNote.textContent = "Deck list unavailable — type a deck name (submit still works).";
+        }
+    }
+
+    function loadDecks() {
+        if (!deckSelect) { return; }
+        ensureBackend().then(function (backend) {
+            return fetchOrNetworkError(backend.baseUrl + "/api/extension/decks/", {
+                headers: { Authorization: "Bearer " + backend.token },
+            }).then(function (response) {
+                if (!response.ok) { throw { kind: "http" }; }
+                return response.json();
+            }).then(function (data) {
+                deckSelect.textContent = "";
+                var decks = (data && data.decks) || [];
+                var placeholder = document.createElement("option");
+                placeholder.value = "";
+                placeholder.textContent = decks.length ? "Select a deck…" : "No decks yet — type a name";
+                deckSelect.appendChild(placeholder);
+                decks.forEach(function (name) {
+                    var opt = document.createElement("option");
+                    opt.value = name;
+                    opt.textContent = name;
+                    deckSelect.appendChild(opt);
+                });
+                deckSelect.disabled = false;
+                if (data && data.unavailable) { setDecksUnavailable(); }
+            }).catch(function () {
+                // Any deck-list failure (backend down, Anki unreachable,
+                // CORS/HTTP) degrades to free-text only, never blocks submit.
+                setDecksUnavailable();
+            });
+        }).catch(function () {
+            // Native-host handshake failed: leave the loading placeholder;
+            // runFlow() will surface the real error on Generate click.
+        });
+    }
+
+    function chosenDeckName() {
+        // Typed free-text wins over the dropdown.
+        var typed = deckNew && typeof deckNew.value === "string" ? deckNew.value.trim() : "";
+        if (typed) { return typed; }
+        var picked = deckSelect && !deckSelect.disabled && typeof deckSelect.value === "string"
+            ? deckSelect.value.trim() : "";
+        return picked;
+    }
     // Exactly one request/response over connectNative (see host.py) -
     // content is ignored by v1, so any message triggers it.
     function connectNativeHost() {
@@ -155,13 +237,16 @@
     function submitContent(content, tabUrl, token, baseUrl) {
         // See the CORS note in pollStatus() above - it applies to this
         // fetch too.
+        var payload = { url: tabUrl, title: content.title || "", text: content.text, images: content.images ?? [] };
+        var deck = chosenDeckName();
+        if (deck) { payload.deck_name = deck; }
         return fetchOrNetworkError(baseUrl + "/api/extension/submit/", {
             method: "POST",
             headers: {
                 Authorization: "Bearer " + token,
                 "Content-Type": "application/json",
             },
-            body: JSON.stringify({ url: tabUrl, title: content.title || "", text: content.text, images: content.images ?? [] }),
+            body: JSON.stringify(payload),
         }).then(function (response) {
             if (!response.ok) {
                 return errorFromResponse(response).then(function (message) {
@@ -179,17 +264,11 @@
         setBusy(true);
         setStatus("Connecting to backend…");
 
-        return connectNativeHost().catch(function (err) {
+        return ensureBackend().catch(function (err) {
             throw { kind: "native-connect", message: err && err.message };
-        }).then(function (reply) {
-            if (!reply || !reply.ok) {
-                throw { kind: "native-error", message: (reply && reply.detail) || "native host error" };
-            }
-            var token = reply.token;
-            var baseUrl = reply.base_url;
-            if (typeof baseUrl !== "string" || !baseUrl) {
-                throw { kind: "native-error", message: "invalid base_url from native host" };
-            }
+        }).then(function (backend) {
+            var token = backend.token;
+            var baseUrl = backend.baseUrl;
 
             setStatus("Reading page…");
             return chrome.tabs.query({ active: true, currentWindow: true }).then(function (tabs) {
@@ -231,4 +310,10 @@
     button.addEventListener("click", function () {
         runFlow();
     });
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", loadDecks);
+    } else {
+        loadDecks();
+    }
 }());

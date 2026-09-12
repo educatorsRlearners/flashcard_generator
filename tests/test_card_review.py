@@ -140,16 +140,21 @@ def test_finish_with_undecided_requires_confirm(client, monkeypatch):
     monkeypatch.setattr(anki, "AnkiConnectClient", lambda *a, **k: fake)
 
     finish_url = reverse("submissions:card_review_finish", args=[batch.pk])
-    resp = client.post(finish_url)
+    resp = client.post(finish_url, {"deck_choice": "Flashcard Generator"})
     assert resp.status_code == 200
     assert resp.context["confirm_undecided"] == 1
     c2.refresh_from_db()
     assert c2.review_status == Card.ReviewStatus.UNDECIDED  # untouched
     # issue #57: the confirm-needed re-render branch does not finish the
-    # batch, so it must not enqueue a push.
-    assert fake.calls == []
+    # batch, so it must not push any note (the deckNames call from the
+    # best-effort picker context is display-only and always allowed).
+    assert fake.notes_added() == []
+    assert all(a != "createDeck" for a, _ in fake.calls)
+    assert all(a != "addNote" for a, _ in fake.calls)
 
-    resp = client.post(finish_url, {"confirm": "1"}, follow=True)
+    resp = client.post(
+        finish_url, {"deck_choice": "Flashcard Generator", "confirm": "1"}, follow=True
+    )
     assert resp.status_code == 200
     c2.refresh_from_db()
     assert c2.review_status == Card.ReviewStatus.UNDECIDED  # still undecided
@@ -182,7 +187,9 @@ def test_finish_with_zero_accepted_cards_is_safe_noop(client, monkeypatch):
     monkeypatch.setattr(anki, "AnkiConnectClient", lambda *a, **k: fake)
 
     finish_url = reverse("submissions:card_review_finish", args=[batch.pk])
-    resp = client.post(finish_url, follow=True)
+    resp = client.post(
+        finish_url, {"deck_choice": "Flashcard Generator"}, follow=True
+    )
     assert resp.status_code == 200
     assert fake.notes_added() == []
 
@@ -199,7 +206,9 @@ def test_finish_response_unaffected_when_anki_unreachable(client, monkeypatch):
     monkeypatch.setattr(anki, "AnkiConnectClient", lambda *a, **k: fake)
 
     finish_url = reverse("submissions:card_review_finish", args=[batch.pk])
-    resp = client.post(finish_url, follow=True)
+    # Typed deck name: Finish is never blocked by an unreachable Anki, the
+    # push itself stays unsynced via the existing backstop.
+    resp = client.post(finish_url, {"deck_name": "Typed Deck"}, follow=True)
     assert resp.status_code == 200
 
     c1.refresh_from_db()
@@ -216,12 +225,12 @@ def test_finishing_same_batch_twice_does_not_duplicate_notes(client, monkeypatch
     monkeypatch.setattr(anki, "AnkiConnectClient", lambda *a, **k: fake)
 
     finish_url = reverse("submissions:card_review_finish", args=[batch.pk])
-    client.post(finish_url, follow=True)
+    client.post(finish_url, {"deck_choice": "Flashcard Generator"}, follow=True)
     assert len(fake.notes_added()) == 1
 
     # Double-click / re-POST: the second task run finds the card already
     # synced and pushes nothing new.
-    client.post(finish_url, follow=True)
+    client.post(finish_url, {"deck_choice": "Flashcard Generator"}, follow=True)
     assert len(fake.notes_added()) == 1
 
 

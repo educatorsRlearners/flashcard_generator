@@ -52,10 +52,34 @@
     #status.status--error {
         color: #b00020;
     }
+    label.deck-label {
+        display: block;
+        margin-top: 10px;
+        font-weight: 600;
+    }
+    #deck-select, #deck-new {
+        box-sizing: border-box;
+        width: 100%;
+        margin-top: 4px;
+        padding: 6px;
+        font-size: 13px;
+    }
+    #deck-note {
+        margin: 4px 0 0;
+        font-size: 12px;
+        color: #666;
+    }
 </style>
 </head>
 <body>
     <button id="generate" type="button">Generate flashcards from this page</button>
+    <label class="deck-label" for="deck-select">Anki deck (optional):</label>
+    <select id="deck-select" aria-label="Existing Anki deck">
+        <option value="">Loading decks…</option>
+    </select>
+    <label class="deck-label" for="deck-new">Or new deck name:</label>
+    <input id="deck-new" type="text" placeholder="Type a new deck name" autocomplete="off">
+    <p id="deck-note" role="status" aria-live="polite"></p>
     <div class="status-row">
         <span id="spinner" class="spinner" aria-hidden="true" hidden></span>
         <p id="status" role="status" aria-live="polite">Ready.</p>

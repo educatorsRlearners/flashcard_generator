@@ -145,10 +145,57 @@ def submit(request):
                 continue
             extension_image_urls.append(candidate)
 
+    # Per-batch deck choice (issue #76): optional at submit time. Absent /
+    # null means "not chosen yet" (stored NULL, accepted). A supplied value
+    # is stripped, validated server-side, and stored verbatim; empty /
+    # whitespace-only or Anki-illegal values are a 400.
+    deck_name = None
+    if "deck_name" in payload and payload.get("deck_name") is not None:
+        try:
+            # Engineer A's validator (issue #76); import, don't duplicate.
+            from .anki import DeckNameError, validate_deck_name
+        except ImportError:
+            # Local fallback when the helper is unavailable: same rules
+            # (non-empty after strip, no empty :: segments, no
+            # leading/trailing ::, no quotes/newlines).
+            class DeckNameError(ValueError):
+                pass
+
+            def validate_deck_name(value):
+                stripped = str(value or "").strip()
+                if not stripped:
+                    raise DeckNameError("Choose an Anki deck (dropdown or new name).")
+                if len(stripped) > 255:
+                    raise DeckNameError("Deck name is too long (max 255 characters).")
+                if '"' in stripped or "\n" in stripped or "\r" in stripped:
+                    raise DeckNameError(
+                        "Deck name must not contain quotes or newlines."
+                    )
+                if stripped.startswith("::") or stripped.endswith("::"):
+                    raise DeckNameError('Deck name must not start or end with "::".')
+                for segment in stripped.split("::"):
+                    if not segment.strip():
+                        raise DeckNameError(
+                            'Deck name must not contain empty "::" segments.'
+                        )
+                return stripped
+
+        raw_deck = payload.get("deck_name")
+        if not isinstance(raw_deck, str) or not raw_deck.strip():
+            return _apply_cors(
+                JsonResponse({"error": "invalid deck name"}, status=400)
+            )
+        try:
+            deck_name = validate_deck_name(raw_deck)
+        except DeckNameError as exc:
+            return _apply_cors(
+                JsonResponse({"error": "invalid deck name", "detail": str(exc)}, status=400)
+            )
+
     # Creates the Batch / SubmittedURL / BatchRequest rows directly (a new
     # Batch every call - including a re-submission of an already-known URL,
     # matching the double-submit behaviour the model layer already allows).
-    batch = Batch.objects.create()
+    batch = Batch.objects.create(deck_name=deck_name)
     submitted_url, _created = SubmittedURL.objects.get_or_create(
         url=url, defaults={"batch": batch}
     )
@@ -173,6 +220,39 @@ def submit(request):
             status=202,
         )
     )
+
+
+@csrf_exempt
+def decks(request):
+    """Live Anki deck names for the extension popup picker (issue #76).
+
+    ``GET /api/extension/decks/`` returns ``{"decks": [...], "unavailable"}``.
+    An unreachable Anki is NOT an error here: ``{"decks": [], "unavailable":
+    true}`` (HTTP 200) so the popup degrades to free-text-only and submit
+    is never blocked. Auth + CORS mirror :func:`submit`.
+    """
+    if request.method == "OPTIONS":
+        return _apply_cors(HttpResponse(status=200), methods="GET, OPTIONS")
+
+    if request.method != "GET":
+        return _apply_cors(JsonResponse({"error": "method not allowed"}, status=405))
+
+    if not _is_authorized(request):
+        return _apply_cors(_unauthorized())
+
+    try:
+        from .anki import AnkiConnectClient, AnkiError
+    except ImportError:
+        return _apply_cors(JsonResponse({"decks": [], "unavailable": True}))
+
+    try:
+        names = AnkiConnectClient().invoke("deckNames") or []
+        deck_list = sorted(str(d) for d in names)
+    except AnkiError:
+        return _apply_cors(JsonResponse({"decks": [], "unavailable": True}))
+    except Exception:
+        return _apply_cors(JsonResponse({"decks": [], "unavailable": True}))
+    return _apply_cors(JsonResponse({"decks": deck_list, "unavailable": False}))
 
 
 @csrf_exempt

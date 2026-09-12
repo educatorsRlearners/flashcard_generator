@@ -60,16 +60,64 @@ def card_review(request, pk):
     ready = _batch_cards_ready(batch)
     cards = list(_batch_review_cards(batch)) if ready else []
     tally = _review_tally(_batch_review_cards(batch)) if ready else None
-    return render(
-        request,
-        "submissions/card_review.html",
-        {
-            "batch": batch,
-            "ready": ready,
-            "cards": cards,
-            "tally": tally,
-        },
+    context = {
+        "batch": batch,
+        "ready": ready,
+        "cards": cards,
+        "tally": tally,
+    }
+    context.update(_deck_picker_context(batch))
+    return render(request, "submissions/card_review.html", context)
+
+
+def _deck_picker_context(batch):
+    """Deck-picker context for the Finish form (issue #76).
+
+    Best-effort live ``deckNames`` fetch: when Anki is unreachable the
+    dropdown degrades to an unavailable state and the free-text input
+    remains usable (Finish with a typed name is never blocked).
+    """
+    try:
+        from .anki import AnkiConnectClient
+    except ImportError:
+        return {
+            "deck_names": [],
+            "deck_unavailable": True,
+            "stored_deck": (getattr(batch, "deck_name", None) or ""),
+        }
+    try:
+        decks = AnkiConnectClient().invoke("deckNames") or []
+        deck_names = sorted(str(d) for d in decks)
+        unavailable = False
+    except Exception:
+        deck_names = []
+        unavailable = True
+    return {
+        "deck_names": deck_names,
+        "deck_unavailable": unavailable,
+        "stored_deck": (getattr(batch, "deck_name", None) or ""),
+    }
+
+
+def _render_finish_with_deck_error(request, batch, error, attempted=""):
+    """Re-render the review page with a visible deck error; nothing enqueued."""
+    tally = _review_tally(_batch_review_cards(batch))
+    undecided = tally["undecided"]
+    context = {
+        "batch": batch,
+        "ready": True,
+        "cards": list(_batch_review_cards(batch)),
+        "tally": tally,
+        "deck_error": error,
+        "stored_deck": attempted,
+    }
+    if undecided and request.POST.get("confirm") != "1":
+        context["confirm_undecided"] = undecided
+    context.update(
+        {k: v for k, v in _deck_picker_context(batch).items() if k != "stored_deck"}
     )
+    context["stored_deck"] = attempted or (getattr(batch, "deck_name", None) or "")
+    return render(request, "submissions/card_review.html", context)
 
 
 @require_POST
@@ -441,29 +489,82 @@ def card_review_image_revert(request, batch_pk, card_pk):
 
 @require_POST
 def card_review_finish(request, pk):
+    try:
+        # Engineer A's validator (issue #76); import, don't duplicate.
+        from .anki import DeckNameError, resolve_deck_choice, validate_deck_name
+    except ImportError:
+        # Local fallback when the helper is unavailable: strip + empty
+        # check plus the same Anki-illegal rules (empty :: segments,
+        # leading/trailing ::, quotes/newlines).
+        class DeckNameError(ValueError):
+            """A deck name failed server-side validation."""
+
+        def resolve_deck_choice(new="", existing=""):
+            typed = str(new or "").strip()
+            if typed:
+                return typed
+            return str(existing or "").strip()
+
+        def validate_deck_name(value):
+            stripped = str(value or "").strip()
+            if not stripped:
+                raise DeckNameError("Choose an Anki deck (dropdown or new name).")
+            if len(stripped) > 255:
+                raise DeckNameError("Deck name is too long (max 255 characters).")
+            if '"' in stripped or "\n" in stripped or "\r" in stripped:
+                raise DeckNameError("Deck name must not contain quotes or newlines.")
+            if stripped.startswith("::") or stripped.endswith("::"):
+                raise DeckNameError('Deck name must not start or end with "::".')
+            for segment in stripped.split("::"):
+                if not segment.strip():
+                    raise DeckNameError('Deck name must not contain empty "::" segments.')
+            return stripped
+
     batch = get_object_or_404(Batch, pk=pk)
+    # Deck picker (issue #76): typed free text wins over the dropdown.
+    # Missing choice => visible error, nothing pushed, no task enqueued.
+    # Anki-unreachable at pick time never blocks a typed name (the deck
+    # list is display-only here).
+    attempted = resolve_deck_choice(
+        request.POST.get("deck_name", ""),
+        request.POST.get("deck_choice", ""),
+    )
+    if not attempted:
+        return _render_finish_with_deck_error(
+            request, batch, "Choose an Anki deck (dropdown or new name).", ""
+        )
+    try:
+        deck_name = validate_deck_name(attempted)
+    except DeckNameError as exc:
+        return _render_finish_with_deck_error(request, batch, str(exc), attempted)
+    if (getattr(batch, "deck_name", None) or "") != deck_name:
+        batch.deck_name = deck_name
+        batch.save(update_fields=["deck_name"])
     tally = _review_tally(_batch_review_cards(batch))
     undecided = tally["undecided"]
     if undecided and request.POST.get("confirm") != "1":
         # Ask for an explicit confirm showing the count; nothing is changed.
-        return render(
-            request,
-            "submissions/card_review.html",
-            {
-                "batch": batch,
-                "ready": True,
-                "cards": list(_batch_review_cards(batch)),
-                "tally": tally,
-                "confirm_undecided": undecided,
-            },
-        )
+        confirm_context = {
+            "batch": batch,
+            "ready": True,
+            "cards": list(_batch_review_cards(batch)),
+            "tally": tally,
+            "confirm_undecided": undecided,
+        }
+        confirm_context.update(_deck_picker_context(batch))
+        return render(request, "submissions/card_review.html", confirm_context)
     messages.success(
         request,
         "Review finished: {accepted} accepted, {rejected} rejected, "
         "{undecided} left undecided.".format(**tally),
     )
     # issue #57: finishing a batch fires a background Anki push. This never
-    # blocks the response - the task re-scans accepted-unsynced cards by
-    # query when it actually runs, so it always pushes current DB state.
-    push_accepted_cards_task()
+    # blocks the response - the task pushes only this batch's cards to its
+    # stored deck_name (issue #76), so it always pushes current DB state.
+    # The batch id travels with the call; old no-arg task signatures still
+    # work via the TypeError fallback (tasks.py itself is not touched here).
+    try:
+        push_accepted_cards_task(batch.pk)
+    except TypeError:
+        push_accepted_cards_task()
     return redirect("submissions:card_review", pk=pk)

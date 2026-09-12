@@ -6,6 +6,7 @@ app_name = "extension"
 
 urlpatterns = [
     path("submit/", extension_api.submit, name="submit"),
+    path("decks/", extension_api.decks, name="decks"),
     path(
         "submit/<int:submitted_url_id>/status/",
         extension_api.submission_status,

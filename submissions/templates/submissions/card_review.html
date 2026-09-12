@@ -133,6 +133,37 @@
         <form class="review-finish" method="post" id="review-finish"
               action="{% url 'submissions:card_review_finish' batch.pk %}">
             {% csrf_token %}
+            <div class="review-finish__deck" id="review-finish-deck">
+                <label>Anki deck (required):
+                    {% if deck_unavailable %}
+                        <select name="deck_choice" disabled aria-disabled="true">
+                            <option value="">Deck list unavailable - type a name below</option>
+                        </select>
+                    {% else %}
+                        <select name="deck_choice">
+                            <option value="">Select a deck…</option>
+                            {% for deck in deck_names %}
+                                <option value="{{ deck }}" {% if deck == stored_deck %}selected{% endif %}>{{ deck }}</option>
+                            {% endfor %}
+                            {% if stored_deck and stored_deck not in deck_names %}
+                                <option value="{{ stored_deck }}" selected>{{ stored_deck }}</option>
+                            {% endif %}
+                        </select>
+                    {% endif %}
+                </label>
+                <label>Or new deck name:
+                    <input type="text" name="deck_name" value="{{ stored_deck|default:'' }}"
+                           placeholder="Type a new deck name" autocomplete="off">
+                </label>
+                {% if deck_unavailable %}
+                    <p class="review-finish__deck-unavailable" id="review-finish-deck-unavailable">
+                        Deck list unavailable (Anki unreachable) - type a deck name to continue.
+                    </p>
+                {% endif %}
+                {% if deck_error %}
+                    <p class="review-finish__deck-error" id="review-finish-deck-error">{{ deck_error }}</p>
+                {% endif %}
+            </div>
             {% if confirm_undecided %}
                 <p class="review-finish__confirm" id="review-finish-confirm">
                     {{ confirm_undecided }} card{{ confirm_undecided|pluralize }} still undecided.
