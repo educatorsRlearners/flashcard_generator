@@ -554,3 +554,140 @@ def test_generate_for_propagates_unreachable_anki_warning(
     assert result.anki_duplicates == 0
     assert result.anki_warnings == [warning]
     assert warning in result.summary_line(su.url)
+
+
+# --- issue #78: dedup_ready gates the extension status endpoint's terminal
+
+
+def _stub_best_effort_extras(monkeypatch):
+    """Isolate generate_for from Anki live-dedup + image attachment so tests
+    below exercise only the local-dedup / dedup_ready behaviour."""
+    from submissions import anki as _anki
+    from submissions import images as _images
+
+    monkeypatch.setattr(
+        _anki, "dedup_cards_against_anki", lambda cards, deck_name=None, *a, **k: _anki.AnkiDedupResult()
+    )
+    monkeypatch.setattr(_images, "attach_images", lambda su, cards: None)
+
+
+def test_generate_for_sets_dedup_ready_after_dedup_cards_returns(
+    install_llm, monkeypatch
+):
+    """Reproduces the #78 race window: dedup_ready must be False while
+    dedup.dedup_cards() is still running, and True only once it returns -
+    this is exactly what submission_status's terminal flag reads."""
+    from submissions import dedup as _dedup
+
+    _stub_best_effort_extras(monkeypatch)
+    install_llm([_card(), _card(front="What is Y?", source_term="Y")])
+    su = _make_url()
+
+    observed = {}
+
+    def blocking_dedup(cards):
+        # At this point generation_status is already "ok" (set inside the
+        # earlier atomic block) but dedup_ready must still be False - the
+        # exact window that let the review grid render prematurely.
+        su.refresh_from_db()
+        observed["generation_status_during_dedup"] = su.generation_status
+        observed["dedup_ready_during_dedup"] = su.dedup_ready
+
+    monkeypatch.setattr(_dedup, "dedup_cards", blocking_dedup)
+
+    generation.generate_for(su)
+
+    assert observed["generation_status_during_dedup"] == SubmittedURL.GenerationStatus.OK
+    assert observed["dedup_ready_during_dedup"] is False
+
+    su.refresh_from_db()
+    assert su.dedup_ready is True
+
+
+def test_generate_for_sets_dedup_ready_even_when_dedup_cards_raises_model_load_error(
+    install_llm, monkeypatch
+):
+    """A missing embedding model must not poll forever (#78): dedup_ready
+    still flips True, matching generate_for's existing best-effort handling
+    of ModelLoadError."""
+    from submissions import dedup as _dedup
+
+    _stub_best_effort_extras(monkeypatch)
+    install_llm([_card()])
+    su = _make_url()
+
+    def raising_dedup(cards):
+        raise _dedup.ModelLoadError("model not downloaded")
+
+    monkeypatch.setattr(_dedup, "dedup_cards", raising_dedup)
+
+    result = generation.generate_for(su)
+
+    assert result.outcome == "created"
+    su.refresh_from_db()
+    assert su.dedup_ready is True
+
+
+def test_generate_for_sets_dedup_ready_even_when_dedup_cards_raises_other_error(
+    install_llm, monkeypatch
+):
+    """Any other dedup exception is also best-effort (#78): dedup_ready
+    still flips True so the status endpoint doesn't wait forever."""
+    from submissions import dedup as _dedup
+
+    _stub_best_effort_extras(monkeypatch)
+    install_llm([_card()])
+    su = _make_url()
+
+    def raising_dedup(cards):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(_dedup, "dedup_cards", raising_dedup)
+
+    result = generation.generate_for(su)
+
+    assert result.outcome == "created"
+    su.refresh_from_db()
+    assert su.dedup_ready is True
+
+
+def test_zero_valid_cards_never_sets_dedup_ready(install_llm):
+    """generation_status == "failed" (no valid cards) never runs dedup at
+    all, so dedup_ready stays at its default False - unaffected by #78
+    (submission_status already treats generation_status == "failed" as
+    terminal without consulting dedup_ready)."""
+    install_llm([{"note_type": "bogus", "front": "", "back": "", "source_term": "", "topic": ""}])
+    su = _make_url()
+
+    result = generation.generate_for(su)
+
+    assert result.outcome == "failed"
+    su.refresh_from_db()
+    assert su.generation_status == SubmittedURL.GenerationStatus.FAILED
+    assert su.dedup_ready is False
+
+
+def test_force_regeneration_resets_dedup_ready(install_llm, monkeypatch):
+    """A force re-run must not leave a stale dedup_ready=True from an
+    earlier run visible before this run's dedup has actually finished."""
+    from submissions import dedup as _dedup
+
+    _stub_best_effort_extras(monkeypatch)
+    install_llm([_card()])
+    su = _make_url()
+    generation.generate_for(su)
+    su.refresh_from_db()
+    assert su.dedup_ready is True
+
+    observed = {}
+
+    def blocking_dedup(cards):
+        su.refresh_from_db()
+        observed["dedup_ready_during_second_run"] = su.dedup_ready
+
+    monkeypatch.setattr(_dedup, "dedup_cards", blocking_dedup)
+    generation.generate_for(su, force=True)
+
+    assert observed["dedup_ready_during_second_run"] is False
+    su.refresh_from_db()
+    assert su.dedup_ready is True

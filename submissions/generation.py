@@ -801,7 +801,24 @@ def mark_generation_failed(submitted_url: SubmittedURL, reason: str) -> None:
 def _mark_generation_ok(submitted_url: SubmittedURL) -> None:
     submitted_url.generation_status = SubmittedURL.GenerationStatus.OK
     submitted_url.generation_error = ""
-    submitted_url.save(update_fields=["generation_status", "generation_error"])
+    # Reset for #78: a force-regeneration must not keep a stale True from an
+    # earlier run - the status endpoint should gate on *this* run's dedup.
+    submitted_url.dedup_ready = False
+    submitted_url.save(
+        update_fields=["generation_status", "generation_error", "dedup_ready"]
+    )
+
+
+def _mark_dedup_ready(submitted_url: SubmittedURL) -> None:
+    """Record that ``dedup.dedup_cards()`` has been attempted (issue #78).
+
+    Called once the ``dedup_cards`` call below returns *or* raises - dedup is
+    best-effort here (see the try/except), so "attempted" - not "succeeded"
+    - is what unblocks the status endpoint's ``terminal`` flag. Otherwise a
+    ``ModelLoadError`` (or any other dedup exception) would poll forever.
+    """
+    submitted_url.dedup_ready = True
+    submitted_url.save(update_fields=["dedup_ready"])
 
 
 def _call_llm(submitted_url: SubmittedURL) -> list[dict]:
@@ -950,6 +967,11 @@ def generate_for(
         )
     except Exception:  # noqa: BLE001 - dedup is best-effort here
         logger.exception("post-generation dedup failed for %s", submitted_url.url)
+    finally:
+        # issue #78: mark dedup "attempted" whether it succeeded, was
+        # skipped (ModelLoadError) or raised something else, so the status
+        # endpoint's terminal flag never waits forever on a dedup failure.
+        _mark_dedup_ready(submitted_url)
 
     # Live-deck semantic dedup (#29): compare the new cards against the notes
     # currently in the batch's stored Anki deck (#76), never ANKI_DECK_NAME.

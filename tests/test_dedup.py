@@ -330,3 +330,45 @@ def test_generation_runs_dedup_as_final_step(fake_model, monkeypatch):
     assert "cards" in seen and len(seen["cards"]) == 2
     dup = su.cards.get(source_term="aab")
     assert dup.dedup_status == Card.DedupStatus.DUPLICATE
+
+
+def test_generation_sets_dedup_ready_once_dedup_cards_returns(fake_model, monkeypatch):
+    """Issue #78: SubmittedURL.dedup_ready is False for the window between
+    generation_status being set OK and dedup.dedup_cards() returning, then
+    True - the field the extension status endpoint gates terminal on."""
+    su = _url()
+    su.extracted_text = "x " * 300
+    su.save()
+
+    def fake_llm(*, system, prompt, response_format=None, max_tokens=None):
+        from submissions import llm
+
+        payload = {
+            "cards": [
+                {"note_type": "basic", "front": "what is aaa", "back": "aaa",
+                 "source_term": "aaa", "topic": ""},
+            ]
+        }
+        import json
+
+        return llm.LLMResult(text=json.dumps(payload), parsed=payload)
+
+    monkeypatch.setattr(generation.llm, "generate", fake_llm)
+
+    assert su.dedup_ready is False
+
+    real = generation.dedup.dedup_cards
+    observed = {}
+
+    def spy(cards, **kw):
+        su.refresh_from_db()
+        observed["dedup_ready_before"] = su.dedup_ready
+        return real(cards, **kw)
+
+    monkeypatch.setattr(generation.dedup, "dedup_cards", spy)
+
+    generation.generate_for(su)
+
+    assert observed["dedup_ready_before"] is False
+    su.refresh_from_db()
+    assert su.dedup_ready is True
