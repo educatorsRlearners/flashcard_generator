@@ -67,38 +67,10 @@ a { color: var(--accent); }
 .message--warning { background: var(--warning-bg); color: var(--warning-fg); border-color: var(--warning-bd); }
 .message--error   { background: var(--error-bg);   color: var(--error-fg);   border-color: var(--error-bd); }
 
-/* Form */
-.submit-form {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 1.25rem;
-    margin-bottom: 1rem;
-}
-.field-label { display: block; font-weight: 600; margin-bottom: 0.4rem; }
-.field-input {
-    display: block;
-    width: 100%;
-    padding: 0.6rem 0.7rem;
-    font: inherit;
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    resize: vertical;
-}
-.field-input:focus-visible, .button:focus-visible, .button-link:focus-visible, a:focus-visible, .review-btn:focus-visible {
+.button:focus-visible, a:focus-visible, .review-btn:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
-.form-error {
-    background: var(--error-bg);
-    color: var(--error-fg);
-    border: 1px solid var(--error-bd);
-    border-radius: 6px;
-    padding: 0.6rem 0.8rem;
-    margin-bottom: 0.9rem;
-}
-.form-error p { margin: 0.15rem 0; }
 
 .button {
     margin-top: 0.9rem;
@@ -112,52 +84,16 @@ a { color: var(--accent); }
     cursor: pointer;
 }
 .button:hover { background: #2559c9; }
-.url-list__delete { display: inline; margin: 0; }
-
-/* Low-emphasis destructive control for routine per-row actions.
-   Solid --danger fill is reserved for a final confirm step, if any. */
-.button-link {
-    margin: 0;
-    padding: 0.3rem 0.55rem;
-    font: inherit;
-    font-weight: 600;
-    color: var(--accent);
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    cursor: pointer;
-}
-.button-link--danger { color: var(--error-fg); }
-.button-link--danger:hover {
-    background: var(--error-bg);
-    border-color: var(--error-bd);
-}
-
-/* Row header: URL + status pill + delete action on one line, always in the
-   same place regardless of any reason/origin notes rendered below it. */
-.url-list__head {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.5rem;
-}
-.url-list__head .url-list__url { flex: 1 1 12rem; }
-.url-list__head .status { margin-top: 0; }
-.url-list__head .url-list__delete { margin-left: auto; }
 
 /* Lists */
-.batch-list, .url-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
-.batch-list__item, .url-list__item {
+.url-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+.url-list__item {
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0.7rem 0.85rem;
 }
-.batch-meta { color: var(--muted); font-size: 0.9rem; display: block; margin-top: 0.2rem; }
 .url-list__url { display: block; overflow-wrap: anywhere; word-break: break-word; }
-.url-list__reason { display: block; color: var(--error-fg); font-size: 0.9rem; margin-top: 0.35rem; }
-.url-list__origin { display: block; color: var(--muted); font-size: 0.9rem; margin-top: 0.2rem; }
-.url-list__origin a { color: inherit; }
 
 .empty-state {
     color: var(--muted);
@@ -165,73 +101,6 @@ a { color: var(--accent); }
     border: 1px dashed var(--border);
     border-radius: 8px;
     padding: 1rem;
-}
-
-/* Status pills */
-.status {
-    display: inline-block;
-    margin-top: 0.35rem;
-    padding: 0.1rem 0.5rem;
-    font-size: 0.8rem;
-    font-weight: 700;
-    border-radius: 999px;
-    border: 1px solid var(--border);
-    background: var(--info-bg);
-    color: var(--info-fg);
-}
-.status--ok, .status--complete { background: var(--success-bg); color: var(--success-fg); border-color: var(--success-bd); }
-.status--failed { background: var(--error-bg); color: var(--error-fg); border-color: var(--error-bd); }
-.status--pending { background: var(--warning-bg); color: var(--warning-fg); border-color: var(--warning-bd); }
-
-/* Batch progress panel (#8) - card/panel consistent with the form + list cards */
-.batch-progress {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-left-width: 4px;
-    border-radius: 10px;
-    padding: 1rem 1.15rem;
-    margin: 1rem 0 1.25rem;
-}
-.batch-progress__summary {
-    margin: 0;
-    font-weight: 600;
-    font-size: 1.05rem;
-}
-.batch-progress__cards {
-    margin: 0.4rem 0 0;
-    color: var(--muted);
-    font-size: 0.9rem;
-}
-.batch-progress__check { display: none; }
-
-/* Terminal ("Done") state - obviously finished, green like .status--complete */
-.batch-progress--terminal {
-    background: var(--success-bg);
-    border-color: var(--success-bd);
-}
-.batch-progress--terminal .batch-progress__summary { color: var(--success-fg); }
-.batch-progress--terminal .batch-progress__check {
-    display: inline;
-    margin-right: 0.4rem;
-    font-weight: 700;
-}
-
-.batch-progress__worker-notice { margin: 0.75rem 0 0; }
-
-/* Inline command snippet - legible, copy-pasteable, no mid-command wrap */
-.command {
-    display: inline-block;
-    max-width: 100%;
-    margin-top: 0.35rem;
-    padding: 0.15rem 0.45rem;
-    background: rgba(0, 0, 0, 0.06);
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.88rem;
-    white-space: nowrap;
-    overflow-x: auto;
-    vertical-align: middle;
 }
 
 /* Card review grid (issue #9) */
