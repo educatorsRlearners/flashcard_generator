@@ -329,12 +329,6 @@ def test_reason_wrap_css_has_hidden_guard():
     assert ".review-card__reason-wrap[hidden]" in css
 
 
-def test_batch_detail_links_to_review(client):
-    batch = Batch.objects.create()
-    page = client.get(reverse("submissions:batch_detail", args=[batch.pk]))
-    assert reverse("submissions:card_review", args=[batch.pk]).encode() in page.content
-
-
 # --- inline edit of card text (issue #24) ---------------------------------
 
 

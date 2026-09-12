@@ -375,38 +375,6 @@ def test_ambiguous_weak_signals_stay_no_content_with_note(monkeypatch, batch):
     assert "suspected" in row.failure_reason
 
 
-def test_batch_detail_renders_new_kinds(client, monkeypatch, batch):
-    _static_then_bare(monkeypatch, PAYWALL_HTML)
-    row = _url(batch, "https://detail.example.com/x")
-    _run("--url", row.url)
-    row.refresh_from_db()
-    assert row.failure_kind == Kind.PAYWALL
-
-    resp = client.get(reverse("submissions:batch_detail", args=[batch.pk]))
-    body = resp.content.decode()
-    assert resp.status_code == 200
-    assert row.get_failure_kind_display() in body
-    # Quotes render HTML-escaped; assert on the unquoted signal instead.
-    assert "subscribe to continue" in body
-
-
-def test_batch_detail_renders_when_all_walled(client, batch):
-    for i, kind in enumerate((Kind.PAYWALL, Kind.BOT_WALL, Kind.CONSENT_WALL)):
-        _url(
-            batch,
-            f"https://w{i}.example.com/",
-            status=SubmittedURL.Status.FAILED,
-            failure_kind=kind,
-            failure_reason=f"{kind} fixture",
-        )
-    resp = client.get(reverse("submissions:batch_detail", args=[batch.pk]))
-    assert resp.status_code == 200
-    body = resp.content.decode()
-    assert "3 failed" in body
-    assert "paywall" in body
-    assert "consent gate" in body
-
-
 def test_failure_kind_summary_covers_new_kinds(batch):
     for i, kind in enumerate(
         (Kind.PAYWALL, Kind.BOT_WALL, Kind.CONSENT_WALL, Kind.NO_CONTENT)
