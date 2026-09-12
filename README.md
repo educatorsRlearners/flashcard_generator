@@ -50,7 +50,7 @@ Turning a web page into flashcards you'll actually review is normally
 manual and slow: read it, decide what's worth remembering, write a
 front/back pair, find an image, load it into your spaced-repetition tool —
 one at a time, for every source. This app automates that end to end: a
-Chrome/Brave browser extension is the front end — click its popup on a
+Brave/Chrome browser extension is the front end — click its popup on a
 page you're reading, and a Django backend (reached through a native
 messaging host, never a browser tab) extracts the text, generates
 flashcards, dedupes and images them, and lets you accept, reject, or edit
@@ -83,9 +83,9 @@ in #43):
    root (gitignored). Re-running once a real key is already pinned fails
    unless you pass `--force` (which regenerates both keys and gives the
    extension a new ID — repeat steps 3-4 below if you do this).
-3. Load the extension unpacked: `chrome://extensions` (or
-   `brave://extensions`) → enable Developer mode → "Load unpacked" →
-   select the `extension/` directory. Note the extension ID Chrome/Brave
+3. Load the extension unpacked: `brave://extensions` (or
+   `chrome://extensions`) → enable Developer mode → "Load unpacked" →
+   select the `extension/` directory. Note the extension ID Brave/Chrome
    assigns it — because the key is pinned in step 2, this ID stays stable
    across future reloads.
 4. ```
@@ -101,13 +101,13 @@ in #43):
    read once at process start, so a live process keeps using its old
    `EXTENSION_ID` until restarted.
 
-   If Chrome/Brave was already open when the manifest was written, reload
+   If Brave/Chrome was already open when the manifest was written, reload
    the extension once more before using it.
 
 **Use:**
 
 5. Click the extension's popup on any regular webpage you're reading
-   (`chrome://` and extension pages themselves are unreadable). This
+   (`brave://` and `chrome://` and extension pages themselves are unreadable). This
    extracts the page and hands it to the backend — see
    [Extract content](#extract-content).
 6. The backend turns the extracted text into flashcards (see
@@ -136,7 +136,7 @@ is in `_docs/extension_manual_checklist.md`.
 ## Extension internals
 
 The extension (`extension/`) reaches the backend through a native
-messaging host (`native_host/host.py`, #37), which Chrome/Brave discover
+messaging host (`native_host/host.py`, #37), which Brave/Chrome discover
 via a manifest file registered on your machine by
 `install_native_host` — see [Getting started](#getting-started) for the
 one-time setup steps. Reference detail on how the pieces talk to each
@@ -151,7 +151,7 @@ an unpinned reload): re-running overwrites `native_host/run_host.sh` (a
 wrapper script with an absolute interpreter path baked in), the
 native-messaging manifest(s), and the `.env` line in place. Native
 messaging host manifests are read fresh per `connectNative` call, but a
-stale `chrome://extensions` page may not reflect a just-loaded ID — if the
+stale `brave://extensions` / `chrome://extensions` page may not reflect a just-loaded ID — if the
 popup reports it can't connect, reloading the extension is the fix.
 
 ### Auth token + `EXTENSION_ID`
@@ -181,7 +181,7 @@ token to the popup, so you never copy it by hand.
 
 ### Using it + API
 
-Click **Generate** in the popup on a regular webpage (`chrome://` and
+Click **Generate** in the popup on a regular webpage (`brave://` and `chrome://` and
 extension pages are unreadable): the popup gets token + `base_url` from
 the native host (spawning `manage.py dev` if needed), injects
 Readability + `content_extract.js`, POSTs `{url, title, text, images}` to
@@ -209,8 +209,9 @@ To run everything on another port (e.g. 9000):
    BACKEND_URL=http://127.0.0.1:9000 uv run python manage.py dev
    ```
 2. Make the same value visible to the native host. The host is launched by
-   Chrome, so it reads Chrome's environment, not your terminal's — launch
-   Chrome from a terminal with the var set (e.g.
+   Brave/Chrome, so it reads the Brave/Chrome environment, not your terminal's — launch
+   Brave/Chrome from a terminal with the var set (e.g.
+   `BACKEND_URL=http://127.0.0.1:9000 open -a "Brave Browser"` or
    `BACKEND_URL=http://127.0.0.1:9000 open -a "Google Chrome"`), or set it
    persistently for GUI apps.
 3. Hand-edit `extension/manifest.json`'s `host_permissions` to match the
@@ -219,7 +220,7 @@ To run everything on another port (e.g. 9000):
    ```
    "host_permissions": ["http://127.0.0.1:9000/*"],
    ```
-   then reload the extension at `chrome://extensions` (Developer mode →
+   then reload the extension at `brave://extensions` (or `chrome://extensions`) (Developer mode →
    Reload). No code or permission-prompt flow is involved.
 4. Re-run the manual checklist (`_docs/extension_manual_checklist.md`);
    the popup follows the host's `base_url` with no other change.
@@ -828,7 +829,7 @@ uv run python manage.py llm_usage --limit 10
 | `submissions/llm.py` | Provider-agnostic LLM client (`generate()`), typed errors, retry/backoff, per-call usage recording |
 | `submissions/anki.py` | AnkiConnect HTTP transport (`AnkiConnectClient`) and the accepted-cards push orchestration |
 | `submissions/extension_api.py` | Browser-extension submit/status API endpoints, CORS allowlisting by `EXTENSION_ID` |
-| `native_host/host.py` | Chrome/Brave native messaging host process; readiness probe and backend auto-spawn for the extension |
+| `native_host/host.py` | Brave/Chrome native messaging host process; readiness probe and backend auto-spawn for the extension |
 | `config/settings.py` | Single source of Django settings; every setting also reads from an env var of the same name |
 
 ## Development
