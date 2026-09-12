@@ -25,6 +25,7 @@ by the test suite (Huey immediate mode covers tests; see
 
 from __future__ import annotations
 
+import hashlib
 import os
 import signal
 import subprocess
@@ -40,6 +41,7 @@ from django.db.migrations.executor import MigrationExecutor
 
 WEB_PREFIX = "[web]"
 WORKER_PREFIX = "[worker]"
+ENV_PREFIX = "[env]"
 
 #: Crash-loop guard: more than this many worker restarts inside this many
 #: seconds means the worker is broken -> exit non-zero instead of looping.
@@ -53,6 +55,10 @@ WORKER_RESTART_WINDOW = 60.0
 #: duplicated there instead of imported; if the default ever changes,
 #: update all three.
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8000"
+
+#: Sentinel for "no .env baseline established yet" (issue #54) - distinct
+#: from the real ``None`` hash_env_file() returns for "no .env file".
+_UNSET = object()
 
 
 def backend_url_to_addrport(url: str) -> str:
@@ -77,6 +83,71 @@ def default_addrport(env: dict | None = None) -> str:
     source = env if env is not None else os.environ
     raw = (source.get("BACKEND_URL", "") or "").strip()
     return backend_url_to_addrport(raw or DEFAULT_BACKEND_URL)
+
+
+def env_path() -> Path:
+    """Path to the project's ``.env`` file (issue #54)."""
+    return Path(__file__).resolve().parents[3] / ".env"
+
+
+def hash_env_file(path: Path | None = None) -> str | None:
+    """Content hash of ``.env``, or ``None`` if it doesn't exist (issue #54).
+
+    Hash-based (not mtime), so a ``touch`` with unchanged content never
+    triggers a restart. ``None`` is a sentinel distinct from any hash, so
+    ``.env`` being created after ``dev`` started, or deleted while it's
+    running, both count as "changed" relative to whatever the baseline was.
+    """
+    p = path if path is not None else env_path()
+    try:
+        data = p.read_bytes()
+    except FileNotFoundError:
+        return None
+    return hashlib.sha256(data).hexdigest()
+
+
+def env_file_vars(path: Path | None = None) -> set[str]:
+    """Variable names ``.env`` currently defines (issue #54).
+
+    A minimal stdlib-only parse (no quoting/escaping edge cases) - just
+    enough to warn about a name also being set as a real shell env var;
+    not a general-purpose ``.env`` parser.
+    """
+    p = path if path is not None else env_path()
+    try:
+        text = p.read_text()
+    except FileNotFoundError:
+        return set()
+    names: set[str] = set()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        key, sep, _value = line.partition("=")
+        key = key.strip()
+        if sep and key:
+            names.add(key)
+    return names
+
+
+def format_shell_override_warning(names: list[str]) -> str:
+    """Warning that a restart won't actually pick up new .env value(s) (issue #54).
+
+    Mirrors the warning ``install_native_host`` prints (#52): ``.env``'s
+    var(s) are also set as real shell environment variables, and
+    ``config/settings.py`` calls ``load_dotenv(..., override=False)``, so
+    the shell value keeps winning in the restarted children too.
+    """
+    joined = ", ".join(sorted(names))
+    return (
+        f"Warning: {joined} also set as a real environment variable in "
+        "this shell - that takes precedence over the new value in .env "
+        "(config/settings.py calls load_dotenv with its default "
+        "override=False), so the restarted children still won't see the "
+        "new .env value until you unset or update the shell variable too."
+    )
 
 
 def pending_migrations(alias: str = DEFAULT_DB_ALIAS) -> list:
@@ -221,8 +292,39 @@ class Command(BaseCommand):
         signal.signal(signal.SIGTERM, _on_signal)
 
         restarts: list[float] = []
+        env_hash: str | None | object = _UNSET
         try:
             while not stop.is_set():
+                current_env_hash = hash_env_file()
+                if env_hash is _UNSET:
+                    # First tick establishes the baseline; never restart on it.
+                    env_hash = current_env_hash
+                elif current_env_hash != env_hash:
+                    env_hash = current_env_hash
+                    if stop.is_set():
+                        # Ctrl-C/SIGTERM wins over a pending env restart.
+                        break
+                    self.stdout.write(
+                        f"{ENV_PREFIX} .env changed; restarting web server "
+                        "and worker."
+                    )
+                    shadowed = sorted(
+                        name for name in env_file_vars() if os.environ.get(name)
+                    )
+                    if shadowed:
+                        self.stdout.write(
+                            f"{ENV_PREFIX} " + format_shell_override_warning(shadowed)
+                        )
+                    self._terminate(web)
+                    self._terminate(worker)
+                    web = self._spawn(web_cmd, env)
+                    worker = self._spawn(worker_cmd, env)
+                    self._pump(web, WEB_PREFIX)
+                    self._pump(worker, WORKER_PREFIX)
+                    # Env-triggered restarts are intentional, not crashes -
+                    # they must never consume the crash-loop budget below.
+                    time.sleep(0.2)
+                    continue
                 web_rc = web.poll()
                 worker_rc = worker.poll()
                 if web_rc is not None:
