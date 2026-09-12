@@ -243,6 +243,11 @@ def is_up(
     try:
         opener(target, timeout=timeout)
         return True
+    except urllib.error.HTTPError:
+        # A real HTTP response (even an error status, e.g. this app's own
+        # 404 at "/") - the backend is up, it just didn't return 2xx/3xx.
+        # HTTPError is a URLError subclass, so it must be checked first.
+        return True
     except urllib.error.URLError:
         return False
     except TimeoutError:

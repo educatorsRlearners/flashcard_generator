@@ -117,6 +117,17 @@ def test_is_up_false_on_timeout():
     assert host.is_up(fake_opener, "http://x/", 1.0) is False
 
 
+def test_is_up_true_on_http_error_status():
+    # A non-2xx response (e.g. this app's own 404 at "/", which has no
+    # registered route) still means the backend is up and answering -
+    # HTTPError is a URLError subclass, so it must not be treated as
+    # "down" (issue #77).
+    def fake_opener(url, timeout):
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+    assert host.is_up(fake_opener, "http://x/", 1.0) is True
+
+
 # -- poll backoff/timeout math -----------------------------------------
 
 
