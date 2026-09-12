@@ -1,4 +1,14 @@
-![Flashcard Generator: turn any web page into reviewed, spaced-repetition Anki flashcards](assets/hero-banner.svg)
+<h1 align="center">Flashcard Generator</h1>
+
+<p align="center">
+  <img src="assets/hero-banner.svg" alt="Flashcard Generator: turn any web page into reviewed, spaced-repetition Anki flashcards">
+</p>
+
+<p align="center">
+  <em>Turn any web page into reviewed, spaced-repetition Anki flashcards.</em>
+</p>
+
+<p align="center">
 
 ![Python](https://img.shields.io/badge/Python-4338CA?style=flat-square)
 ![Django](https://img.shields.io/badge/Django-6366F1?style=flat-square)
@@ -9,10 +19,14 @@
 ![Sentence Transformers](https://img.shields.io/badge/Sentence%20Transformers-7C3AED?style=flat-square)
 ![AnkiConnect](https://img.shields.io/badge/AnkiConnect-4338CA?style=flat-square)
 
-Turn any web page into reviewed, spaced-repetition Anki flashcards.
+</p>
 
 ## Table of Contents
 
+- [What it is](#what-it-is)
+- [How it works](#how-it-works)
+- [Quick Start](#quick-start)
+- [Configuration & providers](#configuration--providers)
 - [Setup](#setup)
 - [Run](#run)
 - [Background processing (Huey)](#background-processing-huey)
@@ -23,11 +37,48 @@ Turn any web page into reviewed, spaced-repetition Anki flashcards.
 - [Review feedback (durable) + few-shot injection](#review-feedback-durable--few-shot-injection)
 - [Review grid](#review-grid)
 - [Push to Anki](#push-to-anki)
-- [Configuration (.env)](#configuration-env)
 - [LLM client](#llm-client)
 - [LLM usage (cost / latency observability)](#llm-usage-cost--latency-observability)
 - [Browser extension setup (native messaging host)](#browser-extension-setup-native-messaging-host)
-- [Tests](#tests)
+- [Architecture](#architecture)
+- [Development](#development)
+
+## What it is
+
+**The problem.** Turning a web page (or a PDF, a Word doc, a scanned image)
+into flashcards you'll actually review is manual and slow: read the page,
+decide what's worth remembering, write a front/back pair in your own words,
+find or make an image, and load it into your spaced-repetition tool — one at
+a time, for every source.
+
+**This app** automates that pipeline end to end. You submit one or more
+URLs; it extracts the readable text (with OCR and browser-rendering
+fallbacks for the pages that need them), asks an LLM to turn that text into
+Anki-style basic/cloze cards in your own words, filters out cards that
+duplicate ones you already have, attaches a relevant image to each card,
+and lets you accept, reject, or edit every card in a review grid before
+pushing the accepted ones straight into Anki over AnkiConnect. Nothing is
+pushed to Anki without going through review first.
+
+## How it works
+
+1. **Submit URLs** — paste one or more URLs into the web UI; a background
+   worker processes them. See [Run](#run) and
+   [Background processing (Huey)](#background-processing-huey).
+2. **Extract** — fetch and pull the main text out of each URL (HTML, PDF,
+   `.docx`, or an image via OCR). See [Extract content](#extract-content).
+3. **Generate cards** — an LLM turns the extracted text into basic/cloze
+   flashcards. See [Generate cards](#generate-cards).
+4. **Dedup** — new cards are compared against existing ones and hidden if
+   they're near-duplicates. See [Deduplicate cards](#deduplicate-cards).
+5. **Images** — each card gets at most one relevant image, from the source
+   page or a local fallback generator. See [Card images](#card-images).
+6. **Review** — accept, reject, or edit every card in a live grid; every
+   decision is recorded as durable feedback. See
+   [Review grid](#review-grid) and
+   [Review feedback (durable) + few-shot injection](#review-feedback-durable--few-shot-injection).
+7. **Push to Anki** — accepted cards are sent into a single Anki deck over
+   AnkiConnect. See [Push to Anki](#push-to-anki).
 
 ## Quick Start
 
@@ -40,6 +91,43 @@ uv run python manage.py dev
 Then open http://127.0.0.1:8000/ — see [Setup](#setup) and [Run](#run) for full detail.
 
 Heavier optional setup (Playwright/Chromium, sentence-transformers weights, Tesseract, browser extension native messaging) is not required for this basic flow — see [Setup](#setup) and [Browser extension setup (native messaging host)](#browser-extension-setup-native-messaging-host).
+
+### Commands at a glance
+
+| Command | What it does |
+| --- | --- |
+| `uv sync` | Install dependencies |
+| `uv run pytest` | Run the whole test suite |
+| `uv run python manage.py dev` | Dev entrypoint: starts `runserver` + the Huey consumer together, prefixed logs (`[web]` / `[worker]`), Ctrl-C stops both |
+| `uv run python manage.py run_huey` | Run the background task consumer alone (manual fallback; normally started automatically by `dev`) |
+| `uv run python manage.py push_to_anki` | Push accepted cards to Anki via AnkiConnect (idempotent) |
+
+## Configuration & providers
+
+Configuration is split three ways:
+
+- **`config/settings.py`** — checked-in Django settings with sensible
+  defaults. Each one is also backed by an environment variable of the same
+  name, so it can be overridden with no code change.
+- **`.env`** (git-ignored) — secrets and local overrides, read via
+  `python-dotenv` and loaded by `config/settings.py`.
+- **Real shell environment variables** — take precedence over `.env`
+  (`load_dotenv`'s default `override=False`). Useful for one-off overrides
+  or when a value (like `EXTENSION_ID`) needs to be visible to another
+  process (e.g. Chrome launching the native messaging host).
+
+Copy the template and fill in your key to get started:
+
+```bash
+cp .env.example .env
+# then edit .env and set ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Which LLM provider and model are used, and every other per-feature setting
+(dedup threshold, image fallback, Anki deck name, few-shot budget, and so
+on), is documented alongside the feature it configures below — see
+[LLM client](#llm-client) for the provider/model settings table, or jump to
+any section's own settings table.
 
 ## Setup
 
@@ -260,8 +348,8 @@ text under the 200-non-whitespace-char threshold with `text too short`.
 
 ## Generate cards
 
-Turn the extracted text of a URL into Anki-style flashcards with the #5 LLM
-client:
+Turn the extracted text of a URL into Anki-style flashcards with the LLM
+client (see [LLM client](#llm-client)):
 
 ```
 uv run python manage.py generate_cards --url https://example.com/article
@@ -404,7 +492,7 @@ blocked) the next candidate is tried, then Draw Things.
 
 **Placement.** The image side follows the note type and is exposed as
 `Card.image_placement`: `cloze` → `"question"` (shown on the question
-side), `basic` → `"answer"` (shown on the answer side). The #9 review grid
+side), `basic` → `"answer"` (shown on the answer side). The review grid
 reads this rule.
 
 Images are stored under `MEDIA_ROOT` (`media/`, git-ignored) in `cards/`,
@@ -527,19 +615,6 @@ Settings (`config/settings.py`, each also an env var of the same name):
 The AnkiConnect transport lives in `submissions/anki.py`
 (`AnkiConnectClient`), behind which `push_accepted_cards()` does the
 orchestration; both are fakeable in tests without a live Anki.
-
-## Configuration (.env)
-
-Secrets and local overrides are read from a git-ignored `.env` file in the
-project root (via `python-dotenv`, loaded in `config/settings.py`). Copy the
-template and fill in your key:
-
-```bash
-cp .env.example .env
-# then edit .env and set ANTHROPIC_API_KEY=sk-ant-...
-```
-
-Real environment variables take precedence over `.env`.
 
 ## LLM client
 
@@ -763,8 +838,28 @@ the matching port, even if another port answers. Keep both sides on the
 same `BACKEND_URL` (or pass `dev --addrport` explicitly) to avoid running
 two backends unknowingly.
 
-## Tests
+## Architecture
+
+| Module | Responsibility |
+| --- | --- |
+| `submissions/generation.py` | Turns extracted text into basic/cloze cards via the LLM client, applies safety caps and the verbatim-copy check, prepends few-shot examples |
+| `submissions/dedup.py` | Embeds cards locally and marks near-duplicates against prior `unique` cards and same-run siblings |
+| `submissions/images.py` | Picks or generates each card's single image (extension/source-page candidates, relevance ranking, Draw Things fallback) |
+| `submissions/llm.py` | Provider-agnostic LLM client (`generate()`), typed errors, retry/backoff, per-call usage recording |
+| `submissions/anki.py` | AnkiConnect HTTP transport (`AnkiConnectClient`) and the accepted-cards push orchestration |
+| `submissions/extension_api.py` | Browser-extension submit/status API endpoints, CORS allowlisting by `EXTENSION_ID` |
+| `native_host/host.py` | Chrome/Brave native messaging host process; readiness probe and backend auto-spawn for the extension |
+| `config/settings.py` | Single source of Django settings; every setting also reads from an env var of the same name |
+
+## Development
 
 ```
-uv run pytest
+uv sync                              # install dependencies
+uv run pytest                        # run the whole test suite
+uv run pytest tests/test_home.py     # run one test file
+uv run python manage.py dev          # dev entrypoint: runserver + Huey consumer together
 ```
+
+Huey tests run in immediate mode (no consumer needed). See
+[Background processing (Huey)](#background-processing-huey) for
+`run_huey`, the manual fallback, and `HUEY_IMMEDIATE=1`.
