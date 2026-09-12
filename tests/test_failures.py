@@ -129,48 +129,6 @@ def test_command_continues_past_failure_and_exits_zero(monkeypatch, batch):
     assert "HTTP 404" in output
 
 
-def test_batch_detail_shows_failure_kind_and_reason(client, monkeypatch, batch):
-    monkeypatch.setattr(
-        extraction,
-        "fetch_static",
-        lambda url: (_ for _ in ()).throw(
-            urllib.error.HTTPError(url, 403, "Forbidden", {}, None)
-        ),
-    )
-    row = _url(batch, "https://blocked.example.com/x")
-    _run("--url", row.url)
-    row.refresh_from_db()
-    assert row.failure_kind == Kind.BLOCKED
-
-    resp = client.get(reverse("submissions:batch_detail", args=[batch.pk]))
-    body = resp.content.decode()
-    assert resp.status_code == 200
-    assert row.get_failure_kind_display() in body
-    assert "HTTP 403 (access refused)" in body
-    # By-kind breakdown uses human-readable labels, never raw enum values.
-    assert "1 failed: 1 blocked / rate-limited" in body
-
-
-def test_batch_detail_renders_when_all_failed_and_when_empty(client):
-    empty = Batch.objects.create()
-    resp = client.get(reverse("submissions:batch_detail", args=[empty.pk]))
-    assert resp.status_code == 200
-
-    failed_batch = Batch.objects.create()
-    _url(
-        failed_batch,
-        "https://a.example.com/x",
-        status=SubmittedURL.Status.FAILED,
-        failure_kind=Kind.TIMEOUT,
-        failure_reason="request timed out",
-    )
-    resp = client.get(
-        reverse("submissions:batch_detail", args=[failed_batch.pk])
-    )
-    assert resp.status_code == 200
-    assert "1 failed: 1 timeout" in resp.content.decode()
-
-
 def test_failure_kind_summary_uses_human_labels_not_raw_enum(client):
     batch = Batch.objects.create()
     kinds = (Kind.HTTP_CLIENT, Kind.HTTP_CLIENT, Kind.NO_CONTENT, Kind.TOO_LARGE)

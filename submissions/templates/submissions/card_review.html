@@ -3,7 +3,6 @@
 {% block title %}Review cards - Batch {{ batch.pk }}{% endblock %}
 
 {% block content %}
-    <p><a href="{% url 'submissions:batch_detail' batch.pk %}">&larr; Back to Batch {{ batch.pk }}</a></p>
     <h1>Review cards - Batch {{ batch.pk }}</h1>
 
     {% if not ready %}

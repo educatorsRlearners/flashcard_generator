@@ -5,8 +5,8 @@ Two endpoints, mounted at ``/api/extension/`` (see
 
 * ``POST /api/extension/submit/`` - the extension posts one page's already
   extracted content (``url`` / ``title`` / ``text``). This creates the
-  ``Batch`` / ``SubmittedURL`` / ``BatchRequest`` rows exactly like
-  ``views.home`` does for a pasted URL, writes the extraction fields onto
+  ``Batch`` / ``SubmittedURL`` / ``BatchRequest`` rows directly (see
+  ``submissions/models.py``), writes the extraction fields onto
   the ``SubmittedURL`` (mirroring ``extraction._save_success`` field-for-
   field, with ``extraction_method = SubmittedURL.ExtractionMethod.EXTENSION``),
   and enqueues :func:`submissions.extension_tasks.process_extension_submission`
@@ -145,10 +145,9 @@ def submit(request):
                 continue
             extension_image_urls.append(candidate)
 
-    # Exactly the views.home sequence for turning one URL into a tracked
-    # submission (a new Batch every call - including a re-submission of an
-    # already-known URL, matching the double-submit behaviour that view
-    # already has).
+    # Creates the Batch / SubmittedURL / BatchRequest rows directly (a new
+    # Batch every call - including a re-submission of an already-known URL,
+    # matching the double-submit behaviour the model layer already allows).
     batch = Batch.objects.create()
     submitted_url, _created = SubmittedURL.objects.get_or_create(
         url=url, defaults={"batch": batch}

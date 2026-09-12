@@ -27,22 +27,16 @@ def _offline_politeness(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _huey_immediate(monkeypatch):
-    """Run Huey tasks inline (issue #8) and neutralise the extraction call.
+def _huey_immediate():
+    """Run Huey tasks inline (issue #8).
 
-    Immediate mode means submitting a batch executes its tasks synchronously
-    in-process - no external ``run_huey`` consumer. The real extraction path
-    is stubbed to a no-op here so the wider suite stays offline and URLs stay
-    ``pending`` unless a test opts in; #8's own tests replace
-    ``submissions.tasks.run_extraction`` with a fake that sets a terminal
-    status.
+    Immediate mode means enqueuing a task (e.g. ``push_accepted_cards_task``,
+    ``process_extension_submission``) executes it synchronously in-process -
+    no external ``run_huey`` consumer needed for tests.
     """
     from huey.contrib.djhuey import HUEY
 
-    from submissions import tasks
-
     HUEY.immediate = True
-    monkeypatch.setattr(tasks, "run_extraction", lambda submitted_url: None)
     yield
     HUEY.immediate = False
 
