@@ -46,16 +46,6 @@ provider and model are used is read from Django settings:
 *                             ``openrouter`` provider's key env var, default
 *                             ``"OPENROUTER_API_KEY"`` (empty = fall back to
 *                             that hardcoded default)
-* ``LLM_OPENCODE_ZEN_BASE_URL`` - optional override of the ``opencode-zen``
-*                             provider's base URL, default
-*                             ``"https://opencode.ai/zen/v1/chat/completions"``
-*                             (empty = fall back to that hardcoded default)
-* ``LLM_OPENCODE_ZEN_MODEL`` - optional override of ``LLM_MODEL`` for the
-*                             ``opencode-zen`` provider (empty = fall back)
-* ``LLM_OPENCODE_ZEN_API_KEY_ENV_VAR`` - optional override of the
-*                             ``opencode-zen`` provider's key env var, default
-*                             ``"OPENCODE_ZEN_API_KEY"`` (empty = fall back to
-*                             that hardcoded default)
 
 ``LLM_PROVIDER=gemini`` (issue #83) talks to Google's Generative Language
 API directly via ``httpx`` (no SDK dependency), against a fixed endpoint
@@ -68,7 +58,12 @@ API directly via ``httpx`` (no SDK dependency), against a fixed endpoint
 ``OPENROUTER_API_KEY``). Issue #98 added ``LLM_GROK_*``/``LLM_OPENROUTER_*``
 override settings for both, following the same override-wins/empty-falls-
 back pattern as ``LLM_OPENAI_*``/``LLM_GEMINI_*``; see
-``_NAMED_OPENAI_COMPATIBLE_DEFAULTS``.
+``_NAMED_OPENAI_COMPATIBLE_DEFAULTS``. ``LLM_PROVIDER=opencode-zen``
+(issue #104) is a third named ``OpenAICompatibleProvider`` pointed at
+Zen's OpenAI-compatible route
+(``https://opencode.ai/zen/v1/chat/completions``) with hardcoded default
+key env var ``OPENCODE_ZEN_API_KEY`` and ``LLM_OPENCODE_ZEN_*`` overrides
+following the same pattern.
 
 Adding a third provider is one entry in ``_PROVIDERS`` plus a new
 ``Provider`` subclass in this file - nothing else in the codebase changes,
@@ -297,6 +292,33 @@ def _resolve_openrouter_api_key_env_var() -> str:
     if override:
         return override
     return _NAMED_OPENAI_COMPATIBLE_DEFAULTS["openrouter"]["api_key_env_var"]
+
+
+def _resolve_opencode_zen_base_url() -> str:
+    """Base URL for the ``opencode-zen`` provider: per-provider override
+    wins, empty override falls back to the hardcoded default."""
+    override = _setting("LLM_OPENCODE_ZEN_BASE_URL", "")
+    if override:
+        return override
+    return _NAMED_OPENAI_COMPATIBLE_DEFAULTS["opencode-zen"]["base_url"]
+
+
+def _resolve_opencode_zen_model() -> str:
+    """Model for the ``opencode-zen`` provider: per-provider override wins,
+    empty override falls back to the generic ``LLM_MODEL``."""
+    override = _setting("LLM_OPENCODE_ZEN_MODEL", "")
+    if override:
+        return override
+    return _resolve_model()
+
+
+def _resolve_opencode_zen_api_key_env_var() -> str:
+    """Key env var for the ``opencode-zen`` provider: per-provider override
+    wins, empty override falls back to the hardcoded default."""
+    override = _setting("LLM_OPENCODE_ZEN_API_KEY_ENV_VAR", "")
+    if override:
+        return override
+    return _NAMED_OPENAI_COMPATIBLE_DEFAULTS["opencode-zen"]["api_key_env_var"]
 
 
 # --- Provider interface ----------------------------------------------
@@ -1139,19 +1161,22 @@ _PROVIDERS: dict[str, Callable[..., Provider]] = {
     # api_key_env_var.
     "grok": OpenAICompatibleProvider,
     "openrouter": OpenAICompatibleProvider,
+    "opencode-zen": OpenAICompatibleProvider,
     "gemini": GeminiProvider,
 }
 
 #: Provider names that need the OpenAI-compatible constructor kwargs.
 _OPENAI_PROVIDER_NAMES = frozenset({"openai-compatible", "openai"})
 
-#: Hardcoded defaults for "named" OpenAI-compatible providers (issue #84):
+#: Hardcoded defaults for "named" OpenAI-compatible providers (issue #84,
+#: extended by #104 for ``opencode-zen``):
 #: each is just an ``OpenAICompatibleProvider``. These are the fallback
 #: ``base_url``/``api_key_env_var`` used when the corresponding
-#: ``LLM_GROK_*``/``LLM_OPENROUTER_*`` override setting (issue #98) is unset
+#: ``LLM_GROK_*``/``LLM_OPENROUTER_*``/``LLM_OPENCODE_ZEN_*`` override setting
+#: (issue #98 / #104) is unset
 #: or empty; ``model`` falls back to the generic ``LLM_MODEL`` setting via
 #: :func:`_resolve_model` the same way, unless ``LLM_GROK_MODEL``/
-#: ``LLM_OPENROUTER_MODEL`` is set.
+#: ``LLM_OPENROUTER_MODEL``/``LLM_OPENCODE_ZEN_MODEL`` is set.
 #:
 #: Request-shape note (issue #84 §10, doc-based only - no live credentials
 #: available in this environment; live-credential verification is tracked in
@@ -1172,6 +1197,16 @@ _NAMED_OPENAI_COMPATIBLE_DEFAULTS: dict[str, dict[str, str]] = {
     "openrouter": {
         "base_url": "https://openrouter.ai/api/v1",
         "api_key_env_var": "OPENROUTER_API_KEY",
+    },
+    # Zen's only OpenAI-compatible route is /v1/chat/completions (per
+    # https://opencode.ai/docs/zen): /v1/messages is Anthropic-shaped,
+    # /v1/responses is the OpenAI Responses API, /v1/models/* is
+    # Google-shaped - none of which this adapter speaks. No Zen model id is
+    # hardcoded here; set LLM_MODEL / LLM_OPENCODE_ZEN_MODEL explicitly
+    # (curated chat-completions ids are #105's job).
+    "opencode-zen": {
+        "base_url": "https://opencode.ai/zen/v1/chat/completions",
+        "api_key_env_var": "OPENCODE_ZEN_API_KEY",
     },
 }
 
@@ -1235,6 +1270,12 @@ def get_provider(
             model=_model_override_or(_resolve_openrouter_model(), model),
             api_key_env_var=_resolve_openrouter_api_key_env_var(),
             base_url=_resolve_openrouter_base_url(),
+        )
+    if provider_name == "opencode-zen":
+        return factory(
+            model=_model_override_or(_resolve_opencode_zen_model(), model),
+            api_key_env_var=_resolve_opencode_zen_api_key_env_var(),
+            base_url=_resolve_opencode_zen_base_url(),
         )
     if provider_name == "gemini":
         return factory(

@@ -159,6 +159,19 @@ LLM_OPENAI_API_KEY_ENV_VAR = os.environ.get("LLM_OPENAI_API_KEY_ENV_VAR", "")
 LLM_GEMINI_MODEL = os.environ.get("LLM_GEMINI_MODEL", "")
 LLM_GEMINI_API_KEY_ENV_VAR = os.environ.get("LLM_GEMINI_API_KEY_ENV_VAR", "")
 
+# OpenCode Zen provider (issue #104; adapter in submissions/llm.py). A named
+# OpenAI-compatible provider pointed at Zen's OpenAI-compatible route
+# (https://opencode.ai/zen/v1/chat/completions). Optional per-provider
+# overrides below follow the same fallback pattern as LLM_GEMINI_* above:
+# empty falls back to the hardcoded base_url/key env var defaults in
+# submissions/llm.py (or the generic LLM_MODEL for the model). No Zen model
+# id is hardcoded as a default anywhere.
+LLM_OPENCODE_ZEN_BASE_URL = os.environ.get("LLM_OPENCODE_ZEN_BASE_URL", "")
+LLM_OPENCODE_ZEN_MODEL = os.environ.get("LLM_OPENCODE_ZEN_MODEL", "")
+LLM_OPENCODE_ZEN_API_KEY_ENV_VAR = os.environ.get(
+    "LLM_OPENCODE_ZEN_API_KEY_ENV_VAR", ""
+)
+
 # --- LLM cost/failure-rate alerting (submissions/tasks.py, issue #90) ------
 # A periodic Huey task watches recent LLMCall rows and logs a WARNING when
 # total estimated cost or failure rate over a rolling window crosses one of
