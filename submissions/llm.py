@@ -1088,6 +1088,43 @@ def _record_llm_call(
         logger.warning("failed to record LLMCall row", exc_info=True)
 
 
+# --- Extension popup curated models (issue #105) -----------------------
+
+
+#: Providers exposed at ``GET /api/extension/llm-config/``, in fixed
+#: display order. ``"openai"`` is the display name for the backend
+#: registry key ``"openai-compatible"``; ``"opencode-zen"`` (issue #104)
+#: is emitted only when that key exists in :data:`_PROVIDERS`, so this
+#: endpoint needs no change when #104 lands. ``"openai-compatible"``,
+#: ``"gemini"`` and ``"openrouter"`` never appear in the response.
+EXTENSION_LLM_PROVIDER_ORDER: tuple[str, ...] = (
+    "anthropic",
+    "openai",
+    "grok",
+    "opencode-zen",
+)
+
+#: Curated model ids per exposed provider, verbatim from
+#: ``_docs/llm_portability_2.md`` §6. Static domain data, hence here
+#: beside :data:`_PROVIDERS` rather than in ``config/settings.py``.
+EXTENSION_LLM_CURATED_MODELS: dict[str, list[str]] = {
+    "anthropic": ["claude-sonnet-4-6", "claude-haiku-4-5"],
+    "openai": ["gpt-4o", "gpt-4o-mini"],
+    "grok": ["grok-4", "grok-3-mini"],
+    "opencode-zen": ["claude-sonnet-4-5", "gpt-5.1", "grok-code"],
+}
+
+
+#: Display name → backend registry key in :data:`_PROVIDERS`. Only
+#: ``"openai"`` differs (registry key ``"openai-compatible"``).
+EXTENSION_LLM_REGISTRY_KEYS: dict[str, str] = {
+    "anthropic": "anthropic",
+    "openai": "openai-compatible",
+    "grok": "grok",
+    "opencode-zen": "opencode-zen",
+}
+
+
 # --- Provider registry (the seam #27 extends) --------------------
 
 

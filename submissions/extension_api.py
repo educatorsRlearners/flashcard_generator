@@ -1,6 +1,6 @@
 """JSON API for the browser extension (issue #35).
 
-Two endpoints, mounted at ``/api/extension/`` (see
+Three endpoints, mounted at ``/api/extension/`` (see
 ``submissions/extension_urls.py`` and ``config/urls.py``):
 
 * ``POST /api/extension/submit/`` - the extension posts one page's already
@@ -13,6 +13,8 @@ Two endpoints, mounted at ``/api/extension/`` (see
   to generate cards.
 * ``GET /api/extension/submit/<id>/status/`` - the extension polls this
   until generation is finished, to learn the ``review_url`` to open.
+* ``GET /api/extension/llm-config/`` - provider/model dropdown seed data
+  for the popup (issue #105).
 
 Auth is the #33 shared-secret token (``Authorization: Bearer <token>``);
 these views are CSRF-exempt because that token check is the real access
@@ -27,6 +29,7 @@ entirely (fail closed).
 from __future__ import annotations
 
 import json
+import os
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -37,6 +40,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from . import extraction
+from . import llm as llm_module
 from .extension_auth import token_matches
 from .extension_tasks import process_extension_submission
 from .models import Batch, BatchRequest, SubmittedURL
@@ -303,6 +307,73 @@ def decks(request):
     except Exception:
         return _apply_cors(JsonResponse({"decks": [], "unavailable": True}))
     return _apply_cors(JsonResponse({"decks": deck_list, "unavailable": False}))
+
+
+@csrf_exempt
+def llm_config(request):
+    """Provider/model dropdown seed data for the extension popup (issue #105).
+
+    ``GET /api/extension/llm-config/`` returns exactly
+    ``{"providers": [{"name", "models", "key_configured"}], "default":
+    {"provider", "model"}}``. ``providers`` follows
+    ``llm_module.EXTENSION_LLM_PROVIDER_ORDER`` (skipping any name whose
+    registry key is absent from ``llm_module._PROVIDERS`` - currently
+    ``opencode-zen`` until #104 lands); ``key_configured`` is a presence
+    boolean via the existing ``_resolve_*_api_key_env_var`` helpers (never
+    the key itself, no ``Provider`` construction, no network); ``default``
+    echoes ``settings.LLM_PROVIDER`` / ``settings.LLM_MODEL`` verbatim and
+    never errors. Auth + CORS mirror :func:`decks`.
+    """
+    if request.method == "OPTIONS":
+        return _apply_cors(HttpResponse(status=200), methods="GET, OPTIONS")
+
+    if request.method != "GET":
+        return _apply_cors(JsonResponse({"error": "method not allowed"}, status=405))
+
+    if not _is_authorized(request):
+        return _apply_cors(_unauthorized())
+
+    providers = []
+    for name in llm_module.EXTENSION_LLM_PROVIDER_ORDER:
+        registry_key = llm_module.EXTENSION_LLM_REGISTRY_KEYS.get(name, name)
+        if registry_key not in llm_module._PROVIDERS:
+            continue
+        if name == "anthropic":
+            env_var = llm_module._resolve_api_key_env_var()
+        elif name == "openai":
+            env_var = llm_module._resolve_openai_api_key_env_var()
+        elif name == "grok":
+            env_var = llm_module._resolve_grok_api_key_env_var()
+        elif name == "opencode-zen":
+            # Issue #104's resolver; getattr keeps this working before it
+            # lands (entry skipped above until registered) and after, with
+            # no change required here.
+            resolver = getattr(
+                llm_module, "_resolve_opencode_zen_api_key_env_var", None
+            )
+            env_var = resolver() if resolver is not None else ""
+        else:  # pragma: no cover - order list is the only driver
+            continue
+        key_configured = bool((os.environ.get(env_var) or "").strip()) if env_var else False
+        providers.append(
+            {
+                "name": name,
+                "models": list(llm_module.EXTENSION_LLM_CURATED_MODELS[name]),
+                "key_configured": key_configured,
+            }
+        )
+
+    return _apply_cors(
+        JsonResponse(
+            {
+                "providers": providers,
+                "default": {
+                    "provider": settings.LLM_PROVIDER,
+                    "model": settings.LLM_MODEL,
+                },
+            }
+        )
+    )
 
 
 @csrf_exempt
