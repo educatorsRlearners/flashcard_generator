@@ -1781,3 +1781,43 @@ def test_gemini_success_records_llm_call_row(monkeypatch, gemini_key):
     assert row.status == "ok"
     assert row.prompt_tokens == 12
     assert row.completion_tokens == 7
+
+
+# --- real env -> Django settings wiring for LLM_GROK_*/LLM_OPENROUTER_*
+# (issue #121) --------------------------------------------------------------
+# #98 added LLM_GROK_*/LLM_OPENROUTER_* resolvers in submissions/llm.py, but
+# config/settings.py never actually read them from os.environ, so setting
+# them in a real .env had no effect - only override_settings() (which
+# patches Django settings directly, bypassing config/settings.py entirely)
+# made #98's tests pass. This test exercises the real pipeline: an env var
+# reaching config/settings.py via os.environ.get, and Django settings being
+# (re)built from that module, exactly like a real process start does -
+# rather than short-circuiting it with override_settings().
+
+
+def test_llm_grok_model_env_var_wires_through_real_settings_pipeline(monkeypatch):
+    import importlib
+
+    import django.conf
+
+    import config.settings as settings_module
+
+    monkeypatch.setenv("LLM_GROK_MODEL", "grok-real-env-wiring-test")
+    try:
+        # Re-run config/settings.py's module body with the env var set, the
+        # same way a fresh process import would.
+        importlib.reload(settings_module)
+        assert settings_module.LLM_GROK_MODEL == "grok-real-env-wiring-test"
+
+        # Force Django's LazySettings to re-derive itself from the (now
+        # reloaded) settings module, the same way it does on first access
+        # in a real process - no override_settings() involved.
+        django.conf.settings._wrapped = django.conf.empty
+        assert django.conf.settings.LLM_GROK_MODEL == "grok-real-env-wiring-test"
+
+        provider = llm.get_provider("grok")
+        assert provider.model == "grok-real-env-wiring-test"
+    finally:
+        monkeypatch.delenv("LLM_GROK_MODEL", raising=False)
+        importlib.reload(settings_module)
+        django.conf.settings._wrapped = django.conf.empty

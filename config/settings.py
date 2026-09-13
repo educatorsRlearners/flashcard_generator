@@ -159,6 +159,27 @@ LLM_OPENAI_API_KEY_ENV_VAR = os.environ.get("LLM_OPENAI_API_KEY_ENV_VAR", "")
 LLM_GEMINI_MODEL = os.environ.get("LLM_GEMINI_MODEL", "")
 LLM_GEMINI_API_KEY_ENV_VAR = os.environ.get("LLM_GEMINI_API_KEY_ENV_VAR", "")
 
+# Grok provider (issue #98; adapter in submissions/llm.py). A named
+# OpenAI-compatible provider pointed at xAI's chat-completions endpoint.
+# Optional per-provider overrides below follow the same fallback pattern as
+# LLM_OPENAI_* above: empty falls back to the hardcoded base_url/key env var
+# defaults in submissions/llm.py (or the generic LLM_MODEL for the model).
+LLM_GROK_BASE_URL = os.environ.get("LLM_GROK_BASE_URL", "")
+LLM_GROK_MODEL = os.environ.get("LLM_GROK_MODEL", "")
+LLM_GROK_API_KEY_ENV_VAR = os.environ.get("LLM_GROK_API_KEY_ENV_VAR", "")
+
+# OpenRouter provider (issue #84/#98; adapter in submissions/llm.py). A named
+# OpenAI-compatible provider pointed at OpenRouter's chat-completions
+# endpoint. Optional per-provider overrides below follow the same fallback
+# pattern as LLM_OPENAI_* above: empty falls back to the hardcoded
+# base_url/key env var defaults in submissions/llm.py (or the generic
+# LLM_MODEL for the model).
+LLM_OPENROUTER_BASE_URL = os.environ.get("LLM_OPENROUTER_BASE_URL", "")
+LLM_OPENROUTER_MODEL = os.environ.get("LLM_OPENROUTER_MODEL", "")
+LLM_OPENROUTER_API_KEY_ENV_VAR = os.environ.get(
+    "LLM_OPENROUTER_API_KEY_ENV_VAR", ""
+)
+
 # OpenCode Zen provider (issue #104; adapter in submissions/llm.py). A named
 # OpenAI-compatible provider pointed at Zen's OpenAI-compatible route
 # (https://opencode.ai/zen/v1/chat/completions). Optional per-provider
