@@ -265,12 +265,124 @@ def test_llm_usage_by_provider_json_retry_rate(client=Client()):
     assert by_provider["(unknown provider)"]["avg_latency_ms"] == 500.0
 
     content = response.content.decode()
-    assert "By provider" in content
+    assert "By provider + model" in content
     assert "anthropic" in content
     assert "33.3%" in content
     assert "$6.00" in content
     assert "$4.00" in content
     assert "$5.00" in content
+
+
+def test_llm_usage_by_provider_groups_by_provider_and_model():
+    """#103: two different models under the same provider get separate
+    rows, each with independently correct call_count/json_retried_count/
+    json_retry_rate (rather than being averaged together per-provider)."""
+    _make_call(
+        model="claude-a",
+        provider="anthropic",
+        cost="1.00",
+        latency_ms=100,
+        status="ok",
+        json_retried=True,
+        age=timedelta(hours=1),
+    )
+    _make_call(
+        model="claude-a",
+        provider="anthropic",
+        cost="1.00",
+        latency_ms=100,
+        status="ok",
+        json_retried=True,
+        age=timedelta(hours=1),
+    )
+    _make_call(
+        model="claude-b",
+        provider="anthropic",
+        cost="2.00",
+        latency_ms=200,
+        status="ok",
+        json_retried=False,
+        age=timedelta(hours=1),
+    )
+
+    client = Client()
+    response = client.get("/llm-usage/", {"window": "24h"})
+    ctx = response.context
+
+    rows = {(r["provider_display"], r["model_display"]): r for r in ctx["by_provider"]}
+    assert len(ctx["by_provider"]) == 2
+
+    claude_a = rows[("anthropic", "claude-a")]
+    assert claude_a["call_count"] == 2
+    assert claude_a["json_retried_count"] == 2
+    assert claude_a["json_retry_rate"] == 100.0
+
+    claude_b = rows[("anthropic", "claude-b")]
+    assert claude_b["call_count"] == 1
+    assert claude_b["json_retried_count"] == 0
+    assert claude_b["json_retry_rate"] == 0.0
+
+    content = response.content.decode()
+    assert "claude-a" in content
+    assert "claude-b" in content
+
+
+def test_llm_usage_by_provider_folds_blank_provider_and_model_independently():
+    """A blank provider with a real model, and a real provider with a
+    blank model, fold independently rather than collapsing into a single
+    combined fallback string."""
+    _make_call(
+        model="claude-a",
+        provider="",
+        cost="1.00",
+        latency_ms=100,
+        status="ok",
+        age=timedelta(hours=1),
+    )
+    _make_call(
+        model="",
+        provider="anthropic",
+        cost="1.00",
+        latency_ms=100,
+        status="ok",
+        age=timedelta(hours=1),
+    )
+
+    client = Client()
+    response = client.get("/llm-usage/", {"window": "24h"})
+    ctx = response.context
+
+    rows = {(r["provider_display"], r["model_display"]): r for r in ctx["by_provider"]}
+    assert ("(unknown provider)", "claude-a") in rows
+    assert ("anthropic", "(unknown model)") in rows
+
+
+def test_llm_usage_by_provider_ordered_by_call_count_descending():
+    _make_call(
+        model="claude-a",
+        provider="anthropic",
+        cost="1.00",
+        latency_ms=100,
+        status="ok",
+        age=timedelta(hours=1),
+    )
+    for _ in range(3):
+        _make_call(
+            model="gpt-4o",
+            provider="openai-compatible",
+            cost="1.00",
+            latency_ms=100,
+            status="ok",
+            age=timedelta(hours=1),
+        )
+
+    client = Client()
+    response = client.get("/llm-usage/", {"window": "24h"})
+    ctx = response.context
+
+    ordered = [(r["provider_display"], r["model_display"]) for r in ctx["by_provider"]]
+    assert ordered[0] == ("openai-compatible", "gpt-4o")
+    assert ordered[1] == ("anthropic", "claude-a")
 
 
 def test_llm_usage_by_provider_empty_state():
@@ -280,6 +392,7 @@ def test_llm_usage_by_provider_empty_state():
     assert response.context["by_provider"] == []
     content = response.content.decode()
     assert 'data-role="by-provider-empty"' in content
+    assert "By provider + model" in content
 
 
 def test_llm_usage_trend_buckets_present_for_each_window():

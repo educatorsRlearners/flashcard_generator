@@ -108,10 +108,17 @@ def test_json_payload_reflects_new_calls_and_matches_html_render():
     by_error = {row["error_class_display"]: row["count"] for row in data["by_error_class"]}
     assert by_error == {"RateLimitError": 1}
 
-    by_provider = {row["provider_display"]: row for row in data["by_provider"]}
-    assert by_provider["anthropic"]["call_count"] == 2
-    assert by_provider["anthropic"]["json_retried_count"] == 1
-    assert by_provider["anthropic"]["json_retry_rate"] == "50.0"
+    # Grouped by provider+model (#103): the two "anthropic" calls use
+    # different models, so they land in separate rows.
+    by_provider = {
+        (row["provider_display"], row["model_display"]): row for row in data["by_provider"]
+    }
+    assert by_provider[("anthropic", "claude-a")]["call_count"] == 1
+    assert by_provider[("anthropic", "claude-a")]["json_retried_count"] == 1
+    assert by_provider[("anthropic", "claude-a")]["json_retry_rate"] == "100.0"
+    assert by_provider[("anthropic", "claude-b")]["call_count"] == 1
+    assert by_provider[("anthropic", "claude-b")]["json_retried_count"] == 0
+    assert by_provider[("anthropic", "claude-b")]["json_retry_rate"] == "0.0"
 
     assert len(data["trend"]) >= 1
 
@@ -120,7 +127,33 @@ def test_json_payload_reflects_new_calls_and_matches_html_render():
     html = html_response.content.decode()
     assert f"${data['total_cost']}" in html
     assert f"{data['failure_rate']}%" in html
-    assert f"{by_provider['anthropic']['json_retry_rate']}%" in html
+    assert f"{by_provider[('anthropic', 'claude-a')]['json_retry_rate']}%" in html
+
+
+def test_json_by_provider_model_display_matches_html():
+    """#103: the JSON payload's `by_provider` rows carry `model_display`,
+    formatted consistently with the HTML render, so live-refresh output
+    stays byte-identical to a full reload for the new Model column."""
+    client = Client()
+    _make_call(
+        model="",
+        provider="openai-compatible",
+        cost="1.00",
+        latency_ms=100,
+        json_retried=True,
+        age=timedelta(hours=1),
+    )
+
+    html_response = client.get("/llm-usage/", {"window": "7d"})
+    json_response = client.get("/llm-usage/", {"window": "7d"}, **_JSON_HEADERS)
+    data = json_response.json()
+
+    row = data["by_provider"][0]
+    assert row["provider_display"] == "openai-compatible"
+    assert row["model_display"] == "(unknown model)"
+
+    html = html_response.content.decode()
+    assert "(unknown model)" in html
 
 
 def test_json_payload_respects_window_query_param():

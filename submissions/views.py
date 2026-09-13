@@ -76,13 +76,14 @@ def _llm_usage_context(window_key):
         row["model_display"] = row["model"] or "(unknown model)"
         row["avg_latency_ms"] = row["avg_latency_ms"] or 0
 
-    #: Per-provider JSON-retry breakdown (issue #100), blank provider folded
-    #: into "(unknown provider)" matching the ``by_model`` pattern above.
-    #: Grouped by provider only (not provider+model, see #103) - the
-    #: question this answers (``_docs/llm_portability.md`` §10) is asked at
-    #: the provider level.
+    #: Per-provider+model breakdown (issue #100, cost/latency/failure columns
+    #: added by #94, grouping refined to provider+model by #103). Blank
+    #: provider/model fold independently into "(unknown provider)" /
+    #: "(unknown model)", matching the ``by_model`` pattern above, so a
+    #: blank-provider+real-model row doesn't collapse into a combined
+    #: fallback string.
     by_provider = list(
-        calls.values("provider")
+        calls.values("provider", "model")
         .annotate(
             call_count=Count("id"),
             total_cost=Coalesce(Sum("estimated_cost_usd"), Value(0), output_field=_ZERO_COST),
@@ -94,6 +95,7 @@ def _llm_usage_context(window_key):
     )
     for row in by_provider:
         row["provider_display"] = row["provider"] or "(unknown provider)"
+        row["model_display"] = row["model"] or "(unknown model)"
         row["avg_latency_ms"] = row["avg_latency_ms"] or 0
         row["json_retry_rate"] = (
             round((row["json_retried_count"] / row["call_count"] * 100), 1)
@@ -176,6 +178,7 @@ def _llm_usage_json(context):
         "by_provider": [
             {
                 "provider_display": row["provider_display"],
+                "model_display": row["model_display"],
                 "call_count": row["call_count"],
                 "total_cost": floatformat(row["total_cost"], 2),
                 "failed_count": row["failed_count"],

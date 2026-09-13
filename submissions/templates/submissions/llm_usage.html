@@ -69,7 +69,7 @@
     {% endif %}
     </div>
 
-    <h2>By provider</h2>
+    <h2>By provider + model</h2>
     <div data-role="by-provider-section">
     {% if by_provider %}
         <div class="llm-usage__table-scroll">
@@ -77,6 +77,7 @@
             <thead>
                 <tr>
                     <th scope="col">Provider</th>
+                    <th scope="col">Model</th>
                     <th scope="col">Calls</th>
                     <th scope="col">Total cost</th>
                     <th scope="col">Failed</th>
@@ -89,6 +90,7 @@
             {% for row in by_provider %}
                 <tr>
                     <td data-role="provider">{{ row.provider_display }}</td>
+                    <td data-role="model">{{ row.model_display }}</td>
                     <td data-role="call-count">{{ row.call_count }}</td>
                     <td data-role="total-cost">${{ row.total_cost|floatformat:2 }}</td>
                     <td data-role="failed-count">{{ row.failed_count }}</td>

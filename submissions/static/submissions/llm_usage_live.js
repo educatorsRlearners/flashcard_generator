@@ -120,13 +120,15 @@
             "by-provider-table",
             "by-provider-empty",
             "No calls in this window.",
-            '<tr><th scope="col">Provider</th><th scope="col">Calls</th>' +
+            '<tr><th scope="col">Provider</th><th scope="col">Model</th>' +
+                '<th scope="col">Calls</th>' +
                 '<th scope="col">Total cost</th><th scope="col">Failed</th>' +
                 '<th scope="col">Avg latency (ms)</th>' +
                 '<th scope="col">JSON-retried</th><th scope="col">JSON-retry rate</th></tr>',
             function (row) {
                 return [
                     { role: "provider", text: row.provider_display },
+                    { role: "model", text: row.model_display },
                     { role: "call-count", text: row.call_count },
                     { role: "total-cost", text: "$" + row.total_cost },
                     { role: "failed-count", text: row.failed_count },
