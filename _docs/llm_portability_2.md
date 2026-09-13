@@ -1,6 +1,6 @@
 # Popup: LLM Provider/Model Selector — Spec
 
-> Builds on `llm-provider-portability-spec.md`. That spec made the backend
+> Builds on `_docs/llm_portability.md`. That spec made the backend
 > config-driven via `.env`. This spec adds a UI in the extension popup so the
 > provider/model can be chosen per-use, overriding the `.env` default.
 
