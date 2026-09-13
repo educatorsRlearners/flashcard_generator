@@ -72,6 +72,7 @@
     <h2>By provider</h2>
     <div data-role="by-provider-section">
     {% if by_provider %}
+        <div class="llm-usage__table-scroll">
         <table class="llm-usage__table" data-role="by-provider-table">
             <thead>
                 <tr>
@@ -98,6 +99,7 @@
             {% endfor %}
             </tbody>
         </table>
+        </div>
     {% else %}
         <p class="empty-state" data-role="by-provider-empty">No calls in this window.</p>
     {% endif %}

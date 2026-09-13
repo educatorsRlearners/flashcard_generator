@@ -290,3 +290,13 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
     border-bottom: 1px solid var(--border);
 }
 .llm-usage__table th { color: var(--muted); font-weight: 600; }
+
+/* By-provider table (UX fix, issue #94): at the page's 780px max-width, this
+   table's 7 columns squeeze <th> cells below their text's natural width, and
+   the site-wide overflow-wrap/word-break rule above then breaks single-word
+   headers like "Calls"/"Failed" mid-word instead of at a space. Keep headers
+   on one line and let the table scroll horizontally within its own
+   container instead of squeezing (matches the By model table's clean
+   single-line headers). */
+.llm-usage__table-scroll { overflow-x: auto; }
+[data-role="by-provider-table"] th { white-space: nowrap; }
