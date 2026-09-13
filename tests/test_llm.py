@@ -243,6 +243,118 @@ def test_structured_response_missing_required_field(monkeypatch, anthropic_key):
     assert exc.value.reason == "schema_violation"
 
 
+def test_fenced_structured_response_parses_without_retry(monkeypatch, anthropic_key):
+    schema = {"type": "object", "properties": {}, "required": []}
+    fenced = "```json\n" + json.dumps({"a": 1}) + "\n```"
+    client = _install_client(monkeypatch, [_response(fenced)])
+
+    result = llm.generate(system="s", prompt="p", response_format=schema)
+
+    assert result.parsed == {"a": 1}
+    assert len(client.messages.calls) == 1
+
+
+def test_unlabeled_fenced_structured_response_parses(monkeypatch, anthropic_key):
+    schema = {"type": "object", "properties": {}, "required": []}
+    fenced = "```\n" + json.dumps({"a": 1}) + "\n```"
+    client = _install_client(monkeypatch, [_response(fenced)])
+
+    result = llm.generate(system="s", prompt="p", response_format=schema)
+
+    assert result.parsed == {"a": 1}
+    assert len(client.messages.calls) == 1
+
+
+def test_malformed_json_retries_once_then_succeeds(monkeypatch, anthropic_key):
+    schema = {"type": "object", "properties": {}, "required": []}
+    client = _install_client(
+        monkeypatch,
+        [_response("not json at all"), _response(json.dumps({"a": 1}))],
+    )
+
+    result = llm.generate(system="s", prompt="p", response_format=schema)
+
+    assert result.parsed == {"a": 1}
+    assert len(client.messages.calls) == 2
+    second_call_content = client.messages.calls[1]["messages"][0]["content"]
+    assert llm.JSON_RETRY_INSTRUCTION in second_call_content
+    assert "not json at all" in second_call_content
+
+
+def test_schema_violation_retries_once_then_succeeds(monkeypatch, anthropic_key):
+    schema = {
+        "type": "object",
+        "properties": {"title": {"type": "string"}},
+        "required": ["title"],
+    }
+    client = _install_client(
+        monkeypatch,
+        [
+            _response(json.dumps({"other": 1})),
+            _response(json.dumps({"title": "ok"})),
+        ],
+    )
+
+    result = llm.generate(system="s", prompt="p", response_format=schema)
+
+    assert result.parsed == {"title": "ok"}
+    assert len(client.messages.calls) == 2
+
+
+def test_malformed_json_on_retry_too_raises(monkeypatch, anthropic_key):
+    schema = {"type": "object", "properties": {}, "required": []}
+    client = _install_client(
+        monkeypatch, [_response("still not json"), _response("still not json")]
+    )
+
+    with pytest.raises(llm.LLMBadResponseError) as exc:
+        llm.generate(system="s", prompt="p", response_format=schema)
+
+    assert exc.value.reason == "malformed_json"
+    assert len(client.messages.calls) == 2
+
+
+def test_json_retry_records_only_successful_call_usage(monkeypatch, anthropic_key):
+    from submissions.models import LLMCall
+
+    schema = {"type": "object", "properties": {}, "required": []}
+    bad = types.SimpleNamespace(
+        content=[_text_block("nope")],
+        stop_reason="end_turn",
+        usage=types.SimpleNamespace(input_tokens=100, output_tokens=100),
+    )
+    good = types.SimpleNamespace(
+        content=[_text_block(json.dumps({"a": 1}))],
+        stop_reason="end_turn",
+        usage=types.SimpleNamespace(input_tokens=7, output_tokens=3),
+    )
+    _install_client(monkeypatch, [bad, good])
+
+    result = llm.generate(system="s", prompt="p", response_format=schema)
+
+    assert result.usage == {"input_tokens": 7, "output_tokens": 3}
+    row = LLMCall.objects.get()
+    assert row.prompt_tokens == 7
+    assert row.completion_tokens == 3
+
+
+def test_transient_error_on_json_retry_recovers(monkeypatch, anthropic_key):
+    schema = {"type": "object", "properties": {}, "required": []}
+    client = _install_client(
+        monkeypatch,
+        [
+            _response("not json at all"),
+            FakeAPIError(500),
+            _response(json.dumps({"a": 1})),
+        ],
+    )
+
+    result = llm.generate(system="s", prompt="p", response_format=schema)
+
+    assert result.parsed == {"a": 1}
+    assert len(client.messages.calls) == 3
+
+
 def test_refusal_stop_reason_raises_bad_response(monkeypatch, anthropic_key):
     _install_client(monkeypatch, [_response("", stop_reason="refusal")])
 
@@ -574,6 +686,48 @@ def test_openai_schema_violation(monkeypatch, openai_key):
     with pytest.raises(llm.LLMBadResponseError) as exc:
         llm.generate(system="s", prompt="p", response_format=schema)
     assert exc.value.reason == "schema_violation"
+
+
+@override_settings(
+    LLM_PROVIDER="openai-compatible",
+    LLM_API_KEY_ENV_VAR="OPENAI_API_KEY",
+)
+def test_openai_malformed_json_retries_once_then_succeeds(monkeypatch, openai_key):
+    schema = {"type": "object", "properties": {}, "required": []}
+    client = _install_openai_client(
+        monkeypatch,
+        [
+            _openai_response("not json at all"),
+            _openai_response(json.dumps({"a": 1})),
+        ],
+    )
+
+    result = llm.generate(system="s", prompt="p", response_format=schema)
+
+    assert result.parsed == {"a": 1}
+    assert len(client.chat.completions.calls) == 2
+    second_call_messages = client.chat.completions.calls[1]["messages"]
+    user_content = second_call_messages[-1]["content"]
+    assert llm.JSON_RETRY_INSTRUCTION in user_content
+    assert "not json at all" in user_content
+
+
+@override_settings(
+    LLM_PROVIDER="openai-compatible",
+    LLM_API_KEY_ENV_VAR="OPENAI_API_KEY",
+)
+def test_openai_malformed_json_on_retry_too_raises(monkeypatch, openai_key):
+    schema = {"type": "object", "properties": {}, "required": []}
+    client = _install_openai_client(
+        monkeypatch,
+        [_openai_response("still not json"), _openai_response("still not json")],
+    )
+
+    with pytest.raises(llm.LLMBadResponseError) as exc:
+        llm.generate(system="s", prompt="p", response_format=schema)
+
+    assert exc.value.reason == "malformed_json"
+    assert len(client.chat.completions.calls) == 2
 
 
 @override_settings(

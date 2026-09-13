@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -54,6 +55,19 @@ MAX_ATTEMPTS: int = 4
 #: timeout); non-transient errors propagate on the first attempt.
 RETRY_BACKOFF_BASE_SECONDS: float = 0.5
 RETRY_BACKOFF_MAX_SECONDS: float = 8.0
+
+#: Corrective follow-up sent once, per ``generate()`` call, when a
+#: structured-output reply comes back as unparseable or schema-invalid JSON
+#: (issue #85 / ``_docs/llm_portability.md`` §5).
+JSON_RETRY_INSTRUCTION: str = (
+    "Your previous response was not valid JSON matching the requested "
+    "schema. Return only JSON matching the schema — no markdown, no "
+    "code fences, no commentary."
+)
+
+#: ``LLMBadResponseError.reason`` values that qualify for the one JSON
+#: retry; any other reason (refusal/truncated/empty) is not retried here.
+_JSON_RETRYABLE_REASONS = frozenset({"malformed_json", "schema_violation"})
 
 
 # --- Exception hierarchy ------------------------------------------------
@@ -216,7 +230,21 @@ class Provider:
                         _sleep(_backoff_seconds(attempt, mapped))
                         continue
                     raise mapped from None
-                result = self._build_result(raw, response_format)
+                if response_format is not None:
+                    try:
+                        result = self._build_result(raw, response_format)
+                    except LLMBadResponseError as exc:
+                        if exc.reason not in _JSON_RETRYABLE_REASONS:
+                            raise
+                        result = self._retry_malformed_json(
+                            system=system,
+                            prompt=prompt,
+                            response_format=response_format,
+                            max_tokens=max_tokens,
+                            bad_raw=raw,
+                        )
+                else:
+                    result = self._build_result(raw, response_format)
                 break
         except LLMError as exc:
             _record_llm_call(
@@ -263,6 +291,50 @@ class Provider:
     def _extract(self, raw: Any) -> tuple[str, Optional[str], dict]:
         """Return (text, stop_reason, usage) from a provider response."""
         raise NotImplementedError  # pragma: no cover
+
+    def _retry_malformed_json(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        response_format: dict,
+        max_tokens: int,
+        bad_raw: Any,
+    ) -> LLMResult:
+        """One corrective follow-up when a structured-output reply is
+        unparseable or schema-invalid JSON (issue #85).
+
+        Sends a fresh, single-turn call (no prior assistant turn replayed,
+        matching ``_call``'s ``messages=[{"role": "user", ...}]`` shape):
+        the original prompt, the bad reply's raw text, and an explicit
+        "return only JSON" instruction. The follow-up call gets its own
+        transient-error retry budget (``MAX_ATTEMPTS``-sized, independent of
+        the caller's attempt loop); if the re-parsed follow-up is itself
+        malformed/schema-invalid, that exception propagates unchanged - this
+        is exactly one retry, never a loop.
+        """
+        bad_text, _, _ = self._extract(bad_raw)
+        follow_up_prompt = f"{prompt}\n\n{bad_text}\n\n{JSON_RETRY_INSTRUCTION}"
+
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                retry_raw = self._call(
+                    system=system,
+                    prompt=follow_up_prompt,
+                    response_format=response_format,
+                    max_tokens=max_tokens,
+                )
+            except LLMError:
+                raise
+            except BaseException as exc:  # noqa: BLE001 - provider SDK error
+                mapped = self._map_exception(exc)
+                if _is_retryable(mapped) and attempt < MAX_ATTEMPTS:
+                    _sleep(_backoff_seconds(attempt, mapped))
+                    continue
+                raise mapped from None
+            return self._build_result(retry_raw, response_format)
 
     # -- shared response handling --
 
@@ -494,9 +566,30 @@ def _extract_retry_after(exc: BaseException) -> Optional[float]:
 # --- Structured-output parsing ------------------------------------
 
 
+#: Matches a whole response wrapped in a markdown code fence, with an
+#: optional ``json`` language tag on the opening fence - e.g. ```` ```json\n
+#: {...}\n``` ```` or ```` ```\n{...}\n``` ````. Applied to already-trimmed
+#: text; only the fenced body is captured.
+_CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*\n(?P<body>.*)\n```$", re.DOTALL)
+
+
+def _strip_code_fence(text: str) -> str:
+    """Strip a wrapping markdown code fence, if the trimmed text is one.
+
+    Text with no fence is returned unchanged (verbatim, untrimmed) so
+    ``json.loads`` sees exactly what it always has.
+    """
+    trimmed = text.strip()
+    match = _CODE_FENCE_RE.match(trimmed)
+    if match:
+        return match.group("body")
+    return text
+
+
 def _parse_structured(text: str, schema: dict) -> Any:
+    candidate = _strip_code_fence(text)
     try:
-        obj = json.loads(text)
+        obj = json.loads(candidate)
     except (ValueError, TypeError) as exc:
         raise LLMBadResponseError(
             "structured response was not valid JSON", reason="malformed_json"
