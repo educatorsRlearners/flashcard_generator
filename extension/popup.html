@@ -57,7 +57,7 @@
         margin-top: 10px;
         font-weight: 600;
     }
-    #deck-select, #deck-new {
+    #deck-select, #deck-new, #provider-select, #model-select {
         box-sizing: border-box;
         width: 100%;
         margin-top: 4px;
@@ -74,13 +74,28 @@
         font-size: 12px;
         color: #666;
     }
-    #deck-select:focus-visible, #deck-new:focus-visible {
+    #deck-select:focus-visible, #deck-new:focus-visible,
+    #provider-select:focus-visible, #model-select:focus-visible {
         outline: 2px solid #2f6fed;
         outline-offset: 2px;
+    }
+    #llm-key-banner {
+        margin: 8px 0 0;
+        font-size: 12px;
+        color: #b00020;
     }
 </style>
 </head>
 <body>
+    <label class="deck-label" for="provider-select">Provider:</label>
+    <select id="provider-select">
+        <option value="">Loading providers…</option>
+    </select>
+    <label class="deck-label" for="model-select">Model:</label>
+    <select id="model-select">
+        <option value="">Loading models…</option>
+    </select>
+    <p id="llm-key-banner" role="status" aria-live="polite" hidden></p>
     <button id="generate" type="button">Generate flashcards from this page</button>
     <label class="deck-label" for="deck-select">Anki deck (optional):</label>
     <select id="deck-select" aria-describedby="deck-optional-hint">

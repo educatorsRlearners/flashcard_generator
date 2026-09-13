@@ -26,6 +26,21 @@
     var deckSelect = document.getElementById("deck-select");
     var deckNew = document.getElementById("deck-new");
     var deckNote = document.getElementById("deck-note");
+    var providerSelect = document.getElementById("provider-select");
+    var modelSelect = document.getElementById("model-select");
+    var llmBanner = document.getElementById("llm-key-banner");
+
+    // LLM selector state (issues #107/#108/#109). llmConfigCache is the
+    // cached GET .../llm-config/ response ({providers, byName, default})
+    // reused for every provider change so switching never re-fetches.
+    // llmReady means the dropdowns are populated from a live config and
+    // submit may include provider/model; flowRunning tracks runFlow()'s
+    // hold on the Generate button so the banner gating never re-enables
+    // it mid-generation.
+    var llmConfigCache = null;
+    var llmReady = false;
+    var flowRunning = false;
+    var llmChangeListenersAttached = false;
 
     function setStatus(text, isError) {
         statusEl.textContent = text;
@@ -43,7 +58,11 @@
     function showError(message) {
         setBusy(false);
         setStatus(message, true);
+        flowRunning = false;
         button.disabled = false;
+        // Re-apply the missing-key gating (#109): if the banner condition
+        // holds, the button goes straight back to disabled.
+        updateLlmBanner();
     }
 
     function sleep(ms) {
@@ -128,6 +147,279 @@
         var picked = deckSelect && !deckSelect.disabled && typeof deckSelect.value === "string"
             ? deckSelect.value.trim() : "";
         return picked;
+    }
+
+    // LLM provider/model selector (issues #107/#108/#109): dropdowns
+    // populated from GET .../llm-config/ (#105 shape:
+    // {"providers": [{"name", "models", "key_configured"}], "default":
+    // {"provider", "model"}}), persisted via chrome.storage.local key
+    // `llmSelection` -> {provider, model}, with a missing-key banner that
+    // gates the Generate button. Curated model lists are backend-owned -
+    // no provider/model names are hardcoded here.
+    var LLM_SELECTION_KEY = "llmSelection";
+
+    // Reads the stored {provider, model}; never rejects - an unreadable
+    // chrome.storage.local (or a missing `storage` manifest permission,
+    // which leaves chrome.storage undefined) degrades silently to null
+    // so the popup still opens seeded from the .env default (#108).
+    function readStoredLlmSelection() {
+        return new Promise(function (resolve) {
+            var storage = null;
+            try {
+                storage = chrome.storage && chrome.storage.local ? chrome.storage.local : null;
+            } catch (err) { storage = null; }
+            if (!storage) { resolve(null); return; }
+            try {
+                storage.get(LLM_SELECTION_KEY, function (items) {
+                    try {
+                        if (chrome.runtime && chrome.runtime.lastError) { resolve(null); return; }
+                    } catch (err) { /* ignore */ }
+                    var value = items ? items[LLM_SELECTION_KEY] : null;
+                    resolve(value === undefined ? null : value);
+                });
+            } catch (err) {
+                resolve(null);
+            }
+        });
+    }
+
+    // Fire-and-forget save-on-change (#108); write failures degrade
+    // silently, never surfacing in the popup.
+    function writeStoredLlmSelection(selection) {
+        try {
+            var storage = chrome.storage && chrome.storage.local ? chrome.storage.local : null;
+            if (!storage) { return; }
+            var items = {};
+            items[LLM_SELECTION_KEY] = selection;
+            var result = storage.set(items, function () { /* ignore lastError */ });
+            // MV3 promise-style storage returns a thenable; swallow async
+            // rejections so a denied write never becomes uncaught.
+            if (result && typeof result.catch === "function") {
+                result.catch(function () { /* persistence silently degrades */ });
+            }
+        } catch (err) { /* persistence silently degrades */ }
+    }
+
+    function llmProviderEntry(name) {
+        if (!llmConfigCache || !llmConfigCache.byName) { return undefined; }
+        return llmConfigCache.byName[name];
+    }
+
+    function clearSelect(selectEl) {
+        // textContent = "" removes all options without innerHTML.
+        selectEl.textContent = "";
+    }
+
+    function addSelectOption(selectEl, value, text) {
+        var opt = document.createElement("option");
+        opt.value = value;
+        opt.textContent = text;
+        selectEl.appendChild(opt);
+        return opt;
+    }
+
+    // .env-default fallback for seeding (#107): unknown default provider
+    // falls back to the first provider, unknown default model to the
+    // first model of the chosen provider. Never blocks Generate.
+    function resolveDefaultLlm(providers, byName, def) {
+        var providerName = (def && typeof def.provider === "string" && byName[def.provider])
+            ? def.provider : providers[0].name;
+        var models = byName[providerName].models || [];
+        var modelName = (def && providerName === def.provider && typeof def.model === "string" &&
+            models.indexOf(def.model) !== -1) ? def.model : (models[0] || "");
+        return { provider: providerName, model: modelName };
+    }
+
+    function populateModelSelect(providerName, selectedModel) {
+        var entry = llmProviderEntry(providerName);
+        var models = (entry && Array.isArray(entry.models)) ? entry.models : [];
+        clearSelect(modelSelect);
+        if (!models.length) {
+            // Provider with an empty model list: disabled, submit omits
+            // `model` (#107 edge case).
+            addSelectOption(modelSelect, "", "No models available for this provider.");
+            modelSelect.disabled = true;
+            return;
+        }
+        models.forEach(function (modelName) {
+            addSelectOption(modelSelect, modelName, modelName);
+        });
+        modelSelect.disabled = false;
+        modelSelect.value = models.indexOf(selectedModel) !== -1 ? selectedModel : models[0];
+    }
+
+    // Missing-key banner + Generate gating (#109). Presence check only:
+    // reads key_configured off the cached config, never re-fetches.
+    // Fail-open: unknown key state (no cache, absent DOM, unknown
+    // provider) shows no banner and leaves Generate enabled.
+    function updateLlmBanner() {
+        if (!llmBanner || !providerSelect || !button) { return; }
+        var entry = llmProviderEntry(providerSelect.value);
+        if (!entry || entry.key_configured) {
+            llmBanner.textContent = "";
+            llmBanner.hidden = true;
+            if (!flowRunning) { button.disabled = false; }
+            return;
+        }
+        var displayName = providerSelect.value;
+        try {
+            var selected = providerSelect.selectedOptions && providerSelect.selectedOptions[0];
+            if (selected && selected.textContent) { displayName = selected.textContent; }
+        } catch (err) { /* fall back to the raw provider id */ }
+        llmBanner.textContent =
+            "No API key configured for " + displayName +
+            " — add it to your backend `.env` and restart.";
+        llmBanner.hidden = false;
+        button.disabled = true;
+    }
+
+    function onProviderChange() {
+        var name = providerSelect.value;
+        var entry = llmProviderEntry(name);
+        if (!entry) { return; } // degraded/unknown state: leave storage alone
+        var models = Array.isArray(entry.models) ? entry.models : [];
+        // Reset to the provider's first model, or its .env-default model
+        // when it belongs to the newly selected provider (#107).
+        var def = llmConfigCache.default || {};
+        var nextModel = (name === def.provider && typeof def.model === "string" &&
+            models.indexOf(def.model) !== -1) ? def.model : (models[0] || "");
+        populateModelSelect(name, nextModel);
+        writeStoredLlmSelection({ provider: name, model: modelSelect.disabled ? "" : modelSelect.value });
+        updateLlmBanner();
+    }
+
+    function onModelChange() {
+        if (!llmProviderEntry(providerSelect.value)) { return; }
+        writeStoredLlmSelection({ provider: providerSelect.value, model: modelSelect.value });
+    }
+
+    // Applies a usable config response: seeds from stored-beats-default
+    // (#108), renders both dropdowns, persists first-use/stale seeds,
+    // and syncs the banner (#109).
+    function applyLlmConfig(data, stored) {
+        var providers = (data.providers || []).filter(function (p) {
+            return p && typeof p.name === "string" && p.name && Array.isArray(p.models);
+        });
+        if (!providers.length) { degradeLlmConfig(); return; }
+        var byName = {};
+        providers.forEach(function (p) { byName[p.name] = p; });
+        var def = (data.default && typeof data.default === "object") ? data.default : {};
+        llmConfigCache = { providers: providers, byName: byName, default: def };
+
+        var seed;
+        var needsWrite = false;
+        var storedUsable = stored && typeof stored.provider === "string" &&
+            typeof stored.model === "string" && !!byName[stored.provider] &&
+            ((byName[stored.provider].models || []).indexOf(stored.model) !== -1 ||
+                ((byName[stored.provider].models || []).length === 0 && stored.model === ""));
+        if (storedUsable) {
+            seed = { provider: stored.provider, model: stored.model };
+        } else {
+            if (stored && typeof stored.provider === "string" && typeof stored.model === "string" &&
+                stored.provider && byName[stored.provider]) {
+                // Valid provider, stale model: keep the provider, fall
+                // back to its first curated model (#108).
+                var keptModels = byName[stored.provider].models || [];
+                seed = { provider: stored.provider, model: keptModels[0] || "" };
+            } else {
+                // First-ever use (missing/corrupt) or stale provider:
+                // seed from the .env default (#107/#108).
+                seed = resolveDefaultLlm(providers, byName, def);
+            }
+            needsWrite = true;
+        }
+
+        clearSelect(providerSelect);
+        providers.forEach(function (p) {
+            // Option text is the backend id verbatim - the banner's
+            // display name is read back from the selected option (#109).
+            addSelectOption(providerSelect, p.name, p.name);
+        });
+        providerSelect.disabled = false;
+        providerSelect.value = seed.provider;
+        populateModelSelect(seed.provider, seed.model);
+
+        if (!llmChangeListenersAttached) {
+            providerSelect.addEventListener("change", onProviderChange);
+            modelSelect.addEventListener("change", onModelChange);
+            llmChangeListenersAttached = true;
+        }
+
+        llmReady = true;
+        if (needsWrite) {
+            writeStoredLlmSelection({
+                provider: providerSelect.value,
+                model: modelSelect.disabled ? "" : modelSelect.value,
+            });
+        }
+        updateLlmBanner();
+    }
+
+    // Graceful degrade (#107): single disabled options, Generate stays
+    // enabled, submit omits provider/model so the backend falls back to
+    // .env-implicit behavior (#106). Mirrors the deck picker's
+    // "unavailable, don't block submit" philosophy.
+    function degradeLlmConfig() {
+        llmConfigCache = null;
+        llmReady = false;
+        if (providerSelect) {
+            clearSelect(providerSelect);
+            addSelectOption(providerSelect, "", "Provider list unavailable — using backend default.");
+            providerSelect.disabled = true;
+        }
+        if (modelSelect) {
+            clearSelect(modelSelect);
+            addSelectOption(modelSelect, "", "Model list unavailable — using backend default.");
+            modelSelect.disabled = true;
+        }
+        if (llmBanner) {
+            llmBanner.textContent = "";
+            llmBanner.hidden = true;
+        }
+        if (!flowRunning) { button.disabled = false; }
+    }
+
+    // Mirrors loadDecks(): reuses the shared ensureBackend() handshake +
+    // fetchOrNetworkError(), GETs the #105 config endpoint, and applies
+    // the stored-beats-default decision once config + storage both
+    // resolve (read concurrently on popup open).
+    function loadLlmConfig() {
+        // Defensive (#109): absent dropdown DOM no-ops without throwing
+        // and leaves Generate enabled.
+        if (!providerSelect || !modelSelect) { return; }
+        var storedPromise = readStoredLlmSelection();
+        ensureBackend().then(function (backend) {
+            return fetchOrNetworkError(backend.baseUrl + "/api/extension/llm-config/", {
+                headers: { Authorization: "Bearer " + backend.token },
+            }).then(function (response) {
+                if (!response.ok) { throw { kind: "http" }; }
+                return response.json();
+            }).then(function (data) {
+                return storedPromise.then(function (stored) {
+                    return { data: data, stored: stored };
+                });
+            });
+        }).then(function (combined) {
+            if (!combined.data || !Array.isArray(combined.data.providers)) {
+                degradeLlmConfig();
+                return;
+            }
+            applyLlmConfig(combined.data, combined.stored);
+        }).catch(function () {
+            // Network error, non-2xx, unusable data, or native-host
+            // handshake failure: degrade, never block submit (fail-open).
+            degradeLlmConfig();
+        });
+    }
+
+    // Currently selected provider/model for the submit body (#106 field
+    // names). Empty while degraded so the backend uses .env behavior.
+    function chosenLlm() {
+        if (!llmReady || !providerSelect || !modelSelect) { return {}; }
+        if (providerSelect.disabled || !providerSelect.value) { return {}; }
+        var out = { provider: providerSelect.value };
+        if (!modelSelect.disabled && modelSelect.value) { out.model = modelSelect.value; }
+        return out;
     }
     // Exactly one request/response over connectNative (see host.py) -
     // content is ignored by v1, so any message triggers it.
@@ -227,6 +519,7 @@
             if (data.review_url) {
                 setBusy(false);
                 setStatus("Done — review tab opened.");
+                flowRunning = false;
                 chrome.tabs.create({ url: data.review_url });
                 return; // leave the button disabled - nothing left to retry
             }
@@ -240,6 +533,11 @@
         var payload = { url: tabUrl, title: content.title || "", text: content.text, images: content.images ?? [] };
         var deck = chosenDeckName();
         if (deck) { payload.deck_name = deck; }
+        // Per-request LLM override (#106 field names, sent whenever the
+        // dropdowns hold a live selection; omitted while degraded).
+        var llm = chosenLlm();
+        if (llm.provider) { payload.provider = llm.provider; }
+        if (llm.model) { payload.model = llm.model; }
         return fetchOrNetworkError(baseUrl + "/api/extension/submit/", {
             method: "POST",
             headers: {
@@ -261,6 +559,7 @@
 
     function runFlow() {
         button.disabled = true;
+        flowRunning = true;
         setBusy(true);
         setStatus("Connecting to backend…");
 
@@ -319,9 +618,14 @@
         runFlow();
     });
 
-    if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", loadDecks);
-    } else {
+    function loadPopup() {
         loadDecks();
+        loadLlmConfig();
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", loadPopup);
+    } else {
+        loadPopup();
     }
 }());
