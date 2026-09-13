@@ -1,14 +1,121 @@
 import re
+from datetime import timedelta
 
 from django.contrib import messages
-from django.db.models import Count, Q
+from django.db.models import Avg, Count, DecimalField, Q, Sum, Value
+from django.db.models.functions import Coalesce, TruncDate, TruncHour
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 from django.utils import timezone
 
-from .models import Batch, Card, Feedback, SubmittedURL
+from .models import Batch, Card, Feedback, LLMCall, SubmittedURL
 from .tasks import push_accepted_cards_task
+
+
+# --- LLM usage dashboard (issue #88) -----------------------------------
+
+#: window key -> timedelta used to compute the window start against
+#: ``timezone.now()`` (UTC; see ``config/settings.py``'s ``TIME_ZONE`` /
+#: ``USE_TZ``). Order matters for the page's window links.
+LLM_USAGE_WINDOWS = {
+    "24h": timedelta(hours=24),
+    "7d": timedelta(days=7),
+    "30d": timedelta(days=30),
+}
+LLM_USAGE_DEFAULT_WINDOW = "7d"
+
+_ZERO_COST = DecimalField(max_digits=12, decimal_places=6)
+
+
+def llm_usage(request):
+    """Aggregated ``LLMCall`` cost/latency/volume/failure dashboard (#88).
+
+    Everything shown is computed with database aggregation
+    (``Sum``/``Count``/``Avg``/``annotate().values()``) rather than by
+    iterating matching rows in Python, so the page stays cheap regardless
+    of how many ``LLMCall`` rows exist in the selected window.
+    """
+    window_key = request.GET.get("window")
+    if window_key not in LLM_USAGE_WINDOWS:
+        window_key = LLM_USAGE_DEFAULT_WINDOW
+    window_delta = LLM_USAGE_WINDOWS[window_key]
+    now = timezone.now()
+    window_start = now - window_delta
+
+    calls = LLMCall.objects.filter(created_at__gte=window_start)
+
+    totals = calls.aggregate(
+        total_calls=Count("id"),
+        total_cost=Coalesce(Sum("estimated_cost_usd"), Value(0), output_field=_ZERO_COST),
+        failed_calls=Count("id", filter=Q(status=LLMCall.Status.FAILED)),
+        avg_latency_ms=Avg("latency_ms"),
+    )
+    total_calls = totals["total_calls"]
+    failed_calls = totals["failed_calls"]
+    failure_rate = round((failed_calls / total_calls * 100), 1) if total_calls else 0.0
+    avg_latency_ms = totals["avg_latency_ms"] or 0
+
+    #: Per-model breakdown, blank model folded into an explicit
+    #: "(unknown model)" label so it sorts/groups instead of being dropped.
+    by_model = list(
+        calls.values("model")
+        .annotate(
+            call_count=Count("id"),
+            total_cost=Coalesce(Sum("estimated_cost_usd"), Value(0), output_field=_ZERO_COST),
+            failed_count=Count("id", filter=Q(status=LLMCall.Status.FAILED)),
+            avg_latency_ms=Avg("latency_ms"),
+        )
+        .order_by("-total_cost")
+    )
+    for row in by_model:
+        row["model_display"] = row["model"] or "(unknown model)"
+        row["avg_latency_ms"] = row["avg_latency_ms"] or 0
+
+    #: Failed-call breakdown by error_class, descending by count.
+    by_error_class = list(
+        calls.filter(status=LLMCall.Status.FAILED)
+        .values("error_class")
+        .annotate(count=Count("id"))
+        .order_by("-count")
+    )
+    for row in by_error_class:
+        row["error_class_display"] = row["error_class"] or "(unknown error)"
+
+    #: Time-bucketed trend: hourly for 24h, daily (UTC calendar day)
+    #: otherwise.
+    if window_key == "24h":
+        trunc = TruncHour("created_at")
+    else:
+        trunc = TruncDate("created_at")
+    trend = list(
+        calls.annotate(bucket=trunc)
+        .values("bucket")
+        .annotate(
+            call_count=Count("id"),
+            total_cost=Coalesce(Sum("estimated_cost_usd"), Value(0), output_field=_ZERO_COST),
+            avg_latency_ms=Avg("latency_ms"),
+        )
+        .order_by("bucket")
+    )
+    for row in trend:
+        row["avg_latency_ms"] = row["avg_latency_ms"] or 0
+
+    context = {
+        "window": window_key,
+        "windows": list(LLM_USAGE_WINDOWS.keys()),
+        "window_start": window_start,
+        "total_calls": total_calls,
+        "total_cost": totals["total_cost"],
+        "failed_calls": failed_calls,
+        "failure_rate": failure_rate,
+        "avg_latency_ms": avg_latency_ms,
+        "by_model": by_model,
+        "by_error_class": by_error_class,
+        "trend": trend,
+        "trend_bucket_label": "hour (UTC)" if window_key == "24h" else "day (UTC)",
+    }
+    return render(request, "submissions/llm_usage.html", context)
 
 
 # --- Card review grid (issue #9) --------------------------------------

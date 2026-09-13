@@ -254,3 +254,27 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
     object-fit: contain;
     background: var(--surface);
 }
+
+/* LLM usage dashboard (issue #88) */
+.llm-usage__windows { display: flex; gap: 0.75rem; margin-bottom: 0.25rem; }
+.llm-usage__window { text-decoration: none; }
+.llm-usage__window--active { color: var(--text); }
+.llm-usage__since { color: var(--muted); font-size: 0.9rem; margin-top: 0; }
+.llm-usage__stats {
+    list-style: none;
+    margin: 1rem 0;
+    padding: 0;
+    display: grid;
+    gap: 0.4rem;
+}
+.llm-usage__table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 1.5rem;
+}
+.llm-usage__table th, .llm-usage__table td {
+    text-align: left;
+    padding: 0.4rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+}
+.llm-usage__table th { color: var(--muted); font-weight: 600; }

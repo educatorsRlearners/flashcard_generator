@@ -5,6 +5,7 @@ from . import views
 app_name = "submissions"
 
 urlpatterns = [
+    path("llm-usage/", views.llm_usage, name="llm_usage"),
     path("batch/<int:pk>/review/", views.card_review, name="card_review"),
     path(
         "batch/<int:batch_pk>/review/card/<int:card_pk>/decision/",

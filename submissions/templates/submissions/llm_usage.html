@@ -1,0 +1,109 @@
+{% extends "submissions/base.html" %}
+
+{% block title %}LLM usage - Flashcard Generator{% endblock %}
+
+{% block content %}
+    <h1>LLM usage</h1>
+
+    <nav class="llm-usage__windows" aria-label="Time window">
+        {% for w in windows %}
+            {% if w == window %}
+                <strong class="llm-usage__window llm-usage__window--active"
+                        data-role="window-link" data-window="{{ w }}">{{ w }}</strong>
+            {% else %}
+                <a class="llm-usage__window" href="?window={{ w }}"
+                   data-role="window-link" data-window="{{ w }}">{{ w }}</a>
+            {% endif %}
+        {% endfor %}
+    </nav>
+
+    <p class="llm-usage__since" data-role="window-since">
+        Since {{ window_start|date:"Y-m-d H:i:s" }} UTC (window: {{ window }})
+    </p>
+
+    <section class="llm-usage__totals" aria-label="Totals for the selected window">
+        <ul class="llm-usage__stats">
+            <li>Total calls: <strong data-role="total-calls">{{ total_calls }}</strong></li>
+            <li>Total estimated cost: <strong data-role="total-cost">${{ total_cost|floatformat:2 }}</strong></li>
+            <li>Failed calls: <strong data-role="failed-calls">{{ failed_calls }}</strong></li>
+            <li>Failure rate: <strong data-role="failure-rate">{{ failure_rate }}%</strong></li>
+            <li>Average latency: <strong data-role="avg-latency">{{ avg_latency_ms|floatformat:0 }} ms</strong></li>
+        </ul>
+    </section>
+
+    <h2>By model</h2>
+    {% if by_model %}
+        <table class="llm-usage__table" data-role="by-model-table">
+            <thead>
+                <tr>
+                    <th scope="col">Model</th>
+                    <th scope="col">Calls</th>
+                    <th scope="col">Total cost</th>
+                    <th scope="col">Failed</th>
+                    <th scope="col">Avg latency (ms)</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for row in by_model %}
+                <tr>
+                    <td data-role="model">{{ row.model_display }}</td>
+                    <td data-role="call-count">{{ row.call_count }}</td>
+                    <td data-role="total-cost">${{ row.total_cost|floatformat:2 }}</td>
+                    <td data-role="failed-count">{{ row.failed_count }}</td>
+                    <td data-role="avg-latency">{{ row.avg_latency_ms|floatformat:0 }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p class="empty-state" data-role="by-model-empty">No calls in this window.</p>
+    {% endif %}
+
+    <h2>Failed calls by error class</h2>
+    {% if by_error_class %}
+        <table class="llm-usage__table" data-role="by-error-class-table">
+            <thead>
+                <tr>
+                    <th scope="col">Error class</th>
+                    <th scope="col">Count</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for row in by_error_class %}
+                <tr>
+                    <td data-role="error-class">{{ row.error_class_display }}</td>
+                    <td data-role="error-count">{{ row.count }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p class="empty-state" data-role="by-error-class-empty">No failed calls in this window.</p>
+    {% endif %}
+
+    <h2>Trend by {{ trend_bucket_label }}</h2>
+    {% if trend %}
+        <table class="llm-usage__table" data-role="trend-table">
+            <thead>
+                <tr>
+                    <th scope="col">Bucket ({{ trend_bucket_label }})</th>
+                    <th scope="col">Calls</th>
+                    <th scope="col">Total cost</th>
+                    <th scope="col">Avg latency (ms)</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for row in trend %}
+                <tr>
+                    <td data-role="bucket">{{ row.bucket }}</td>
+                    <td data-role="call-count">{{ row.call_count }}</td>
+                    <td data-role="total-cost">${{ row.total_cost|floatformat:2 }}</td>
+                    <td data-role="avg-latency">{{ row.avg_latency_ms|floatformat:0 }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p class="empty-state" data-role="trend-empty">No calls in this window.</p>
+    {% endif %}
+{% endblock %}

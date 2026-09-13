@@ -13,6 +13,10 @@ Commands
   AnkiConnect (idempotent). Requires Anki running with the AnkiConnect
   add-on. Settings: `ANKI_DECK_NAME` (default "Flashcard Generator"),
   `ANKI_CONNECT_URL` (default http://127.0.0.1:8765)
+- `/llm-usage/` - LLM usage dashboard (cost/latency/volume/failure
+  aggregates over a recent time window: `?window=24h`, `7d` (default), or
+  `30d`); same `LLMCall` data as the `llm_usage` management command above,
+  shown aggregated over time instead of one row per call
 
 Rules
 
