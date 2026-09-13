@@ -77,6 +77,9 @@
                 <tr>
                     <th scope="col">Provider</th>
                     <th scope="col">Calls</th>
+                    <th scope="col">Total cost</th>
+                    <th scope="col">Failed</th>
+                    <th scope="col">Avg latency (ms)</th>
                     <th scope="col">JSON-retried</th>
                     <th scope="col">JSON-retry rate</th>
                 </tr>
@@ -86,6 +89,9 @@
                 <tr>
                     <td data-role="provider">{{ row.provider_display }}</td>
                     <td data-role="call-count">{{ row.call_count }}</td>
+                    <td data-role="total-cost">${{ row.total_cost|floatformat:2 }}</td>
+                    <td data-role="failed-count">{{ row.failed_count }}</td>
+                    <td data-role="avg-latency">{{ row.avg_latency_ms|floatformat:0 }}</td>
                     <td data-role="json-retried-count">{{ row.json_retried_count }}</td>
                     <td data-role="json-retry-rate">{{ row.json_retry_rate|floatformat:1 }}%</td>
                 </tr>

@@ -191,30 +191,39 @@ def test_llm_usage_by_provider_json_retry_rate(client=Client()):
         provider="anthropic",
         cost="1.00",
         latency_ms=100,
+        status="ok",
         json_retried=True,
         age=timedelta(hours=1),
     )
     _make_call(
         model="claude-a",
         provider="anthropic",
-        cost="1.00",
-        latency_ms=100,
+        cost="2.00",
+        latency_ms=200,
+        status="ok",
         json_retried=False,
         age=timedelta(hours=1),
     )
     _make_call(
         model="claude-a",
         provider="anthropic",
-        cost="1.00",
-        latency_ms=100,
+        cost="3.00",
+        latency_ms=300,
+        status="failed",
+        error_class="RateLimitError",
         json_retried=False,
         age=timedelta(hours=1),
     )
+    # Every call for this provider fails - failed_count should equal
+    # call_count, and cost/latency must still be counted (recorded
+    # regardless of status, same as by_model).
     _make_call(
         model="gpt-4o",
         provider="openai-compatible",
-        cost="1.00",
-        latency_ms=100,
+        cost="4.00",
+        latency_ms=400,
+        status="failed",
+        error_class="AuthError",
         json_retried=True,
         age=timedelta(hours=1),
     )
@@ -222,8 +231,9 @@ def test_llm_usage_by_provider_json_retry_rate(client=Client()):
     _make_call(
         model="",
         provider="",
-        cost="1.00",
-        latency_ms=100,
+        cost="5.00",
+        latency_ms=500,
+        status="ok",
         json_retried=False,
         age=timedelta(hours=1),
     )
@@ -236,17 +246,31 @@ def test_llm_usage_by_provider_json_retry_rate(client=Client()):
     assert by_provider["anthropic"]["call_count"] == 3
     assert by_provider["anthropic"]["json_retried_count"] == 1
     assert by_provider["anthropic"]["json_retry_rate"] == pytest.approx(33.3)
+    assert by_provider["anthropic"]["total_cost"] == Decimal("6.00")
+    assert by_provider["anthropic"]["failed_count"] == 1
+    assert by_provider["anthropic"]["avg_latency_ms"] == 200.0
+
     assert by_provider["openai-compatible"]["call_count"] == 1
     assert by_provider["openai-compatible"]["json_retried_count"] == 1
     assert by_provider["openai-compatible"]["json_retry_rate"] == 100.0
+    assert by_provider["openai-compatible"]["total_cost"] == Decimal("4.00")
+    assert by_provider["openai-compatible"]["failed_count"] == 1
+    assert by_provider["openai-compatible"]["avg_latency_ms"] == 400.0
+
     assert by_provider["(unknown provider)"]["call_count"] == 1
     assert by_provider["(unknown provider)"]["json_retried_count"] == 0
     assert by_provider["(unknown provider)"]["json_retry_rate"] == 0.0
+    assert by_provider["(unknown provider)"]["total_cost"] == Decimal("5.00")
+    assert by_provider["(unknown provider)"]["failed_count"] == 0
+    assert by_provider["(unknown provider)"]["avg_latency_ms"] == 500.0
 
     content = response.content.decode()
     assert "By provider" in content
     assert "anthropic" in content
     assert "33.3%" in content
+    assert "$6.00" in content
+    assert "$4.00" in content
+    assert "$5.00" in content
 
 
 def test_llm_usage_by_provider_empty_state():

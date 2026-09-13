@@ -85,12 +85,16 @@ def _llm_usage_context(window_key):
         calls.values("provider")
         .annotate(
             call_count=Count("id"),
+            total_cost=Coalesce(Sum("estimated_cost_usd"), Value(0), output_field=_ZERO_COST),
+            failed_count=Count("id", filter=Q(status=LLMCall.Status.FAILED)),
+            avg_latency_ms=Avg("latency_ms"),
             json_retried_count=Count("id", filter=Q(json_retried=True)),
         )
         .order_by("-call_count")
     )
     for row in by_provider:
         row["provider_display"] = row["provider"] or "(unknown provider)"
+        row["avg_latency_ms"] = row["avg_latency_ms"] or 0
         row["json_retry_rate"] = (
             round((row["json_retried_count"] / row["call_count"] * 100), 1)
             if row["call_count"]
@@ -173,6 +177,9 @@ def _llm_usage_json(context):
             {
                 "provider_display": row["provider_display"],
                 "call_count": row["call_count"],
+                "total_cost": floatformat(row["total_cost"], 2),
+                "failed_count": row["failed_count"],
+                "avg_latency_ms": floatformat(row["avg_latency_ms"], 0),
                 "json_retried_count": row["json_retried_count"],
                 "json_retry_rate": floatformat(row["json_retry_rate"], 1),
             }
