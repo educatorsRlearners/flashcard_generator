@@ -1,3 +1,8 @@
+<!-- DRIFT-PRONE SECTIONS: the provider table (§ LLM client) and Current Limitations
+     below drift against code. Source of truth: submissions/llm.py
+     EXTENSION_LLM_PROVIDER_ORDER / EXTENSION_LLM_CURATED_MODELS (popup seed
+     served by GET /api/extension/llm-config/) and SUPPORTED_PROVIDERS.
+     Update this table when adding a provider. -->
 <h1 align="center">Flashcard Generator</h1>
 
 <p align="center">
@@ -7,6 +12,11 @@
 <p align="center">
   <em>Turn any web page into reviewed, spaced-repetition Anki flashcards.</em>
 </p>
+
+> A Brave/Chrome (MV3) browser extension that generates Anki flashcards from
+> the current page, reviewed before syncing via AnkiConnect. Pasting or
+> batching URLs is not the primary workflow — the extension popup on the
+> page you are reading is.
 
 <p align="center">
 
@@ -25,6 +35,8 @@
 ## Table of Contents
 
 - [What it is](#what-it-is)
+- [How it works](#how-it-works)
+- [Requirements](#requirements)
 - [Getting started](#getting-started)
 - [Extension internals](#extension-internals)
 - [Configuration & providers](#configuration--providers)
@@ -40,6 +52,7 @@
 - [Push to Anki](#push-to-anki)
 - [LLM client](#llm-client)
 - [LLM usage (cost / latency observability)](#llm-usage-cost--latency-observability)
+- [Current Limitations](#current-limitations)
 - [Architecture](#architecture)
 - [Development](#development)
 - [License](#license)
@@ -57,6 +70,24 @@ flashcards, dedupes and images them, and lets you accept, reject, or edit
 every card in a review grid before pushing the accepted ones into Anki.
 Nothing reaches Anki without going through review first. See
 [Getting started](#getting-started) below to install and try it.
+
+## How it works
+
+1. Click the extension icon on the page you are reading.
+2. Confirm the popup (provider/model selection).
+3. The backend generates Q&A + cloze cards with images from the page text.
+4. Review each card in the review tab — Accept or Reject per card.
+5. Sync the accepted cards to Anki via AnkiConnect.
+
+## Requirements
+
+- macOS Apple Silicon
+- Brave/Chrome with MV3 extension support
+- Anki running with the AnkiConnect add-on installed
+- Local Stable Diffusion / Draw Things — optional fallback for card images
+  (cards are still produced with no image when it is not running)
+- API key for at least one LLM provider (see
+  [LLM client](#llm-client))
 
 ## Getting started
 
@@ -274,43 +305,51 @@ on), is documented alongside the feature it configures below — see
 [LLM client](#llm-client) for the provider/model settings table, or jump to
 any section's own settings table.
 
+`.env` keys for provider/model selection:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `LLM_PROVIDER` | `anthropic` | Backend provider registry key (see provider table in [LLM client](#llm-client)) |
+| `LLM_MODEL` | `claude-sonnet-5` | Model id passed to the provider (per-provider `LLM_<NAME>_MODEL` overrides win when set) |
+
+Per-provider API-key env vars are listed in the provider table in
+[LLM client](#llm-client). The extension popup's provider/model selection
+overrides `.env` per generation: it is stored as a per-submission override
+(`llm_provider_override` / `llm_model_override` on the submission) and
+never mutates settings.
+
 ## Setup
 
-```
-uv sync
-```
-
-Content extraction uses `trafilatura` for the static (HTML) fast path,
-Playwright (headless Chromium) for the JavaScript fallback, and
-`pdfminer.six` for PDF text extraction. `.docx` files are read with the
-Python standard library (no extra dependency). Chromium is a one-time
-several-hundred-MB download that is **not** installed by `uv sync`:
+First-time setup uses the verified Makefile targets (all exist in
+`Makefile`):
 
 ```
-uv run playwright install chromium
+make setup    # install deps, run migrations, then check prerequisites
+make check    # verify non-pip prerequisites (Anki / local image gen warn only)
+make run      # start runserver + Huey consumer together (same as manage.py dev)
 ```
 
-CI images will not have it unless this step runs.
+Then load the extension unpacked: `brave://extensions` (or
+`chrome://extensions`) → enable Developer mode → "Load unpacked" → select
+the `extension/` directory. The full one-time flow (signing key, native
+host, extension ID) is [Getting started](#getting-started) above.
 
-Semantic dedup (see *Deduplicate cards* below) uses `sentence-transformers`
-for local embeddings. It is installed by `uv sync`, but it pulls in `torch`
-and the model weights are a one-time download (tens of MB) that `uv sync`
-does **not** fetch:
+Optional heavier pieces (sentence-transformer weights for semantic dedup,
+Tesseract for OCR, Draw Things for fallback images) are not required for
+the basic extension flow — see the feature sections below if one of them
+asks for it. When needed:
 
 ```
 uv run python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 ```
 
-CI / test runs do not need the weights: the tests stub the encoder.
-
-Per-card images (see *Card images* below) use `pillow` (image inspection /
-storage) and `httpx` (image downloads + the Draw Things HTTP call). Both
-are installed by `uv sync`. Generating fallback images additionally
-assumes a running **Draw Things** with its HTTP API server enabled
-(Draw Things → Settings → API Server); installing Draw Things and picking
-a model/checkpoint is out of scope. If Draw Things is not running the card
-is simply produced with no image — nothing aborts. Tests stub every
-network call and need neither Draw Things nor internet.
+(one-time weights download for semantic dedup; tests stub the encoder).
+Per-card images use `pillow` + `httpx` (installed by `uv sync`); fallback
+generation additionally assumes a running **Draw Things** with its HTTP API
+server enabled (Draw Things → Settings → API Server). If Draw Things is
+not running the card is simply produced with no image — nothing aborts.
+Playwright/Chromium exists only as a server-side fallback for
+the extraction path (see [Extract content](#extract-content)).
 
 ## Run
 
@@ -356,6 +395,11 @@ one-off script), set `HUEY_IMMEDIATE=1`.
 
 ## Extract content
 
+The extension popup on the page you are reading is the primary workflow
+(pages arrive with `extraction_method = extension`, see below). The
+commands in this section are contributor/diagnostic tools for the
+server-side extraction path — not the way day-to-day use submits pages.
+
 Fetch and extract the main body text for submitted URLs:
 
 ```
@@ -366,7 +410,8 @@ uv run python manage.py extract_content --batch 1 --force   # re-extract
 uv run python manage.py extract_content --url ... --ignore-robots  # skip robots.txt (local only)
 ```
 
-The static path (`trafilatura`) is tried first; the browser fallback runs
+The static path (`trafilatura`) is tried first; the server-side browser
+fallback (headless Chromium) runs
 automatically when the static text has fewer than 200 non-whitespace
 characters. Results land in the `extracted_text` / `extracted_title` /
 `extraction_method` / `extracted_at` fields and are visible in the admin.
@@ -394,8 +439,7 @@ content, and the 10 MB body cap still applies to image downloads.
 The OCR toolchain has two parts:
 
 1. **Native binary (outside `uv`):** install Tesseract —
-   `brew install tesseract` (macOS) or
-   `sudo apt install tesseract-ocr` (Debian/Ubuntu).
+   `brew install tesseract` (macOS).
 2. **Python binding (inside `uv`):** `pytesseract` is already a dependency
    (installed by `uv sync`; pillow, needed to decode images, likewise).
 
@@ -480,6 +524,10 @@ first-choice candidates in *Card images* below. The submit endpoint rejects
 text under the 200-non-whitespace-char threshold with `text too short`.
 
 ## Generate cards
+
+In the normal extension flow card generation runs automatically after
+submit (`process_extension_submission`); the commands below are
+contributor/diagnostic tools for re-running it directly.
 
 Turn the extracted text of a URL into Anki-style flashcards with the LLM
 client (see [LLM client](#llm-client)):
@@ -701,7 +749,9 @@ page reload:
 
 - **Accept / Reject** (+ optional reason on reject; accepting clears it).
   Every decision writes a durable `Feedback` snapshot above (`was_edited`
-  records whether the card had been edited).
+  records whether the card had been edited). Rejections — with or without
+  a reason — feed the few-shot loop (see
+  [Review feedback (durable) + few-shot injection](#review-feedback-durable--few-shot-injection)).
 - **Edit text / revert.** Edit front/back; the first save snapshots
   `original_front` / `original_back` so revert always restores the
   generator output (`is_edited`, `edited_at` track state).
@@ -762,11 +812,27 @@ failures (429, 5xx, connection, timeout) are retried with backoff; auth and
 bad-request errors are not.
 
 Which provider and model are used is configuration, read from Django
-settings (each falls back to an environment variable of the same name):
+settings (each falls back to an environment variable of the same name).
+Backend-supported providers (`SUPPORTED_PROVIDERS` in `submissions/llm.py`;
+update this table when adding a provider):
+
+| Provider (`LLM_PROVIDER`) | Key env var | Notes |
+| --- | --- | --- |
+| `anthropic` (default) | `ANTHROPIC_API_KEY` | Default provider |
+| `openai` / `openai-compatible` | `OPENAI_API_KEY` via `LLM_OPENAI_API_KEY_ENV_VAR` | `openai` is an alias for `openai-compatible`; base URL via `LLM_OPENAI_BASE_URL` |
+| `grok` (xAI) | `XAI_API_KEY` | xAI's OpenAI-compatible endpoint |
+| `openrouter` | `OPENROUTER_API_KEY` | Origin-prefixed model ids (e.g. `anthropic/claude-3.5-sonnet`, `openai/gpt-4o`) |
+| `gemini` | `GOOGLE_API_KEY` via `LLM_GEMINI_API_KEY_ENV_VAR` | Google's Generative Language API; no default key-var name is hardcoded — pair with `LLM_GEMINI_API_KEY_ENV_VAR=GOOGLE_API_KEY` |
+| `opencode-zen` | `OPENCODE_ZEN_API_KEY` | Per-provider overrides follow the generic `LLM_OPENCODE_ZEN_*` pattern (see `config/settings.py` + `submissions/llm.py`) |
+
+The extension popup (`GET /api/llm-config`) currently exposes only
+`anthropic` / `openai` / `grok` / `opencode-zen` with backend-curated
+models (`EXTENSION_LLM_CURATED_MODELS` in `submissions/llm.py` is the
+source of truth); `openrouter` and `gemini` are backend-only.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `LLM_PROVIDER` | `anthropic` | Provider registry key: `anthropic`, `openai-compatible` (alias `openai`) |
+| `LLM_PROVIDER` | `anthropic` | Provider registry key (see table above) |
 | `LLM_MODEL` | `claude-sonnet-5` | Model id passed to the provider |
 | `LLM_API_KEY_ENV_VAR` | `ANTHROPIC_API_KEY` | Name of the env var holding the API key |
 | `LLM_MAX_TOKENS` | `4096` | Default output-token ceiling when a caller omits `max_tokens` |
@@ -832,6 +898,14 @@ uv run python manage.py llm_usage --url https://example.com/article
 uv run python manage.py llm_usage --status failed  # failures only
 uv run python manage.py llm_usage --limit 10
 ```
+
+## Current Limitations
+
+- Single Anki deck (`ANKI_DECK_NAME`) — all accepted cards sync into one deck.
+- One page at a time — each extension submission handles the page being viewed.
+- macOS/Apple Silicon-gated setup and local image generation.
+- Curated popup model lists are hand-maintained in `submissions/llm.py`
+  (`EXTENSION_LLM_CURATED_MODELS`).
 
 ## Architecture
 
