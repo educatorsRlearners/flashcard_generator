@@ -30,13 +30,13 @@
     </p>
 
     <section class="llm-usage__totals" aria-label="Totals for the selected window">
-        <ul class="llm-usage__stats">
-            <li>Total calls: <strong data-role="total-calls">{{ total_calls }}</strong></li>
-            <li>Total estimated cost: <strong data-role="total-cost">${{ total_cost|floatformat:2 }}</strong></li>
-            <li>Failed calls: <strong data-role="failed-calls">{{ failed_calls }}</strong></li>
-            <li>Failure rate: <strong data-role="failure-rate">{{ failure_rate }}%</strong></li>
-            <li>Average latency: <strong data-role="avg-latency">{{ avg_latency_ms|floatformat:0 }} ms</strong></li>
-        </ul>
+        <p class="review-tally" aria-live="polite">
+            Total calls: <span data-role="total-calls">{{ total_calls }}</span> -
+            Total estimated cost: <span data-role="total-cost">${{ total_cost|floatformat:2 }}</span> -
+            Failed calls: <span data-role="failed-calls">{{ failed_calls }}</span> -
+            Failure rate: <span data-role="failure-rate">{{ failure_rate }}%</span> -
+            Average latency: <span data-role="avg-latency">{{ avg_latency_ms|floatformat:0 }} ms</span>
+        </p>
     </section>
 
     <h2>By model</h2>
