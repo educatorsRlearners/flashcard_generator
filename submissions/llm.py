@@ -27,6 +27,25 @@ provider and model are used is read from Django settings:
 *                             (or set the generic ``LLM_API_KEY_ENV_VAR``
 *                             directly) and export ``GOOGLE_API_KEY``
 *                             yourself (``_docs/llm_portability.md`` §4)
+* ``LLM_GROK_BASE_URL``  - optional override of the ``grok`` provider's
+*                             base URL, default ``"https://api.x.ai/v1"``
+*                             (empty = fall back to that hardcoded default)
+* ``LLM_GROK_MODEL``     - optional override of ``LLM_MODEL`` for the
+*                             ``grok`` provider (empty = fall back)
+* ``LLM_GROK_API_KEY_ENV_VAR`` - optional override of the ``grok``
+*                             provider's key env var, default
+*                             ``"XAI_API_KEY"`` (empty = fall back to that
+*                             hardcoded default)
+* ``LLM_OPENROUTER_BASE_URL`` - optional override of the ``openrouter``
+*                             provider's base URL, default
+*                             ``"https://openrouter.ai/api/v1"`` (empty =
+*                             fall back to that hardcoded default)
+* ``LLM_OPENROUTER_MODEL`` - optional override of ``LLM_MODEL`` for the
+*                             ``openrouter`` provider (empty = fall back)
+* ``LLM_OPENROUTER_API_KEY_ENV_VAR`` - optional override of the
+*                             ``openrouter`` provider's key env var, default
+*                             ``"OPENROUTER_API_KEY"`` (empty = fall back to
+*                             that hardcoded default)
 
 ``LLM_PROVIDER=gemini`` (issue #83) talks to Google's Generative Language
 API directly via ``httpx`` (no SDK dependency), against a fixed endpoint
@@ -34,10 +53,12 @@ API directly via ``httpx`` (no SDK dependency), against a fixed endpoint
 ``LLM_GEMINI_BASE_URL`` setting, unlike the OpenAI-compatible provider.
 
 ``LLM_PROVIDER=grok`` and ``LLM_PROVIDER=openrouter`` (issue #84) are also
-``OpenAICompatibleProvider`` under the hood, with a hardcoded ``base_url``
-and default API-key env var per provider (``XAI_API_KEY`` /
-``OPENROUTER_API_KEY``) - no ``LLM_OPENAI_*``-style overrides for them in
-this version; see ``_NAMED_OPENAI_COMPATIBLE_DEFAULTS``.
+``OpenAICompatibleProvider`` under the hood, with a hardcoded default
+``base_url`` and API-key env var per provider (``XAI_API_KEY`` /
+``OPENROUTER_API_KEY``). Issue #98 added ``LLM_GROK_*``/``LLM_OPENROUTER_*``
+override settings for both, following the same override-wins/empty-falls-
+back pattern as ``LLM_OPENAI_*``/``LLM_GEMINI_*``; see
+``_NAMED_OPENAI_COMPATIBLE_DEFAULTS``.
 
 Adding a third provider is one entry in ``_PROVIDERS`` plus a new
 ``Provider`` subclass in this file - nothing else in the codebase changes,
@@ -212,6 +233,60 @@ def _resolve_gemini_api_key_env_var() -> str:
     if override:
         return override
     return _resolve_api_key_env_var()
+
+
+def _resolve_grok_base_url() -> str:
+    """Base URL for the ``grok`` provider: per-provider override wins,
+    empty override falls back to the hardcoded default."""
+    override = _setting("LLM_GROK_BASE_URL", "")
+    if override:
+        return override
+    return _NAMED_OPENAI_COMPATIBLE_DEFAULTS["grok"]["base_url"]
+
+
+def _resolve_grok_model() -> str:
+    """Model for the ``grok`` provider: per-provider override wins, empty
+    override falls back to the generic ``LLM_MODEL``."""
+    override = _setting("LLM_GROK_MODEL", "")
+    if override:
+        return override
+    return _resolve_model()
+
+
+def _resolve_grok_api_key_env_var() -> str:
+    """Key env var for the ``grok`` provider: per-provider override wins,
+    empty override falls back to the hardcoded default."""
+    override = _setting("LLM_GROK_API_KEY_ENV_VAR", "")
+    if override:
+        return override
+    return _NAMED_OPENAI_COMPATIBLE_DEFAULTS["grok"]["api_key_env_var"]
+
+
+def _resolve_openrouter_base_url() -> str:
+    """Base URL for the ``openrouter`` provider: per-provider override wins,
+    empty override falls back to the hardcoded default."""
+    override = _setting("LLM_OPENROUTER_BASE_URL", "")
+    if override:
+        return override
+    return _NAMED_OPENAI_COMPATIBLE_DEFAULTS["openrouter"]["base_url"]
+
+
+def _resolve_openrouter_model() -> str:
+    """Model for the ``openrouter`` provider: per-provider override wins,
+    empty override falls back to the generic ``LLM_MODEL``."""
+    override = _setting("LLM_OPENROUTER_MODEL", "")
+    if override:
+        return override
+    return _resolve_model()
+
+
+def _resolve_openrouter_api_key_env_var() -> str:
+    """Key env var for the ``openrouter`` provider: per-provider override
+    wins, empty override falls back to the hardcoded default."""
+    override = _setting("LLM_OPENROUTER_API_KEY_ENV_VAR", "")
+    if override:
+        return override
+    return _NAMED_OPENAI_COMPATIBLE_DEFAULTS["openrouter"]["api_key_env_var"]
 
 
 # --- Provider interface ----------------------------------------------
@@ -1010,16 +1085,12 @@ _PROVIDERS: dict[str, Callable[..., Provider]] = {
 _OPENAI_PROVIDER_NAMES = frozenset({"openai-compatible", "openai"})
 
 #: Hardcoded defaults for "named" OpenAI-compatible providers (issue #84):
-#: each is just an ``OpenAICompatibleProvider`` with a fixed ``base_url`` and
-#: ``api_key_env_var``. ``model`` still resolves through the generic
-#: ``LLM_MODEL`` setting via :func:`_resolve_model`, same as ``anthropic`` -
-#: it is not hardcoded here.
-#:
-#: v1 scope decision (issue #84 §10): unlike ``openai``/``openai-compatible``,
-#: these get no per-provider override settings in this issue (no
-#: ``LLM_GROK_BASE_URL``/``LLM_GROK_API_KEY_ENV_VAR``/``LLM_GROK_MODEL`` or
-#: ``LLM_OPENROUTER_*`` equivalents) - the values below are constants, not
-#: settings-driven. Broadening that is tracked in #98.
+#: each is just an ``OpenAICompatibleProvider``. These are the fallback
+#: ``base_url``/``api_key_env_var`` used when the corresponding
+#: ``LLM_GROK_*``/``LLM_OPENROUTER_*`` override setting (issue #98) is unset
+#: or empty; ``model`` falls back to the generic ``LLM_MODEL`` setting via
+#: :func:`_resolve_model` the same way, unless ``LLM_GROK_MODEL``/
+#: ``LLM_OPENROUTER_MODEL`` is set.
 #:
 #: Request-shape note (issue #84 §10, doc-based only - no live credentials
 #: available in this environment; live-credential verification is tracked in
@@ -1066,12 +1137,17 @@ def get_provider(name: Optional[str] = None) -> Provider:
             api_key_env_var=_resolve_openai_api_key_env_var(),
             base_url=_resolve_openai_base_url(),
         )
-    if provider_name in _NAMED_OPENAI_COMPATIBLE_DEFAULTS:
-        defaults = _NAMED_OPENAI_COMPATIBLE_DEFAULTS[provider_name]
+    if provider_name == "grok":
         return factory(
-            model=_resolve_model(),
-            api_key_env_var=defaults["api_key_env_var"],
-            base_url=defaults["base_url"],
+            model=_resolve_grok_model(),
+            api_key_env_var=_resolve_grok_api_key_env_var(),
+            base_url=_resolve_grok_base_url(),
+        )
+    if provider_name == "openrouter":
+        return factory(
+            model=_resolve_openrouter_model(),
+            api_key_env_var=_resolve_openrouter_api_key_env_var(),
+            base_url=_resolve_openrouter_base_url(),
         )
     if provider_name == "gemini":
         return factory(

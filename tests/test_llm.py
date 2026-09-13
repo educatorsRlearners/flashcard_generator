@@ -931,10 +931,11 @@ def test_contract_error_taxonomy(monkeypatch, provider_name):
                 llm.generate(system="s", prompt="p")
 
 
-# --- named OpenAI-compatible providers: grok / openrouter (issue #84) ----
-# These are OpenAICompatibleProvider with a hardcoded base_url/api_key_env_var
-# per provider and no per-provider override settings (v1 scope decision) -
-# model still flows through the generic LLM_MODEL setting.
+# --- named OpenAI-compatible providers: grok / openrouter (issues #84, #98) -
+# These are OpenAICompatibleProvider with a per-provider base_url/model/
+# api_key_env_var: an LLM_GROK_*/LLM_OPENROUTER_* override wins when set,
+# and an empty/unset override falls back to the hardcoded default
+# (base_url/api_key_env_var) or the generic LLM_MODEL setting (model).
 
 
 def test_get_provider_grok_builds_openai_compatible_with_hardcoded_defaults():
@@ -965,6 +966,88 @@ def test_get_provider_grok_model_is_configuration_not_hardcoded():
 def test_get_provider_openrouter_model_is_configuration_not_hardcoded():
     provider = llm.get_provider("openrouter")
     assert provider.model == "anthropic/claude-3.5-sonnet"
+
+
+def test_get_provider_grok_overrides_all_three_settings():
+    with override_settings(
+        LLM_GROK_BASE_URL="http://127.0.0.1:11434/v1",
+        LLM_GROK_MODEL="grok-code",
+        LLM_GROK_API_KEY_ENV_VAR="MY_XAI_KEY",
+    ):
+        provider = llm.get_provider("grok")
+
+    assert provider.base_url == "http://127.0.0.1:11434/v1"
+    assert provider.model == "grok-code"
+    assert provider.api_key_env_var == "MY_XAI_KEY"
+
+
+def test_get_provider_grok_falls_back_to_hardcoded_defaults_when_blank():
+    with override_settings(
+        LLM_MODEL="claude-sonnet-5",
+        LLM_GROK_BASE_URL="",
+        LLM_GROK_MODEL="",
+        LLM_GROK_API_KEY_ENV_VAR="",
+    ):
+        provider = llm.get_provider("grok")
+
+    assert provider.base_url == "https://api.x.ai/v1"
+    assert provider.model == "claude-sonnet-5"
+    assert provider.api_key_env_var == "XAI_API_KEY"
+
+
+def test_get_provider_openrouter_overrides_all_three_settings():
+    with override_settings(
+        LLM_OPENROUTER_BASE_URL="http://127.0.0.1:11434/v1",
+        LLM_OPENROUTER_MODEL="openai/gpt-4o",
+        LLM_OPENROUTER_API_KEY_ENV_VAR="MY_OPENROUTER_KEY",
+    ):
+        provider = llm.get_provider("openrouter")
+
+    assert provider.base_url == "http://127.0.0.1:11434/v1"
+    assert provider.model == "openai/gpt-4o"
+    assert provider.api_key_env_var == "MY_OPENROUTER_KEY"
+
+
+def test_get_provider_openrouter_falls_back_to_hardcoded_defaults_when_blank():
+    with override_settings(
+        LLM_MODEL="claude-sonnet-5",
+        LLM_OPENROUTER_BASE_URL="",
+        LLM_OPENROUTER_MODEL="",
+        LLM_OPENROUTER_API_KEY_ENV_VAR="",
+    ):
+        provider = llm.get_provider("openrouter")
+
+    assert provider.base_url == "https://openrouter.ai/api/v1"
+    assert provider.model == "claude-sonnet-5"
+    assert provider.api_key_env_var == "OPENROUTER_API_KEY"
+
+
+def test_grok_override_settings_do_not_affect_openrouter():
+    """Each provider's overrides are independent - setting one provider's
+    override must not leak into the other's resolution."""
+    with override_settings(
+        LLM_GROK_BASE_URL="http://grok-only.example/v1",
+        LLM_GROK_MODEL="grok-only-model",
+        LLM_GROK_API_KEY_ENV_VAR="GROK_ONLY_KEY",
+    ):
+        openrouter = llm.get_provider("openrouter")
+
+    assert openrouter.base_url == "https://openrouter.ai/api/v1"
+    assert openrouter.model == "claude-sonnet-5"
+    assert openrouter.api_key_env_var == "OPENROUTER_API_KEY"
+
+
+def test_openrouter_override_settings_do_not_affect_grok():
+    with override_settings(
+        LLM_OPENROUTER_BASE_URL="http://openrouter-only.example/v1",
+        LLM_OPENROUTER_MODEL="openrouter-only-model",
+        LLM_OPENROUTER_API_KEY_ENV_VAR="OPENROUTER_ONLY_KEY",
+    ):
+        grok = llm.get_provider("grok")
+
+    assert grok.base_url == "https://api.x.ai/v1"
+    assert grok.model == "claude-sonnet-5"
+    assert grok.api_key_env_var == "XAI_API_KEY"
 
 
 def test_grok_and_openrouter_ignore_openai_override_settings():
