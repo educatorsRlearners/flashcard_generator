@@ -339,6 +339,82 @@ def test_json_retry_records_only_successful_call_usage(monkeypatch, anthropic_ke
     assert row.completion_tokens == 3
 
 
+# --- json_retried recording (issue #100) --------------------------
+
+
+def test_json_retried_true_when_retry_succeeds(monkeypatch, anthropic_key):
+    from submissions.models import LLMCall
+
+    schema = {"type": "object", "properties": {}, "required": []}
+    _install_client(
+        monkeypatch,
+        [_response("not json at all"), _response(json.dumps({"a": 1}))],
+    )
+
+    result = llm.generate(system="s", prompt="p", response_format=schema)
+
+    assert result.parsed == {"a": 1}
+    row = LLMCall.objects.get()
+    assert row.status == "ok"
+    assert row.json_retried is True
+
+
+def test_json_retried_true_when_retry_also_fails(monkeypatch, anthropic_key):
+    """Edge case from #100: the retry fired but its follow-up was itself
+    malformed, so ``generate()`` raises - the failed row still records
+    ``json_retried=True`` because a retry did fire for this call."""
+    from submissions.models import LLMCall
+
+    schema = {"type": "object", "properties": {}, "required": []}
+    _install_client(
+        monkeypatch, [_response("still not json"), _response("still not json")]
+    )
+
+    with pytest.raises(llm.LLMBadResponseError):
+        llm.generate(system="s", prompt="p", response_format=schema)
+
+    row = LLMCall.objects.get()
+    assert row.status == "failed"
+    assert row.json_retried is True
+
+
+def test_json_retried_false_when_no_retry_needed(monkeypatch, anthropic_key):
+    from submissions.models import LLMCall
+
+    schema = {"type": "object", "properties": {}, "required": []}
+    _install_client(monkeypatch, [_response(json.dumps({"a": 1}))])
+
+    llm.generate(system="s", prompt="p", response_format=schema)
+
+    row = LLMCall.objects.get()
+    assert row.json_retried is False
+
+
+def test_json_retried_false_when_response_format_none(monkeypatch, anthropic_key):
+    from submissions.models import LLMCall
+
+    _install_client(monkeypatch, [_response("plain text")])
+
+    llm.generate(system="s", prompt="p")
+
+    row = LLMCall.objects.get()
+    assert row.json_retried is False
+
+
+def test_json_retried_false_for_unrelated_failure(monkeypatch, anthropic_key):
+    from submissions.models import LLMCall
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    _install_client(monkeypatch, [_response()])
+
+    with pytest.raises(llm.LLMAuthError):
+        llm.generate(system="s", prompt="p")
+
+    row = LLMCall.objects.get()
+    assert row.status == "failed"
+    assert row.json_retried is False
+
+
 def test_transient_error_on_json_retry_recovers(monkeypatch, anthropic_key):
     schema = {"type": "object", "properties": {}, "required": []}
     client = _install_client(

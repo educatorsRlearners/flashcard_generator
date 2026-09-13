@@ -324,6 +324,11 @@ class Provider:
         omitted, the ambient :func:`call_context` applies."""
         batch, submitted_url = _resolve_attribution(batch, submitted_url)
         start = time.perf_counter()
+        #: True once ``_retry_malformed_json`` has been invoked for this call
+        #: (issue #100) - regardless of whether that retry ultimately
+        #: succeeds; set before the retry call so a failure raised out of
+        #: it still records ``json_retried=True`` on the failed row.
+        json_retried = False
         try:
             self._require_api_key()
 
@@ -351,6 +356,7 @@ class Provider:
                     except LLMBadResponseError as exc:
                         if exc.reason not in _JSON_RETRYABLE_REASONS:
                             raise
+                        json_retried = True
                         result = self._retry_malformed_json(
                             system=system,
                             prompt=prompt,
@@ -370,6 +376,7 @@ class Provider:
                 status="failed",
                 error_class=type(exc).__name__,
                 provider=self.name,
+                json_retried=json_retried,
                 batch=batch,
                 submitted_url=submitted_url,
             )
@@ -382,6 +389,7 @@ class Provider:
             latency_ms=int((time.perf_counter() - start) * 1000),
             status="ok",
             provider=self.name,
+            json_retried=json_retried,
             batch=batch,
             submitted_url=submitted_url,
         )
@@ -1028,10 +1036,15 @@ def _record_llm_call(
     status: str,
     error_class: str = "",
     provider: str = "",
+    json_retried: bool = False,
     batch: Any = None,
     submitted_url: Any = None,
 ) -> None:
     """Persist one :class:`submissions.models.LLMCall` row (issue #28).
+
+    ``json_retried`` (issue #100) records whether the one-shot JSON-retry
+    path (issue #85) fired for this call - independent of ``status``, since
+    a retry that itself fails still fired.
 
     Best-effort by design: observability must never break generation, so any
     failure here is logged and swallowed. The import is local so importing
@@ -1051,6 +1064,7 @@ def _record_llm_call(
             "status": status,
             "error_class": error_class or "",
             "provider": provider or "",
+            "json_retried": bool(json_retried),
         }
         for field_name, value in (("batch", batch), ("submitted_url", submitted_url)):
             if value is None:

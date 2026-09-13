@@ -18,16 +18,20 @@ from submissions.models import LLMCall
 pytestmark = pytest.mark.django_db
 
 
-def _make_call(*, model, cost, latency_ms, status="ok", error_class="", age):
+def _make_call(
+    *, model, cost, latency_ms, status="ok", error_class="", age, provider="", json_retried=False
+):
     """Create an ``LLMCall`` and backdate its ``created_at`` by *age*."""
     call = LLMCall.objects.create(
         model=model,
+        provider=provider,
         prompt_tokens=10,
         completion_tokens=5,
         latency_ms=latency_ms,
         estimated_cost_usd=Decimal(str(cost)),
         status=status,
         error_class=error_class,
+        json_retried=json_retried,
     )
     LLMCall.objects.filter(pk=call.pk).update(created_at=timezone.now() - age)
     return call
@@ -179,6 +183,79 @@ def test_llm_usage_all_calls_failed():
     assert ctx["avg_latency_ms"] == 200.0
     content = response.content.decode()
     assert "100.0%" in content
+
+
+def test_llm_usage_by_provider_json_retry_rate(client=Client()):
+    _make_call(
+        model="claude-a",
+        provider="anthropic",
+        cost="1.00",
+        latency_ms=100,
+        json_retried=True,
+        age=timedelta(hours=1),
+    )
+    _make_call(
+        model="claude-a",
+        provider="anthropic",
+        cost="1.00",
+        latency_ms=100,
+        json_retried=False,
+        age=timedelta(hours=1),
+    )
+    _make_call(
+        model="claude-a",
+        provider="anthropic",
+        cost="1.00",
+        latency_ms=100,
+        json_retried=False,
+        age=timedelta(hours=1),
+    )
+    _make_call(
+        model="gpt-4o",
+        provider="openai-compatible",
+        cost="1.00",
+        latency_ms=100,
+        json_retried=True,
+        age=timedelta(hours=1),
+    )
+    # Blank provider folds into "(unknown provider)".
+    _make_call(
+        model="",
+        provider="",
+        cost="1.00",
+        latency_ms=100,
+        json_retried=False,
+        age=timedelta(hours=1),
+    )
+
+    response = client.get("/llm-usage/", {"window": "24h"})
+    assert response.status_code == 200
+    ctx = response.context
+
+    by_provider = {row["provider_display"]: row for row in ctx["by_provider"]}
+    assert by_provider["anthropic"]["call_count"] == 3
+    assert by_provider["anthropic"]["json_retried_count"] == 1
+    assert by_provider["anthropic"]["json_retry_rate"] == pytest.approx(33.3)
+    assert by_provider["openai-compatible"]["call_count"] == 1
+    assert by_provider["openai-compatible"]["json_retried_count"] == 1
+    assert by_provider["openai-compatible"]["json_retry_rate"] == 100.0
+    assert by_provider["(unknown provider)"]["call_count"] == 1
+    assert by_provider["(unknown provider)"]["json_retried_count"] == 0
+    assert by_provider["(unknown provider)"]["json_retry_rate"] == 0.0
+
+    content = response.content.decode()
+    assert "By provider" in content
+    assert "anthropic" in content
+    assert "33.3%" in content
+
+
+def test_llm_usage_by_provider_empty_state():
+    client = Client()
+    response = client.get("/llm-usage/", {"window": "30d"})
+    assert response.status_code == 200
+    assert response.context["by_provider"] == []
+    content = response.content.decode()
+    assert 'data-role="by-provider-empty"' in content
 
 
 def test_llm_usage_trend_buckets_present_for_each_window():

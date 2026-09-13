@@ -76,6 +76,27 @@ def _llm_usage_context(window_key):
         row["model_display"] = row["model"] or "(unknown model)"
         row["avg_latency_ms"] = row["avg_latency_ms"] or 0
 
+    #: Per-provider JSON-retry breakdown (issue #100), blank provider folded
+    #: into "(unknown provider)" matching the ``by_model`` pattern above.
+    #: Grouped by provider only (not provider+model, see #103) - the
+    #: question this answers (``_docs/llm_portability.md`` §10) is asked at
+    #: the provider level.
+    by_provider = list(
+        calls.values("provider")
+        .annotate(
+            call_count=Count("id"),
+            json_retried_count=Count("id", filter=Q(json_retried=True)),
+        )
+        .order_by("-call_count")
+    )
+    for row in by_provider:
+        row["provider_display"] = row["provider"] or "(unknown provider)"
+        row["json_retry_rate"] = (
+            round((row["json_retried_count"] / row["call_count"] * 100), 1)
+            if row["call_count"]
+            else 0.0
+        )
+
     #: Failed-call breakdown by error_class, descending by count.
     by_error_class = list(
         calls.filter(status=LLMCall.Status.FAILED)
@@ -115,6 +136,7 @@ def _llm_usage_context(window_key):
         "failure_rate": failure_rate,
         "avg_latency_ms": avg_latency_ms,
         "by_model": by_model,
+        "by_provider": by_provider,
         "by_error_class": by_error_class,
         "trend": trend,
         "trend_bucket_label": "hour (UTC)" if window_key == "24h" else "day (UTC)",
@@ -146,6 +168,15 @@ def _llm_usage_json(context):
                 "avg_latency_ms": floatformat(row["avg_latency_ms"], 0),
             }
             for row in context["by_model"]
+        ],
+        "by_provider": [
+            {
+                "provider_display": row["provider_display"],
+                "call_count": row["call_count"],
+                "json_retried_count": row["json_retried_count"],
+                "json_retry_rate": floatformat(row["json_retry_rate"], 1),
+            }
+            for row in context["by_provider"]
         ],
         "by_error_class": [
             {

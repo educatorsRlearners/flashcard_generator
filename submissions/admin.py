@@ -97,6 +97,7 @@ class LLMCallAdmin(admin.ModelAdmin):
         "provider",
         "status",
         "error_class",
+        "json_retried",
         "prompt_tokens",
         "completion_tokens",
         "latency_ms",
@@ -104,13 +105,14 @@ class LLMCallAdmin(admin.ModelAdmin):
         "batch",
         "submitted_url",
     )
-    list_filter = ("status", "model", "provider", "error_class")
+    list_filter = ("status", "model", "provider", "error_class", "json_retried")
     search_fields = ("model", "provider", "error_class", "submitted_url__url")
     ordering = ("-created_at",)
     readonly_fields = (
         "created_at",
         "model",
         "provider",
+        "json_retried",
         "prompt_tokens",
         "completion_tokens",
         "latency_ms",

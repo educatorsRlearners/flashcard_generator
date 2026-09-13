@@ -69,6 +69,34 @@
     {% endif %}
     </div>
 
+    <h2>By provider</h2>
+    <div data-role="by-provider-section">
+    {% if by_provider %}
+        <table class="llm-usage__table" data-role="by-provider-table">
+            <thead>
+                <tr>
+                    <th scope="col">Provider</th>
+                    <th scope="col">Calls</th>
+                    <th scope="col">JSON-retried</th>
+                    <th scope="col">JSON-retry rate</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for row in by_provider %}
+                <tr>
+                    <td data-role="provider">{{ row.provider_display }}</td>
+                    <td data-role="call-count">{{ row.call_count }}</td>
+                    <td data-role="json-retried-count">{{ row.json_retried_count }}</td>
+                    <td data-role="json-retry-rate">{{ row.json_retry_rate|floatformat:1 }}%</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p class="empty-state" data-role="by-provider-empty">No calls in this window.</p>
+    {% endif %}
+    </div>
+
     <h2>Failed calls by error class</h2>
     <div data-role="by-error-class-section">
     {% if by_error_class %}

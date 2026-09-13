@@ -115,6 +115,24 @@
         );
 
         renderSection(
+            "by-provider-section",
+            data.by_provider,
+            "by-provider-table",
+            "by-provider-empty",
+            "No calls in this window.",
+            '<tr><th scope="col">Provider</th><th scope="col">Calls</th>' +
+                '<th scope="col">JSON-retried</th><th scope="col">JSON-retry rate</th></tr>',
+            function (row) {
+                return [
+                    { role: "provider", text: row.provider_display },
+                    { role: "call-count", text: row.call_count },
+                    { role: "json-retried-count", text: row.json_retried_count },
+                    { role: "json-retry-rate", text: row.json_retry_rate + "%" },
+                ];
+            }
+        );
+
+        renderSection(
             "by-error-class-section",
             data.by_error_class,
             "by-error-class-table",

@@ -452,6 +452,16 @@ class LLMCall(models.Model):
     #: without guessing from the model id (issue #91). Blank for rows
     #: recorded before this field existed; never backfilled.
     provider = models.CharField(max_length=32, blank=True, default="")
+    #: True when the one-shot JSON-retry path (issue #85) fired for this
+    #: call - i.e. the first ``_build_result`` attempt raised a
+    #: JSON-retryable ``LLMBadResponseError`` and ``_retry_malformed_json``
+    #: was invoked - regardless of whether that retry itself succeeded
+    #: (issue #100). Records "did the retry path fire", not "did the call
+    #: succeed": a call whose retry also failed still reads ``True``. Blank
+    #: (``False``) for rows recorded before this field existed, and for any
+    #: call that was never eligible for the retry (e.g.
+    #: ``response_format=None``); never backfilled.
+    json_retried = models.BooleanField(default=False)
     prompt_tokens = models.IntegerField(default=0)
     completion_tokens = models.IntegerField(default=0)
     latency_ms = models.IntegerField(default=0)

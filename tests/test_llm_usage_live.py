@@ -23,16 +23,20 @@ pytestmark = pytest.mark.django_db
 _JSON_HEADERS = {"HTTP_X_REQUESTED_WITH": "XMLHttpRequest"}
 
 
-def _make_call(*, model, cost, latency_ms, status="ok", error_class="", age):
+def _make_call(
+    *, model, cost, latency_ms, status="ok", error_class="", age, provider="", json_retried=False
+):
     """Create an ``LLMCall`` and backdate its ``created_at`` by *age*."""
     call = LLMCall.objects.create(
         model=model,
+        provider=provider,
         prompt_tokens=10,
         completion_tokens=5,
         latency_ms=latency_ms,
         estimated_cost_usd=Decimal(str(cost)),
         status=status,
         error_class=error_class,
+        json_retried=json_retried,
     )
     LLMCall.objects.filter(pk=call.pk).update(created_at=timezone.now() - age)
     return call
@@ -62,15 +66,24 @@ def test_json_payload_matches_current_window_default():
     assert data["failed_calls"] == 0
     assert data["failure_rate"] == "0.0"
     assert data["by_model"] == []
+    assert data["by_provider"] == []
     assert data["by_error_class"] == []
     assert data["trend"] == []
 
 
 def test_json_payload_reflects_new_calls_and_matches_html_render():
     client = Client()
-    _make_call(model="claude-a", cost="1.00", latency_ms=100, age=timedelta(hours=1))
+    _make_call(
+        model="claude-a",
+        provider="anthropic",
+        cost="1.00",
+        latency_ms=100,
+        json_retried=True,
+        age=timedelta(hours=1),
+    )
     _make_call(
         model="claude-b",
+        provider="anthropic",
         cost="2.50",
         latency_ms=300,
         status="failed",
@@ -95,6 +108,11 @@ def test_json_payload_reflects_new_calls_and_matches_html_render():
     by_error = {row["error_class_display"]: row["count"] for row in data["by_error_class"]}
     assert by_error == {"RateLimitError": 1}
 
+    by_provider = {row["provider_display"]: row for row in data["by_provider"]}
+    assert by_provider["anthropic"]["call_count"] == 2
+    assert by_provider["anthropic"]["json_retried_count"] == 1
+    assert by_provider["anthropic"]["json_retry_rate"] == "50.0"
+
     assert len(data["trend"]) >= 1
 
     # Formatting must match exactly what the HTML template rendered for
@@ -102,6 +120,7 @@ def test_json_payload_reflects_new_calls_and_matches_html_render():
     html = html_response.content.decode()
     assert f"${data['total_cost']}" in html
     assert f"{data['failure_rate']}%" in html
+    assert f"{by_provider['anthropic']['json_retry_rate']}%" in html
 
 
 def test_json_payload_respects_window_query_param():
