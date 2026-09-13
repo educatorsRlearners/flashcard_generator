@@ -14,6 +14,7 @@
     "use strict";
 
     var POLL_INTERVAL_MS = 15000;
+    var LIVE_STORAGE_KEY = "llmUsageLive";
 
     var app = document.getElementById("llm-usage-app");
     if (!app) {
@@ -24,7 +25,29 @@
     var toggle = app.querySelector('[data-role="live-toggle"]');
     var status = app.querySelector('[data-role="live-status"]');
 
-    var live = true;
+    // Persist the visitor's on/off choice across loads (issue #92). Every
+    // access is wrapped in try/catch: a blocked/unavailable localStorage
+    // (private browsing, etc.) must never crash the page - it just falls
+    // back to the "on" default, same as a first-ever visit.
+    function readStoredLive() {
+        try {
+            var raw = window.localStorage.getItem(LIVE_STORAGE_KEY);
+            return raw !== "off";
+        } catch (e) {
+            return true;
+        }
+    }
+
+    function writeStoredLive(nextLive) {
+        try {
+            window.localStorage.setItem(LIVE_STORAGE_KEY, nextLive ? "on" : "off");
+        } catch (e) {
+            // Storage unavailable/blocked - nothing to do, in-memory state
+            // still drives this page load correctly.
+        }
+    }
+
+    var live = readStoredLive();
     var timerId = null;
 
     function currentWindow() {
@@ -294,7 +317,9 @@
 
     if (toggle) {
         toggle.addEventListener("click", function () {
-            setLive(!live);
+            var nextLive = !live;
+            setLive(nextLive);
+            writeStoredLive(nextLive);
         });
     }
 
@@ -316,7 +341,16 @@
         status.textContent = "";
     }
 
-    if (document.visibilityState === "visible") {
+    // Reflect the restored preference in the toggle immediately (text +
+    // aria-pressed), without an extra poll() on top of the fresh
+    // server-rendered data - matches the pre-#92 initial-load behavior
+    // when the restored state is "on".
+    if (toggle) {
+        toggle.textContent = "Live: " + (live ? "On" : "Off");
+        toggle.setAttribute("aria-pressed", live ? "true" : "false");
+    }
+
+    if (live && document.visibilityState === "visible") {
         startPolling();
     }
 })();
