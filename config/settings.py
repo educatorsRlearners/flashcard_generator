@@ -147,6 +147,21 @@ LLM_OPENAI_BASE_URL = os.environ.get(
 LLM_OPENAI_MODEL = os.environ.get("LLM_OPENAI_MODEL", "")
 LLM_OPENAI_API_KEY_ENV_VAR = os.environ.get("LLM_OPENAI_API_KEY_ENV_VAR", "")
 
+# --- LLM cost/failure-rate alerting (submissions/tasks.py, issue #90) ------
+# A periodic Huey task watches recent LLMCall rows and logs a WARNING when
+# total estimated cost or failure rate over a rolling window crosses one of
+# these thresholds. Both are unset (blank) by default so existing installs
+# get no alerting until explicitly configured. A stray/malformed value
+# (non-numeric, negative) is treated the same as unset - see
+# ``submissions.tasks._parse_positive_float``.
+LLM_ALERT_COST_USD_THRESHOLD = os.environ.get("LLM_ALERT_COST_USD_THRESHOLD", "")
+#: Percentage 0-100, e.g. "50" means 50%.
+LLM_ALERT_FAILURE_RATE_THRESHOLD = os.environ.get(
+    "LLM_ALERT_FAILURE_RATE_THRESHOLD", ""
+)
+#: Rolling window size in minutes for both checks above.
+LLM_ALERT_WINDOW_MINUTES = os.environ.get("LLM_ALERT_WINDOW_MINUTES", "60")
+
 # --- Card generation (submissions/generation.py, issue #32) ---------------
 # Language/domain used for programming analogies in generated cards.
 # Surfaced into the generation prompt as
