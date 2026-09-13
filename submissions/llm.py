@@ -1178,13 +1178,15 @@ _OPENAI_PROVIDER_NAMES = frozenset({"openai-compatible", "openai"})
 #: :func:`_resolve_model` the same way, unless ``LLM_GROK_MODEL``/
 #: ``LLM_OPENROUTER_MODEL``/``LLM_OPENCODE_ZEN_MODEL`` is set.
 #:
-#: Request-shape note (issue #84 §10, doc-based only - no live credentials
-#: available in this environment; live-credential verification is tracked in
-#: #98): per their public API docs, both xAI's and OpenRouter's
-#: chat-completions endpoints are OpenAI-compatible - Bearer auth header,
-#: a ``max_tokens`` field, and ``choices[0].message.content`` in the
-#: response - the exact shape ``OpenAICompatibleProvider`` already
-#: implements, so no adapter changes are needed for either.
+#: Request-shape note: for ``grok``, live-verified (issue #102) against the
+#: real xAI chat-completions endpoint using model ``grok-4.3`` - Bearer auth
+#: header, a ``max_tokens`` field, and ``choices[0].message.content`` in the
+#: response all matched what ``OpenAICompatibleProvider`` already sends/
+#: expects, including the structured-output path: a non-``None``
+#: ``response_format`` round-tripped into ``LLMResult.parsed`` with no
+#: schema/parse error. No adapter change was needed. For ``openrouter`` this
+#: remains doc-based only - no live credentials available in this
+#: environment; live-credential verification is tracked in #119.
 _NAMED_OPENAI_COMPATIBLE_DEFAULTS: dict[str, dict[str, str]] = {
     "grok": {
         "base_url": "https://api.x.ai/v1",
