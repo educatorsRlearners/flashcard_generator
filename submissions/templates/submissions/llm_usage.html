@@ -42,6 +42,7 @@
     <h2>By model</h2>
     <div data-role="by-model-section">
     {% if by_model %}
+        <div class="llm-usage__table-scroll">
         <table class="llm-usage__table" data-role="by-model-table">
             <thead>
                 <tr>
@@ -64,6 +65,7 @@
             {% endfor %}
             </tbody>
         </table>
+        </div>
     {% else %}
         <p class="empty-state" data-role="by-model-empty">No calls in this window.</p>
     {% endif %}
@@ -110,6 +112,7 @@
     <h2>Failed calls by error class</h2>
     <div data-role="by-error-class-section">
     {% if by_error_class %}
+        <div class="llm-usage__table-scroll">
         <table class="llm-usage__table" data-role="by-error-class-table">
             <thead>
                 <tr>
@@ -126,6 +129,7 @@
             {% endfor %}
             </tbody>
         </table>
+        </div>
     {% else %}
         <p class="empty-state" data-role="by-error-class-empty">No failed calls in this window.</p>
     {% endif %}
@@ -134,6 +138,7 @@
     <h2>Trend by <span data-role="trend-bucket-label">{{ trend_bucket_label }}</span></h2>
     <div data-role="trend-section">
     {% if trend %}
+        <div class="llm-usage__table-scroll">
         <table class="llm-usage__table" data-role="trend-table">
             <thead>
                 <tr>
@@ -154,6 +159,7 @@
             {% endfor %}
             </tbody>
         </table>
+        </div>
     {% else %}
         <p class="empty-state" data-role="trend-empty">No calls in this window.</p>
     {% endif %}
