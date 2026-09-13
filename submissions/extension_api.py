@@ -192,6 +192,52 @@ def submit(request):
                 JsonResponse({"error": "invalid deck name", "detail": str(exc)}, status=400)
             )
 
+    # Optional per-request LLM override (issue #106). Absent/null means
+    # "no override". Empty/whitespace-only is treated as absent (not a
+    # 400); non-string values are a 400. All validation happens before
+    # any Batch/SubmittedURL/BatchRequest row is written.
+    provider_override = None
+    if "provider" in payload and payload.get("provider") is not None:
+        from . import llm as _llm
+
+        raw_provider = payload.get("provider")
+        if not isinstance(raw_provider, str):
+            return _apply_cors(
+                JsonResponse({"error": "invalid provider"}, status=400)
+            )
+        stripped_provider = raw_provider.strip()
+        if stripped_provider:
+            normalized = stripped_provider.lower()
+            if normalized not in _llm.SUPPORTED_PROVIDERS:
+                return _apply_cors(
+                    JsonResponse(
+                        {
+                            "error": (
+                                f"unknown provider {normalized!r}. "
+                                f"Supported providers: "
+                                f"{', '.join(_llm.SUPPORTED_PROVIDERS)}."
+                            )
+                        },
+                        status=400,
+                    )
+                )
+            provider_override = normalized
+
+    model_override = None
+    if "model" in payload and payload.get("model") is not None:
+        raw_model = payload.get("model")
+        if not isinstance(raw_model, str):
+            return _apply_cors(
+                JsonResponse({"error": "invalid model"}, status=400)
+            )
+        stripped_model = raw_model.strip()
+        if stripped_model:
+            if len(stripped_model) > 255:
+                return _apply_cors(
+                    JsonResponse({"error": "invalid model"}, status=400)
+                )
+            model_override = stripped_model
+
     # Creates the Batch / SubmittedURL / BatchRequest rows directly (a new
     # Batch every call - including a re-submission of an already-known URL,
     # matching the double-submit behaviour the model layer already allows).
@@ -210,6 +256,10 @@ def submit(request):
     submitted_url.failure_kind = ""
     submitted_url.failure_reason = ""
     submitted_url.extension_image_urls = extension_image_urls
+    # Re-submit overwrites the stored override (absent/null clears it),
+    # matching the overwrite behaviour of the extraction fields above.
+    submitted_url.llm_provider_override = provider_override
+    submitted_url.llm_model_override = model_override
     submitted_url.save()
 
     process_extension_submission(submitted_url.pk)

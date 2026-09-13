@@ -821,7 +821,11 @@ def _mark_dedup_ready(submitted_url: SubmittedURL) -> None:
     submitted_url.save(update_fields=["dedup_ready"])
 
 
-def _call_llm(submitted_url: SubmittedURL) -> list[dict]:
+def _call_llm(
+    submitted_url: SubmittedURL,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> list[dict]:
     """Call the #5 client and return the raw list of card dicts.
 
     Lets :class:`llm.LLMError` subclasses propagate to the caller, except that
@@ -841,11 +845,19 @@ def _call_llm(submitted_url: SubmittedURL) -> list[dict]:
         with llm.call_context(
             batch=submitted_url.batch, submitted_url=submitted_url
         ):
+            # No-override path calls llm.generate exactly as before
+            # (byte-for-byte identical); overrides are only passed when set.
+            _extra: dict = {}
+            if provider is not None:
+                _extra["provider"] = provider
+            if model is not None:
+                _extra["model"] = model
             result = llm.generate(
                 system=build_system_prompt(content),
                 prompt=prompt,
                 response_format=CARD_LIST_SCHEMA,
                 max_tokens=GENERATION_MAX_TOKENS,
+                **_extra,
             )
     except llm.LLMBadResponseError as exc:
         if getattr(exc, "reason", "") in _MALFORMED_REASONS:
@@ -918,7 +930,11 @@ def _validated_cards(
 
 
 def generate_for(
-    submitted_url: SubmittedURL, *, force: bool = False
+    submitted_url: SubmittedURL,
+    *,
+    force: bool = False,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> GenerationResult:
     """Generate and persist cards for one ``SubmittedURL``.
 
@@ -941,7 +957,7 @@ def generate_for(
         mark_generation_failed(submitted_url, INSUFFICIENT_CONTENT)
         return GenerationResult(outcome="skipped", reason=INSUFFICIENT_CONTENT)
 
-    raw_cards = _call_llm(submitted_url)
+    raw_cards = _call_llm(submitted_url, provider=provider, model=model)
     cards, rejected = _validated_cards(raw_cards, submitted_url)
 
     if not cards:

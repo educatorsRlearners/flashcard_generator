@@ -46,6 +46,16 @@ provider and model are used is read from Django settings:
 *                             ``openrouter`` provider's key env var, default
 *                             ``"OPENROUTER_API_KEY"`` (empty = fall back to
 *                             that hardcoded default)
+* ``LLM_OPENCODE_ZEN_BASE_URL`` - optional override of the ``opencode-zen``
+*                             provider's base URL, default
+*                             ``"https://opencode.ai/zen/v1/chat/completions"``
+*                             (empty = fall back to that hardcoded default)
+* ``LLM_OPENCODE_ZEN_MODEL`` - optional override of ``LLM_MODEL`` for the
+*                             ``opencode-zen`` provider (empty = fall back)
+* ``LLM_OPENCODE_ZEN_API_KEY_ENV_VAR`` - optional override of the
+*                             ``opencode-zen`` provider's key env var, default
+*                             ``"OPENCODE_ZEN_API_KEY"`` (empty = fall back to
+*                             that hardcoded default)
 
 ``LLM_PROVIDER=gemini`` (issue #83) talks to Google's Generative Language
 API directly via ``httpx`` (no SDK dependency), against a fixed endpoint
@@ -1131,12 +1141,38 @@ _NAMED_OPENAI_COMPATIBLE_DEFAULTS: dict[str, dict[str, str]] = {
 SUPPORTED_PROVIDERS = tuple(sorted(_PROVIDERS))
 
 
-def get_provider(name: Optional[str] = None) -> Provider:
+def _model_override_or(current: str, override: Optional[str]) -> str:
+    """Return the per-call model override when non-empty, else *current*.
+
+    Resolved per-call with no settings/env mutation (issue #106).
+    """
+    if override is not None and str(override).strip():
+        return str(override).strip()
+    return current
+
+
+def get_provider(
+    name: Optional[str] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> Provider:
     """Build the configured provider adapter.
 
     Raises :class:`LLMConfigError` for an unknown ``LLM_PROVIDER``.
+    Optional per-call ``provider``/``model`` kwargs (issue #106) select
+    the adapter / model id for one call only, with no settings mutation.
+    ``model`` wins over the per-provider ``LLM_*_MODEL`` settings and the
+    generic ``LLM_MODEL``.
     """
-    provider_name = (name or _resolve_provider_name() or "").strip().lower()
+    raw_name = provider if provider is not None else name
+    if raw_name is None:
+        provider_name = (_resolve_provider_name() or "").strip().lower()
+    elif not isinstance(raw_name, str):
+        provider_name = str(raw_name).strip().lower()
+    else:
+        provider_name = raw_name.strip().lower() or (
+            _resolve_provider_name() or ""
+        ).strip().lower()
     factory = _PROVIDERS.get(provider_name)
     if factory is None:
         exc = LLMConfigError(
@@ -1147,28 +1183,31 @@ def get_provider(name: Optional[str] = None) -> Provider:
         raise exc
     if provider_name in _OPENAI_PROVIDER_NAMES:
         return factory(
-            model=_resolve_openai_model(),
+            model=_model_override_or(_resolve_openai_model(), model),
             api_key_env_var=_resolve_openai_api_key_env_var(),
             base_url=_resolve_openai_base_url(),
         )
     if provider_name == "grok":
         return factory(
-            model=_resolve_grok_model(),
+            model=_model_override_or(_resolve_grok_model(), model),
             api_key_env_var=_resolve_grok_api_key_env_var(),
             base_url=_resolve_grok_base_url(),
         )
     if provider_name == "openrouter":
         return factory(
-            model=_resolve_openrouter_model(),
+            model=_model_override_or(_resolve_openrouter_model(), model),
             api_key_env_var=_resolve_openrouter_api_key_env_var(),
             base_url=_resolve_openrouter_base_url(),
         )
     if provider_name == "gemini":
         return factory(
-            model=_resolve_gemini_model(),
+            model=_model_override_or(_resolve_gemini_model(), model),
             api_key_env_var=_resolve_gemini_api_key_env_var(),
         )
-    return factory(model=_resolve_model(), api_key_env_var=_resolve_api_key_env_var())
+    return factory(
+        model=_model_override_or(_resolve_model(), model),
+        api_key_env_var=_resolve_api_key_env_var(),
+    )
 
 
 def check() -> None:
@@ -1185,6 +1224,8 @@ def generate(
     max_tokens: Optional[int] = None,
     batch: Any = None,
     submitted_url: Any = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> LLMResult:
     """Send ``system`` + ``prompt`` to the configured LLM and return an
     :class:`LLMResult`.
@@ -1193,6 +1234,9 @@ def generate(
     back as a validated object; a non-conforming reply raises
     :class:`LLMBadResponseError`.
 
+    Optional per-call ``provider``/``model`` kwargs (issue #106) use that
+    provider/model for this call only, with no settings mutation.
+
     Every invocation records an ``LLMCall`` row (issue #28): the provider
     adapter records ok/failed outcomes, and this wrapper additionally
     records the failed row when no provider could even be built (unknown
@@ -1200,14 +1244,14 @@ def generate(
     when omitted, the ambient :func:`call_context` applies.
     """
     try:
-        provider = get_provider()
+        provider_obj = get_provider(provider=provider, model=model)
     except LLMConfigError as exc:
         try:
-            model = _resolve_model()
+            label = str(model).strip() if model is not None and str(model).strip() else _resolve_model()
         except Exception:  # noqa: BLE001 - best-effort label for the row
-            model = ""
+            label = ""
         _record_llm_call(
-            model=model,
+            model=label,
             input_tokens=0,
             output_tokens=0,
             latency_ms=0,
@@ -1218,7 +1262,7 @@ def generate(
             submitted_url=submitted_url,
         )
         raise
-    return provider.generate(
+    return provider_obj.generate(
         system=system,
         prompt=prompt,
         response_format=response_format,

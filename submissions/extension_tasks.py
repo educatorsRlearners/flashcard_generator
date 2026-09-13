@@ -45,7 +45,16 @@ from .models import SubmittedURL
 
 def run_generation(submitted_url: SubmittedURL):
     """Seam around card generation (patched in tests)."""
-    return generation.generate_for(submitted_url, force=True)
+    provider = (submitted_url.llm_provider_override or "").strip().lower() or None
+    model = (submitted_url.llm_model_override or "").strip() or None
+    # No-override path stays byte-for-byte identical to before (no extra
+    # kwargs); overrides are only passed when set (issue #106).
+    extra: dict = {}
+    if provider is not None:
+        extra["provider"] = provider
+    if model is not None:
+        extra["model"] = model
+    return generation.generate_for(submitted_url, force=True, **extra)
 
 
 @db_task()

@@ -129,6 +129,16 @@ class SubmittedURL(models.Model):
     #: script (issue #42), in DOM order. Server-side filtering
     #: (images.py markers / usability) still applies before use.
     extension_image_urls = models.JSONField(default=list, blank=True)
+    #: Optional per-request LLM override for one extension generation run
+    #: (issue #106). Null/blank = no override (fall back to `.env`).
+    #: Persisted here (not on Batch, not as Huey kwargs) so it survives the
+    #: async worker boundary and stays inspectable on the row.
+    llm_provider_override = models.CharField(
+        max_length=64, null=True, blank=True, default=None
+    )
+    llm_model_override = models.CharField(
+        max_length=255, null=True, blank=True, default=None
+    )
 
     class GenerationStatus(models.TextChoices):
         """State of card generation (issue #6) for this URL.
