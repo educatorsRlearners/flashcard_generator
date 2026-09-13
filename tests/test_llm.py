@@ -471,6 +471,7 @@ def test_provider_registry_is_keyed_by_provider_name():
     assert "openai" in llm._PROVIDERS
     assert "grok" in llm._PROVIDERS
     assert "openrouter" in llm._PROVIDERS
+    assert "opencode-zen" in llm._PROVIDERS
     assert "gemini" in llm._PROVIDERS
     assert llm.SUPPORTED_PROVIDERS == (
         "anthropic",
@@ -478,6 +479,7 @@ def test_provider_registry_is_keyed_by_provider_name():
         "grok",
         "openai",
         "openai-compatible",
+        "opencode-zen",
         "openrouter",
     )
 
@@ -1187,6 +1189,191 @@ def test_unknown_provider_still_unaffected_by_grok_openrouter_additions():
     assert "not-a-real-provider" in str(exc.value)
     for name in ("anthropic", "openai", "openai-compatible", "grok", "openrouter"):
         assert name in str(exc.value)
+
+
+# --- named OpenAI-compatible provider: opencode-zen (issue #104) ---------
+# OpenAICompatibleProvider pointed at Zen's OpenAI-compatible route, with
+# LLM_OPENCODE_ZEN_* overrides following the same override-wins/empty-falls-
+# back pattern as grok/openrouter above. Mocked/fake client only - no live
+# Zen credentials exist in this environment (live verification is #114).
+
+
+def test_get_provider_opencode_zen_builds_openai_compatible_with_hardcoded_defaults():
+    provider = llm.get_provider("opencode-zen")
+
+    assert isinstance(provider, llm.OpenAICompatibleProvider)
+    assert provider.base_url == "https://opencode.ai/zen/v1/chat/completions"
+    assert provider.api_key_env_var == "OPENCODE_ZEN_API_KEY"
+    assert provider.model == "claude-sonnet-5"  # the default LLM_MODEL
+
+
+@override_settings(LLM_MODEL="kimi-k2.5")
+def test_get_provider_opencode_zen_model_is_configuration_not_hardcoded():
+    provider = llm.get_provider("opencode-zen")
+    assert provider.model == "kimi-k2.5"
+
+
+def test_get_provider_opencode_zen_overrides_all_three_settings():
+    with override_settings(
+        LLM_OPENCODE_ZEN_BASE_URL="http://127.0.0.1:11434/v1",
+        LLM_OPENCODE_ZEN_MODEL="glm-5",
+        LLM_OPENCODE_ZEN_API_KEY_ENV_VAR="MY_ZEN_KEY",
+    ):
+        provider = llm.get_provider("opencode-zen")
+
+    assert provider.base_url == "http://127.0.0.1:11434/v1"
+    assert provider.model == "glm-5"
+    assert provider.api_key_env_var == "MY_ZEN_KEY"
+
+
+def test_get_provider_opencode_zen_falls_back_to_hardcoded_defaults_when_blank():
+    with override_settings(
+        LLM_MODEL="claude-sonnet-5",
+        LLM_OPENCODE_ZEN_BASE_URL="",
+        LLM_OPENCODE_ZEN_MODEL="",
+        LLM_OPENCODE_ZEN_API_KEY_ENV_VAR="",
+    ):
+        provider = llm.get_provider("opencode-zen")
+
+    assert provider.base_url == "https://opencode.ai/zen/v1/chat/completions"
+    assert provider.model == "claude-sonnet-5"
+    assert provider.api_key_env_var == "OPENCODE_ZEN_API_KEY"
+
+
+def test_opencode_zen_ignores_openai_override_settings():
+    """opencode-zen must not route through the openai/openai-compatible
+    branch or pick up its override settings."""
+    with override_settings(
+        LLM_OPENAI_BASE_URL="http://should-not-apply.example/v1",
+        LLM_OPENAI_MODEL="should-not-apply",
+        LLM_OPENAI_API_KEY_ENV_VAR="SHOULD_NOT_APPLY",
+    ):
+        provider = llm.get_provider("opencode-zen")
+
+    assert provider.base_url == "https://opencode.ai/zen/v1/chat/completions"
+    assert provider.api_key_env_var == "OPENCODE_ZEN_API_KEY"
+    assert provider.model == "claude-sonnet-5"
+
+
+def test_opencode_zen_ignores_grok_and_openrouter_override_settings():
+    with override_settings(
+        LLM_GROK_BASE_URL="http://grok-only.example/v1",
+        LLM_GROK_MODEL="grok-only-model",
+        LLM_GROK_API_KEY_ENV_VAR="GROK_ONLY_KEY",
+        LLM_OPENROUTER_BASE_URL="http://openrouter-only.example/v1",
+        LLM_OPENROUTER_MODEL="openrouter-only-model",
+        LLM_OPENROUTER_API_KEY_ENV_VAR="OPENROUTER_ONLY_KEY",
+    ):
+        provider = llm.get_provider("opencode-zen")
+
+    assert provider.base_url == "https://opencode.ai/zen/v1/chat/completions"
+    assert provider.model == "claude-sonnet-5"
+    assert provider.api_key_env_var == "OPENCODE_ZEN_API_KEY"
+
+
+def test_opencode_zen_override_settings_do_not_affect_grok_or_openrouter():
+    """Each provider's overrides are independent - setting zen's overrides
+    must not leak into the other named providers' resolution."""
+    with override_settings(
+        LLM_OPENCODE_ZEN_BASE_URL="http://zen-only.example/v1",
+        LLM_OPENCODE_ZEN_MODEL="zen-only-model",
+        LLM_OPENCODE_ZEN_API_KEY_ENV_VAR="ZEN_ONLY_KEY",
+    ):
+        grok = llm.get_provider("grok")
+        openrouter = llm.get_provider("openrouter")
+
+    assert grok.base_url == "https://api.x.ai/v1"
+    assert grok.model == "claude-sonnet-5"
+    assert grok.api_key_env_var == "XAI_API_KEY"
+    assert openrouter.base_url == "https://openrouter.ai/api/v1"
+    assert openrouter.model == "claude-sonnet-5"
+    assert openrouter.api_key_env_var == "OPENROUTER_API_KEY"
+
+
+@override_settings(LLM_PROVIDER="opencode-zen", LLM_MODEL="kimi-k2.5")
+def test_opencode_zen_end_to_end_generate_happy_path(monkeypatch):
+    monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "sk-test-not-a-real-key")
+    seen: dict = {}
+    _install_openai_client(monkeypatch, [_openai_response("hi")], seen)
+
+    result = llm.generate(system="be terse", prompt="say hi")
+
+    assert result.text == "hi"
+    assert result.model == "kimi-k2.5"
+    assert seen["base_url"] == "https://opencode.ai/zen/v1/chat/completions"
+    assert seen["api_key"] == "sk-test-not-a-real-key"
+
+    from submissions.models import LLMCall
+
+    assert LLMCall.objects.count() == 1
+    row = LLMCall.objects.get()
+    assert row.provider == "openai-compatible"
+
+
+@override_settings(LLM_PROVIDER="opencode-zen")
+def test_opencode_zen_missing_api_key_raises_auth_error(monkeypatch):
+    monkeypatch.delenv("OPENCODE_ZEN_API_KEY", raising=False)
+    installed = _install_openai_client(monkeypatch, [_openai_response()])
+
+    with pytest.raises(llm.LLMAuthError) as exc:
+        llm.generate(system="s", prompt="p")
+
+    assert "OPENCODE_ZEN_API_KEY" in str(exc.value)
+    assert installed.chat.completions.calls == []
+
+
+@override_settings(LLM_PROVIDER="opencode-zen")
+def test_opencode_zen_rate_limit_retries_then_raises(monkeypatch):
+    monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "sk-test-not-a-real-key")
+    client = _install_openai_client(
+        monkeypatch, [FakeAPIError(429, headers={"retry-after": "2"})]
+    )
+
+    with pytest.raises(llm.LLMRateLimitError) as exc:
+        llm.generate(system="s", prompt="p")
+
+    assert exc.value.retry_after == 2.0
+    assert len(client.chat.completions.calls) == llm.MAX_ATTEMPTS
+
+
+@pytest.mark.parametrize("status_code", [500, 503])
+@override_settings(LLM_PROVIDER="opencode-zen")
+def test_opencode_zen_server_error_retried_then_transient(
+    monkeypatch, status_code
+):
+    monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "sk-test-not-a-real-key")
+    client = _install_openai_client(monkeypatch, [FakeAPIError(status_code)])
+
+    with pytest.raises(llm.LLMTransientError) as exc:
+        llm.generate(system="s", prompt="p")
+
+    assert exc.value.reason == "server_error"
+    assert len(client.chat.completions.calls) == llm.MAX_ATTEMPTS
+
+
+def test_unknown_provider_message_lists_opencode_zen():
+    with override_settings(LLM_PROVIDER="not-a-real-provider"):
+        with pytest.raises(llm.LLMConfigError) as exc:
+            llm.get_provider()
+    assert "not-a-real-provider" in str(exc.value)
+    assert "opencode-zen" in str(exc.value)
+
+
+def test_check_llm_recognizes_opencode_zen_provider(monkeypatch):
+    """check_llm --provider opencode-zen resolves the provider (no Unknown
+    LLM_PROVIDER error); with the key unset it reports the missing-key
+    condition instead. No network: the missing key fails before any call."""
+    from django.core.management import call_command
+    from django.core.management.base import CommandError
+
+    monkeypatch.delenv("OPENCODE_ZEN_API_KEY", raising=False)
+
+    with pytest.raises(CommandError) as exc:
+        call_command("check_llm", "--provider", "opencode-zen")
+
+    assert "Unknown LLM_PROVIDER" not in str(exc.value)
+    assert "LLMAuthError" in str(exc.value)
+    assert "OPENCODE_ZEN_API_KEY" in str(exc.value)
 
 
 # --- Gemini adapter (issue #83) ---------------------------------------
