@@ -260,6 +260,18 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .llm-usage__window { text-decoration: none; }
 .llm-usage__window--active { color: var(--text); }
 .llm-usage__since { color: var(--muted); font-size: 0.9rem; margin-top: 0; }
+.llm-usage__live { display: flex; align-items: center; gap: 0.5rem; }
+.llm-usage__live-toggle {
+    font: inherit;
+    padding: 0.25rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+}
+.llm-usage__live-toggle[aria-pressed="false"] { color: var(--muted); }
+.llm-usage__live-status { color: var(--muted); font-size: 0.85rem; }
 .llm-usage__stats {
     list-style: none;
     margin: 1rem 0;

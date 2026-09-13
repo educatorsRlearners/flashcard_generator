@@ -6,6 +6,8 @@ from django.db.models import Avg, Count, DecimalField, Q, Sum, Value
 from django.db.models.functions import Coalesce, TruncDate, TruncHour
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.template.defaultfilters import date as date_filter
+from django.template.defaultfilters import floatformat
 from django.views.decorators.http import require_POST
 from django.utils import timezone
 
@@ -28,15 +30,17 @@ LLM_USAGE_DEFAULT_WINDOW = "7d"
 _ZERO_COST = DecimalField(max_digits=12, decimal_places=6)
 
 
-def llm_usage(request):
-    """Aggregated ``LLMCall`` cost/latency/volume/failure dashboard (#88).
+def _llm_usage_context(window_key):
+    """Build the aggregate context for the ``llm_usage`` dashboard.
+
+    Shared by the HTML render and the JSON polling endpoint (issue #89)
+    so both always reflect the exact same query/aggregation logic.
 
     Everything shown is computed with database aggregation
     (``Sum``/``Count``/``Avg``/``annotate().values()``) rather than by
     iterating matching rows in Python, so the page stays cheap regardless
     of how many ``LLMCall`` rows exist in the selected window.
     """
-    window_key = request.GET.get("window")
     if window_key not in LLM_USAGE_WINDOWS:
         window_key = LLM_USAGE_DEFAULT_WINDOW
     window_delta = LLM_USAGE_WINDOWS[window_key]
@@ -101,7 +105,7 @@ def llm_usage(request):
     for row in trend:
         row["avg_latency_ms"] = row["avg_latency_ms"] or 0
 
-    context = {
+    return {
         "window": window_key,
         "windows": list(LLM_USAGE_WINDOWS.keys()),
         "window_start": window_start,
@@ -115,6 +119,69 @@ def llm_usage(request):
         "trend": trend,
         "trend_bucket_label": "hour (UTC)" if window_key == "24h" else "day (UTC)",
     }
+
+
+def _llm_usage_json(context):
+    """Serialize an ``_llm_usage_context`` dict for the polling script.
+
+    Numbers are formatted exactly like the template's filters
+    (``floatformat``/``date``) so the polled values are byte-identical to
+    what a full reload of the same window would render, and the live
+    refresh never visibly "jumps" to a different rounding/format.
+    """
+    return {
+        "window": context["window"],
+        "window_start": date_filter(context["window_start"], "Y-m-d H:i:s"),
+        "total_calls": context["total_calls"],
+        "total_cost": floatformat(context["total_cost"], 2),
+        "failed_calls": context["failed_calls"],
+        "failure_rate": floatformat(context["failure_rate"], 1),
+        "avg_latency_ms": floatformat(context["avg_latency_ms"], 0),
+        "by_model": [
+            {
+                "model_display": row["model_display"],
+                "call_count": row["call_count"],
+                "total_cost": floatformat(row["total_cost"], 2),
+                "failed_count": row["failed_count"],
+                "avg_latency_ms": floatformat(row["avg_latency_ms"], 0),
+            }
+            for row in context["by_model"]
+        ],
+        "by_error_class": [
+            {
+                "error_class_display": row["error_class_display"],
+                "count": row["count"],
+            }
+            for row in context["by_error_class"]
+        ],
+        "trend": [
+            {
+                "bucket": str(row["bucket"]),
+                "call_count": row["call_count"],
+                "total_cost": floatformat(row["total_cost"], 2),
+                "avg_latency_ms": floatformat(row["avg_latency_ms"], 0),
+            }
+            for row in context["trend"]
+        ],
+        "trend_bucket_label": context["trend_bucket_label"],
+    }
+
+
+def llm_usage(request):
+    """Aggregated ``LLMCall`` cost/latency/volume/failure dashboard (#88).
+
+    With ``X-Requested-With: XMLHttpRequest`` (the same convention used
+    elsewhere in this view module, see ``_wants_json``), returns the same
+    aggregates as JSON instead of rendering the template - this is what
+    the page's own inline polling script (issue #89) fetches every 15s to
+    live-refresh the numbers/tables in place, without a new endpoint.
+    """
+    window_key = request.GET.get("window")
+    if window_key not in LLM_USAGE_WINDOWS:
+        window_key = LLM_USAGE_DEFAULT_WINDOW
+    context = _llm_usage_context(window_key)
+    if _wants_json(request):
+        return JsonResponse(_llm_usage_json(context))
     return render(request, "submissions/llm_usage.html", context)
 
 
