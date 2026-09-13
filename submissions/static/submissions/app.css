@@ -297,7 +297,7 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .llm-usage__table th {
     color: var(--muted);
     font-weight: 600;
-    background: var(--bg);
+    background: var(--surface);
     border-bottom: 2px solid var(--border);
 }
 

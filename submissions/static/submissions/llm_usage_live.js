@@ -78,11 +78,11 @@
             }
         } else {
             section.innerHTML =
-                '<table class="llm-usage__table" data-role="' +
+                '<div class="llm-usage__table-scroll"><table class="llm-usage__table" data-role="' +
                 tableRole +
                 '"><thead>' +
                 headHtml +
-                "</thead></table>";
+                "</thead></table></div>";
             section.querySelector('[data-role="' + tableRole + '"]').appendChild(tbody);
         }
     }
