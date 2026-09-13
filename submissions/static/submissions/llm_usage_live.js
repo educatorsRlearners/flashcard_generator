@@ -62,34 +62,89 @@
         return tbody;
     }
 
+    function normalizeSpace(s) {
+        return String(s).replace(/\s+/g, " ").trim();
+    }
+
+    function headText(html) {
+        return normalizeSpace(String(html).replace(/<[^>]*>/g, " "));
+    }
+
+    function theadMatches(existingTable, headHtml) {
+        var thead = existingTable.querySelector("thead");
+        if (!thead) {
+            return false;
+        }
+        return normalizeSpace(thead.textContent) === headText(headHtml);
+    }
+
+    function tbodyMatches(oldTbody, rows, cellsFor) {
+        var oldRows = oldTbody.querySelectorAll("tr");
+        if (oldRows.length !== rows.length) {
+            return false;
+        }
+        for (var i = 0; i < rows.length; i++) {
+            var expected = cellsFor(rows[i]);
+            var cells = oldRows[i].querySelectorAll("td");
+            if (cells.length !== expected.length) {
+                return false;
+            }
+            for (var j = 0; j < expected.length; j++) {
+                if (cells[j].getAttribute("data-role") !== String(expected[j].role)) {
+                    return false;
+                }
+                if (cells[j].textContent !== String(expected[j].text)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     function renderSection(sectionRole, rows, tableRole, emptyRole, emptyMessage, headHtml, cellsFor) {
         var section = app.querySelector('[data-role="' + sectionRole + '"]');
         if (!section) {
             return;
         }
         if (!rows.length) {
+            var existingEmpty = section.querySelector('[data-role="' + emptyRole + '"]');
+            var existingTbl = section.querySelector('[data-role="' + tableRole + '"]');
+            if (existingEmpty && !existingTbl && existingEmpty.textContent === emptyMessage) {
+                return;
+            }
             section.innerHTML =
                 '<p class="empty-state" data-role="' + emptyRole + '">' + emptyMessage + "</p>";
             return;
         }
         var existingTable = section.querySelector('[data-role="' + tableRole + '"]');
-        var tbody = buildRows(rows, cellsFor);
         if (existingTable) {
             var oldTbody = existingTable.querySelector("tbody");
-            if (oldTbody) {
-                existingTable.replaceChild(tbody, oldTbody);
-            } else {
-                existingTable.appendChild(tbody);
+            if (oldTbody && theadMatches(existingTable, headHtml) && tbodyMatches(oldTbody, rows, cellsFor)) {
+                return;
             }
-        } else {
+            if (oldTbody && theadMatches(existingTable, headHtml)) {
+                var nextTbody = buildRows(rows, cellsFor);
+                existingTable.replaceChild(nextTbody, oldTbody);
+                return;
+            }
+            var freshTbody = buildRows(rows, cellsFor);
             section.innerHTML =
                 '<div class="llm-usage__table-scroll"><table class="llm-usage__table" data-role="' +
                 tableRole +
                 '"><thead>' +
                 headHtml +
                 "</thead></table></div>";
-            section.querySelector('[data-role="' + tableRole + '"]').appendChild(tbody);
+            section.querySelector('[data-role="' + tableRole + '"]').appendChild(freshTbody);
+            return;
         }
+        var tbody = buildRows(rows, cellsFor);
+        section.innerHTML =
+            '<div class="llm-usage__table-scroll"><table class="llm-usage__table" data-role="' +
+            tableRole +
+            '"><thead>' +
+            headHtml +
+            "</thead></table></div>";
+        section.querySelector('[data-role="' + tableRole + '"]').appendChild(tbody);
     }
 
     function applyData(data) {

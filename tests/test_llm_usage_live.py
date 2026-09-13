@@ -361,3 +361,360 @@ def test_review_tally_keeps_aria_live_polite():
     client = Client()
     content = client.get("/llm-usage/").content.decode()
     assert '<p class="review-tally" aria-live="polite">' in content
+
+
+# --- Issue #123: change-aware renderSection tables. ---
+#
+# Drive the real `renderSection`/`buildRows` source (extracted verbatim
+# from `llm_usage_live.js`) under Node with a minimal fake DOM. The fake
+# implements just enough of the DOM API the section code uses
+# (`createElement`, `querySelector(All)`, `appendChild`, `replaceChild`,
+# `innerHTML` for the two HTML shapes `renderSection` writes, plus
+# `textContent` / `data-role`), counting `innerHTML` writes and
+# `replaceChild` calls so unchanged polls assert zero mutations and
+# changed polls assert replacement with correctly formatted cells.
+
+
+def _load_section_source():
+    src = _LIVE_JS_PATH.read_text()
+    start = src.find("function buildRows")
+    end = src.find("function applyData")
+    assert start != -1 and end != -1 and start < end, "section helpers not found"
+    return src[start:end]
+
+
+_FAKE_SECTION_DOM = """
+function FakeEl(tag) {
+    this.tagName = (tag || "div").toLowerCase();
+    this.attrs = {};
+    this.children = [];
+    this._text = "";
+    this.parent = null;
+    this._innerWrites = 0;
+    this._replaceCalls = 0;
+}
+FakeEl.prototype.setAttribute = function (k, v) { this.attrs[k] = String(v); };
+FakeEl.prototype.getAttribute = function (k) {
+    return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null;
+};
+Object.defineProperty(FakeEl.prototype, "textContent", {
+    get: function () {
+        if (this.children.length) {
+            return this.children.map(function (c) { return c.textContent; }).join("");
+        }
+        return this._text;
+    },
+    set: function (v) { this._text = String(v); this.children = []; },
+    configurable: true
+});
+Object.defineProperty(FakeEl.prototype, "innerHTML", {
+    get: function () { return this._html || ""; },
+    set: function (html) {
+        this._innerWrites += 1;
+        this._html = String(html);
+        this.children = [];
+        this._text = "";
+        var h = String(html);
+        if (h.indexOf("<table") !== -1) {
+            var roleM = /data-role="([^"]+)"/.exec(h);
+            var headM = /<thead>([\\s\\S]*?)<\\/thead>/.exec(h);
+            var wrap = new FakeEl("div");
+            var table = new FakeEl("table");
+            if (roleM) { table.setAttribute("data-role", roleM[1]); }
+            var thead = new FakeEl("thead");
+            var headInner = headM ? headM[1] : "";
+            thead._text = headInner.replace(/<[^>]*>/g, " ");
+            table.children.push(thead); thead.parent = table;
+            wrap.children.push(table); table.parent = wrap;
+            this.children.push(wrap); wrap.parent = this;
+        } else if (h.indexOf("empty-state") !== -1) {
+            var eM = /data-role="([^"]+)"/.exec(h);
+            var tM = />([^<>]*)<\\/p>\\s*$/.exec(h);
+            var p = new FakeEl("p");
+            if (eM) { p.setAttribute("data-role", eM[1]); }
+            p._text = tM ? tM[1] : "";
+            this.children.push(p); p.parent = this;
+        }
+    },
+    configurable: true
+});
+FakeEl.prototype.appendChild = function (child) {
+    this.children.push(child); child.parent = this; return child;
+};
+FakeEl.prototype.replaceChild = function (next, old) {
+    this._replaceCalls += 1;
+    var i = this.children.indexOf(old);
+    if (i === -1) { throw new Error("replaceChild: old not found"); }
+    this.children[i] = next; next.parent = this; old.parent = null;
+    return old;
+};
+function _matches(el, sel) {
+    var m = /^\\[data-role="([^"]+)"\\]$/.exec(sel);
+    if (m) { return el.getAttribute("data-role") === m[1]; }
+    return el.tagName === sel.toLowerCase();
+}
+FakeEl.prototype.querySelector = function (sel) {
+    var stack = this.children.slice();
+    while (stack.length) {
+        var el = stack.shift();
+        if (_matches(el, sel)) { return el; }
+        stack = el.children.concat(stack);
+    }
+    return null;
+};
+FakeEl.prototype.querySelectorAll = function (sel) {
+    var out = [];
+    (function walk(el) {
+        el.children.forEach(function (c) {
+            if (_matches(c, sel)) { out.push(c); }
+            walk(c);
+        });
+    })(this);
+    return out;
+};
+"""
+
+
+def _run_section_probe(probe_js):
+    section_src = _load_section_source()
+    script = (
+        _FAKE_SECTION_DOM
+        + "\nvar document = { createElement: function (t) { return new FakeEl(t); } };\n"
+        + section_src
+        + "\n"
+        + probe_js
+    )
+    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, f"node probe failed: {proc.stderr}"
+    return json.loads(proc.stdout.strip())
+
+
+_BY_MODEL_CELLS = """
+function byModelCells(row) {
+    return [
+        { role: "model", text: row.model_display },
+        { role: "call-count", text: row.call_count },
+        { role: "total-cost", text: "$" + row.total_cost },
+        { role: "failed-count", text: row.failed_count },
+        { role: "avg-latency", text: row.avg_latency_ms }
+    ];
+}
+var HEAD = "<tr><th>Model</th></tr>";
+"""
+
+_SETUP_SECTION = """
+var section = new FakeEl("div");
+section.setAttribute("data-role", "by-model-section");
+var app = { querySelector: function (sel) {
+    var m = /\\[data-role="([^"]+)"\\]/.exec(sel);
+    if (m && section.getAttribute("data-role") === m[1]) { return section; }
+    return section.querySelector(sel);
+} };
+"""
+
+
+def test_rendersection_source_compares_formatted_strings():
+    src = _load_section_source()
+    assert "String(" in src
+    assert "querySelector" in src
+    assert "replaceChild" in src
+
+
+def test_rendersection_unchanged_keeps_tbody_identity():
+    result = _run_section_probe(
+        _BY_MODEL_CELLS
+        + _SETUP_SECTION
+        + """
+var rows = [{model_display: "m", call_count: 5, total_cost: "1.00", failed_count: 1, avg_latency_ms: 10}];
+renderSection("by-model-section", rows, "by-model-table", "by-model-empty",
+    "No calls in this window.", HEAD, byModelCells);
+var table = section.querySelector('[data-role="by-model-table"]');
+var tbodyBefore = table.querySelector("tbody");
+var writesBefore = section._innerWrites;
+var replacesBefore = table._replaceCalls;
+renderSection("by-model-section", [{model_display: "m", call_count: 5, total_cost: "1.00", failed_count: 1, avg_latency_ms: 10}],
+    "by-model-table", "by-model-empty", "No calls in this window.", HEAD, byModelCells);
+var tbodyAfter = table.querySelector("tbody");
+console.log(JSON.stringify({
+    same: tbodyBefore === tbodyAfter,
+    innerWrites: section._innerWrites - writesBefore,
+    replaces: table._replaceCalls - replacesBefore
+}));
+"""
+    )
+    assert result == {"same": True, "innerWrites": 0, "replaces": 0}
+
+
+def test_rendersection_changed_replaces_with_formatting():
+    result = _run_section_probe(
+        _BY_MODEL_CELLS
+        + _SETUP_SECTION
+        + """
+var rows = [{model_display: "m", call_count: 5, total_cost: "1.00", failed_count: 1, avg_latency_ms: 10}];
+renderSection("by-model-section", rows, "by-model-table", "by-model-empty",
+    "No calls in this window.", HEAD, byModelCells);
+var table = section.querySelector('[data-role="by-model-table"]');
+var tbodyBefore = table.querySelector("tbody");
+renderSection("by-model-section", [{model_display: "m", call_count: 6, total_cost: "1.00", failed_count: 1, avg_latency_ms: 10}],
+    "by-model-table", "by-model-empty", "No calls in this window.", HEAD, byModelCells);
+var tbodyAfter = table.querySelector("tbody");
+var cells = tbodyAfter.querySelectorAll("td").map(function (td) { return [td.getAttribute("data-role"), td.textContent]; });
+console.log(JSON.stringify({
+    replaced: tbodyBefore !== tbodyAfter,
+    replaces: table._replaceCalls,
+    cells: cells
+}));
+"""
+    )
+    assert result["replaced"] is True
+    assert result["replaces"] == 1
+    assert result["cells"] == [
+        ["model", "m"],
+        ["call-count", "6"],
+        ["total-cost", "$1.00"],
+        ["failed-count", "1"],
+        ["avg-latency", "10"],
+    ]
+
+
+def test_rendersection_numeric_type_only_is_equal():
+    result = _run_section_probe(
+        _BY_MODEL_CELLS
+        + _SETUP_SECTION
+        + """
+renderSection("by-model-section",
+    [{model_display: "m", call_count: 5, total_cost: "1.00", failed_count: 0, avg_latency_ms: 10}],
+    "by-model-table", "by-model-empty", "No calls in this window.", HEAD, byModelCells);
+var table = section.querySelector('[data-role="by-model-table"]');
+var tbodyBefore = table.querySelector("tbody");
+renderSection("by-model-section",
+    [{model_display: "m", call_count: "5", total_cost: "1.00", failed_count: "0", avg_latency_ms: "10"}],
+    "by-model-table", "by-model-empty", "No calls in this window.", HEAD, byModelCells);
+console.log(JSON.stringify({ same: tbodyBefore === table.querySelector("tbody"), replaces: table._replaceCalls }));
+"""
+    )
+    assert result == {"same": True, "replaces": 0}
+
+
+def test_rendersection_row_order_counts_as_changed():
+    result = _run_section_probe(
+        _BY_MODEL_CELLS
+        + _SETUP_SECTION
+        + """
+function mk(n) { return {model_display: n, call_count: 1, total_cost: "0.00", failed_count: 0, avg_latency_ms: 1}; }
+renderSection("by-model-section", [mk("a"), mk("b")],
+    "by-model-table", "by-model-empty", "No calls in this window.", HEAD, byModelCells);
+var table = section.querySelector('[data-role="by-model-table"]');
+var tbodyBefore = table.querySelector("tbody");
+renderSection("by-model-section", [mk("b"), mk("a")],
+    "by-model-table", "by-model-empty", "No calls in this window.", HEAD, byModelCells);
+var first = table.querySelector("tbody").querySelectorAll("tr")[0].querySelectorAll("td")[0].textContent;
+console.log(JSON.stringify({ replaced: tbodyBefore !== table.querySelector("tbody"), first: first }));
+"""
+    )
+    assert result == {"replaced": True, "first": "b"}
+
+
+def test_rendersection_empty_transitions():
+    result = _run_section_probe(
+        _BY_MODEL_CELLS
+        + _SETUP_SECTION
+        + """
+var out = {};
+renderSection("by-model-section", [], "by-model-table", "by-model-empty",
+    "No calls in this window.", HEAD, byModelCells);
+var emptyBefore = section.querySelector('[data-role="by-model-empty"]');
+var w0 = section._innerWrites;
+renderSection("by-model-section", [], "by-model-table", "by-model-empty",
+    "No calls in this window.", HEAD, byModelCells);
+out.emptyNoWrite = (section._innerWrites - w0) === 0;
+out.emptySame = emptyBefore === section.querySelector('[data-role="by-model-empty"]');
+renderSection("by-model-section",
+    [{model_display: "m", call_count: 1, total_cost: "0.00", failed_count: 0, avg_latency_ms: 1}],
+    "by-model-table", "by-model-empty", "No calls in this window.", HEAD, byModelCells);
+out.hasTable = !!section.querySelector('[data-role="by-model-table"]');
+out.emptyGone = !section.querySelector('[data-role="by-model-empty"]');
+renderSection("by-model-section", [], "by-model-table", "by-model-empty",
+    "No calls in this window.", HEAD, byModelCells);
+out.backToEmpty = !!section.querySelector('[data-role="by-model-empty"]');
+out.tableGone = !section.querySelector('[data-role="by-model-table"]');
+out.msg = section.querySelector('[data-role="by-model-empty"]').textContent;
+console.log(JSON.stringify(out));
+"""
+    )
+    assert result == {
+        "emptyNoWrite": True,
+        "emptySame": True,
+        "hasTable": True,
+        "emptyGone": True,
+        "backToEmpty": True,
+        "tableGone": True,
+        "msg": "No calls in this window.",
+    }
+
+
+def test_rendersection_trend_header_change_rebuilds():
+    result = _run_section_probe(
+        """
+function trendCells(row) {
+    return [
+        { role: "bucket", text: row.bucket },
+        { role: "call-count", text: row.call_count },
+        { role: "total-cost", text: "$" + row.total_cost },
+        { role: "avg-latency", text: row.avg_latency_ms }
+    ];
+}
+var section = new FakeEl("div");
+section.setAttribute("data-role", "trend-section");
+var app = { querySelector: function (sel) {
+    var m = /\\[data-role="([^"]+)"\\]/.exec(sel);
+    if (m && section.getAttribute("data-role") === m[1]) { return section; }
+    return section.querySelector(sel);
+} };
+var rows = [{bucket: "b", call_count: 1, total_cost: "0.00", avg_latency_ms: 1}];
+var headHour = "<tr><th>Bucket (hour)</th></tr>";
+var headDay = "<tr><th>Bucket (day)</th></tr>";
+renderSection("trend-section", rows, "trend-table", "trend-empty",
+    "No calls in this window.", headHour, trendCells);
+var tableBefore = section.querySelector('[data-role="trend-table"]');
+var tbodyBefore = tableBefore.querySelector("tbody");
+var w0 = section._innerWrites;
+renderSection("trend-section", rows, "trend-table", "trend-empty",
+    "No calls in this window.", headHour, trendCells);
+var sameHeadNoWrite = (section._innerWrites - w0) === 0 && tbodyBefore === section.querySelector('[data-role="trend-table"]').querySelector("tbody");
+renderSection("trend-section", rows, "trend-table", "trend-empty",
+    "No calls in this window.", headDay, trendCells);
+var tableAfter = section.querySelector('[data-role="trend-table"]');
+console.log(JSON.stringify({
+    sameHeadNoWrite: sameHeadNoWrite,
+    rebuilt: tableBefore !== tableAfter,
+    headHasDay: tableAfter.querySelector("thead").textContent.indexOf("day") !== -1
+}));
+"""
+    )
+    assert result == {"sameHeadNoWrite": True, "rebuilt": True, "headHasDay": True}
+
+
+def test_rendersection_missing_section_is_silent_noop():
+    result = _run_section_probe(
+        _BY_MODEL_CELLS
+        + """
+var app = { querySelector: function (sel) { return null; } };
+renderSection("by-model-section", [{model_display: "m", call_count: 1, total_cost: "0.00", failed_count: 0, avg_latency_ms: 1}],
+    "by-model-table", "by-model-empty", "No calls in this window.", HEAD, byModelCells);
+console.log(JSON.stringify({ ok: true }));
+"""
+    )
+    assert result == {"ok": True}
+
+
+def test_llm_usage_tables_have_no_aria_live():
+    """#123 adds no aria-live to the four table sections (markup unchanged)."""
+    client = Client()
+    content = client.get("/llm-usage/").content.decode()
+    for role in ("by-model-section", "by-provider-section", "by-error-class-section", "trend-section"):
+        idx = content.find(f'data-role="{role}"')
+        assert idx != -1
+        snippet = content[max(0, idx - 200):idx]
+        assert "aria-live" not in snippet
+
