@@ -92,6 +92,7 @@ def test_successful_call_records_row_with_usage_latency_cost(
     assert row.status == LLMCall.Status.OK
     assert row.error_class == ""
     assert row.model == "claude-sonnet-5"
+    assert row.provider == "anthropic"
     # Token counts come from the provider usage payload.
     assert (row.prompt_tokens, row.completion_tokens) == (12, 7)
     assert row.total_tokens == 19
@@ -180,6 +181,7 @@ def test_failed_call_records_failed_row_with_error_class(
     assert row.error_class == "LLMTransientError"
     assert (row.prompt_tokens, row.completion_tokens) == (0, 0)
     assert row.estimated_cost_usd == Decimal("0")
+    assert row.provider == "anthropic"
 
 
 def test_config_error_records_failed_row(monkeypatch):
@@ -190,6 +192,10 @@ def test_config_error_records_failed_row(monkeypatch):
     row = LLMCall.objects.get()
     assert row.status == LLMCall.Status.FAILED
     assert row.error_class == "LLMConfigError"
+    # No adapter was ever built for an unrecognized provider, so the row
+    # records the normalized, attempted name instead of leaving it blank
+    # (issue #91) - useful for spotting a typo'd LLM_PROVIDER.
+    assert row.provider == "does-not-exist"
 
 
 # --- cost helper -------------------------------------------------------
@@ -216,6 +222,7 @@ def test_estimate_cost_usd_uses_per_model_prices_with_fallback():
 def test_llmcall_visible_in_admin():
     LLMCall.objects.create(
         model="claude-sonnet-5",
+        provider="anthropic",
         prompt_tokens=10,
         completion_tokens=5,
         latency_ms=42,
@@ -229,6 +236,13 @@ def test_llmcall_visible_in_admin():
     changelist = client.get("/admin/submissions/llmcall/")
     assert changelist.status_code == 200
     assert b"claude-sonnet-5" in changelist.content
+    assert b"anthropic" in changelist.content
+
+    # provider is filterable and searchable (issue #91).
+    filtered = client.get("/admin/submissions/llmcall/?provider=anthropic")
+    assert filtered.status_code == 200
+    searched = client.get("/admin/submissions/llmcall/?q=anthropic")
+    assert searched.status_code == 200
 
 
 def test_llm_usage_command_lists_rows_and_totals(monkeypatch, anthropic_key):

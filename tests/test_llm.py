@@ -124,10 +124,17 @@ def test_generate_structured_output_happy_path(monkeypatch, anthropic_key):
 
 @override_settings(LLM_PROVIDER="does-not-exist")
 def test_unknown_provider_raises_config_error():
+    from submissions.models import LLMCall
+
     with pytest.raises(llm.LLMConfigError) as exc:
         llm.generate(system="s", prompt="p")
     assert "does-not-exist" in str(exc.value)
     assert "anthropic" in str(exc.value)
+
+    # No adapter exists to ask for a canonical name, so the failed row
+    # records the normalized, attempted provider name (issue #91).
+    row = LLMCall.objects.get()
+    assert row.provider == "does-not-exist"
 
 
 def test_missing_api_key_raises_auth_error(monkeypatch):
@@ -403,10 +410,17 @@ def test_openai_structured_output_happy_path(monkeypatch, openai_key):
 
 @override_settings(LLM_PROVIDER="openai")
 def test_openai_alias_routes_to_openai_adapter(monkeypatch, anthropic_key):
+    from submissions.models import LLMCall
+
     client = _install_openai_client(monkeypatch, [_openai_response("hi")])
     result = llm.generate(system="s", prompt="p")
     assert result.text == "hi"
     assert client.chat.completions.calls[0]["model"] == "claude-sonnet-5"
+
+    # The row records the adapter's canonical name, not the "openai" alias
+    # used to select it (issue #91).
+    row = LLMCall.objects.get()
+    assert row.provider == "openai-compatible"
 
 
 @override_settings(
@@ -626,10 +640,30 @@ def test_openai_success_records_llm_call_row(monkeypatch, openai_key):
     row = LLMCall.objects.get()
     assert row.status == LLMCall.Status.OK
     assert row.model == "gpt-4o-mini"
+    assert row.provider == "openai-compatible"
     assert (row.prompt_tokens, row.completion_tokens) == (12, 7)
     assert row.estimated_cost_usd == llm.estimate_cost_usd(
         "gpt-4o-mini", 12, 7
     )
+
+
+@override_settings(
+    LLM_PROVIDER="openai-compatible",
+    LLM_API_KEY_ENV_VAR="OPENAI_API_KEY",
+)
+def test_openai_failed_call_records_llm_call_row_with_provider(
+    monkeypatch, openai_key
+):
+    from submissions.models import LLMCall
+
+    _install_openai_client(monkeypatch, [FakeAPIError(401)])
+
+    with pytest.raises(llm.LLMAuthError):
+        llm.generate(system="s", prompt="p")
+
+    row = LLMCall.objects.get()
+    assert row.status == LLMCall.Status.FAILED
+    assert row.provider == "openai-compatible"
 
 
 # --- cross-provider contract -------------------------------------------

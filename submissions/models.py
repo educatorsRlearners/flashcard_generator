@@ -446,6 +446,12 @@ class LLMCall(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     model = models.CharField(max_length=200, blank=True, default="")
+    #: Canonical adapter name (``Provider.name``, e.g. ``"anthropic"`` or
+    #: ``"openai-compatible"``) that handled this call - independent of the
+    #: free-form ``model`` string, so calls can be grouped by provider
+    #: without guessing from the model id (issue #91). Blank for rows
+    #: recorded before this field existed; never backfilled.
+    provider = models.CharField(max_length=32, blank=True, default="")
     prompt_tokens = models.IntegerField(default=0)
     completion_tokens = models.IntegerField(default=0)
     latency_ms = models.IntegerField(default=0)

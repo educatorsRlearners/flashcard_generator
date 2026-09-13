@@ -226,6 +226,7 @@ class Provider:
                 latency_ms=int((time.perf_counter() - start) * 1000),
                 status="failed",
                 error_class=type(exc).__name__,
+                provider=self.name,
                 batch=batch,
                 submitted_url=submitted_url,
             )
@@ -237,6 +238,7 @@ class Provider:
             output_tokens=usage.get("output_tokens", 0),
             latency_ms=int((time.perf_counter() - start) * 1000),
             status="ok",
+            provider=self.name,
             batch=batch,
             submitted_url=submitted_url,
         )
@@ -657,6 +659,7 @@ def _record_llm_call(
     latency_ms: int,
     status: str,
     error_class: str = "",
+    provider: str = "",
     batch: Any = None,
     submitted_url: Any = None,
 ) -> None:
@@ -679,6 +682,7 @@ def _record_llm_call(
             ),
             "status": status,
             "error_class": error_class or "",
+            "provider": provider or "",
         }
         for field_name, value in (("batch", batch), ("submitted_url", submitted_url)):
             if value is None:
@@ -717,10 +721,12 @@ def get_provider(name: Optional[str] = None) -> Provider:
     provider_name = (name or _resolve_provider_name() or "").strip().lower()
     factory = _PROVIDERS.get(provider_name)
     if factory is None:
-        raise LLMConfigError(
+        exc = LLMConfigError(
             f"Unknown LLM_PROVIDER {provider_name!r}. "
             f"Supported providers: {', '.join(SUPPORTED_PROVIDERS)}."
         )
+        exc.attempted_provider_name = provider_name
+        raise exc
     if provider_name in _OPENAI_PROVIDER_NAMES:
         return factory(
             model=_resolve_openai_model(),
@@ -772,6 +778,7 @@ def generate(
             latency_ms=0,
             status="failed",
             error_class=type(exc).__name__,
+            provider=getattr(exc, "attempted_provider_name", "") or "",
             batch=batch,
             submitted_url=submitted_url,
         )
