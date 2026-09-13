@@ -147,6 +147,18 @@ LLM_OPENAI_BASE_URL = os.environ.get(
 LLM_OPENAI_MODEL = os.environ.get("LLM_OPENAI_MODEL", "")
 LLM_OPENAI_API_KEY_ENV_VAR = os.environ.get("LLM_OPENAI_API_KEY_ENV_VAR", "")
 
+# Gemini provider (issue #83; adapter in submissions/llm.py). Talks to
+# Google's Generative Language API directly via httpx, so there is no
+# LLM_GEMINI_BASE_URL - the endpoint is a fixed module constant, not
+# configurable. Optional per-provider overrides below follow the same
+# fallback pattern as LLM_OPENAI_* above: empty falls back to the generic
+# LLM_MODEL / LLM_API_KEY_ENV_VAR. No new env-var name is invented for the
+# key itself - conventionally set LLM_GEMINI_API_KEY_ENV_VAR=GOOGLE_API_KEY
+# (or set the generic LLM_API_KEY_ENV_VAR=GOOGLE_API_KEY and leave this
+# blank), and export GOOGLE_API_KEY yourself.
+LLM_GEMINI_MODEL = os.environ.get("LLM_GEMINI_MODEL", "")
+LLM_GEMINI_API_KEY_ENV_VAR = os.environ.get("LLM_GEMINI_API_KEY_ENV_VAR", "")
+
 # --- LLM cost/failure-rate alerting (submissions/tasks.py, issue #90) ------
 # A periodic Huey task watches recent LLMCall rows and logs a WARNING when
 # total estimated cost or failure rate over a rolling window crosses one of

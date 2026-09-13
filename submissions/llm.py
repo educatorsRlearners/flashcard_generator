@@ -17,6 +17,21 @@ provider and model are used is read from Django settings:
 * ``LLM_OPENAI_API_KEY_ENV_VAR`` - optional override of
 *                             ``LLM_API_KEY_ENV_VAR`` for the OpenAI-compatible
 *                             provider (empty = fall back)
+* ``LLM_GEMINI_MODEL``    - optional override of ``LLM_MODEL`` for the
+*                             ``gemini`` provider (empty = fall back)
+* ``LLM_GEMINI_API_KEY_ENV_VAR`` - optional override of
+*                             ``LLM_API_KEY_ENV_VAR`` for the ``gemini``
+*                             provider (empty = fall back). No new env-var
+*                             name is invented for the key itself:
+*                             conventionally set this to ``GOOGLE_API_KEY``
+*                             (or set the generic ``LLM_API_KEY_ENV_VAR``
+*                             directly) and export ``GOOGLE_API_KEY``
+*                             yourself (``_docs/llm_portability.md`` §4)
+
+``LLM_PROVIDER=gemini`` (issue #83) talks to Google's Generative Language
+API directly via ``httpx`` (no SDK dependency), against a fixed endpoint
+(``https://generativelanguage.googleapis.com/v1beta``) - there is no
+``LLM_GEMINI_BASE_URL`` setting, unlike the OpenAI-compatible provider.
 
 ``LLM_PROVIDER=grok`` and ``LLM_PROVIDER=openrouter`` (issue #84) are also
 ``OpenAICompatibleProvider`` under the hood, with a hardcoded ``base_url``
@@ -44,6 +59,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Callable, Iterator, Optional
 
+import httpx
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
@@ -175,6 +191,24 @@ def _resolve_openai_api_key_env_var() -> str:
     """Key env var for the OpenAI-compatible provider: per-provider override
     wins, empty override falls back to the generic setting."""
     override = _setting("LLM_OPENAI_API_KEY_ENV_VAR", "")
+    if override:
+        return override
+    return _resolve_api_key_env_var()
+
+
+def _resolve_gemini_model() -> str:
+    """Model for the Gemini provider: per-provider override wins, empty
+    override falls back to the generic ``LLM_MODEL``."""
+    override = _setting("LLM_GEMINI_MODEL", "")
+    if override:
+        return override
+    return _resolve_model()
+
+
+def _resolve_gemini_api_key_env_var() -> str:
+    """Key env var for the Gemini provider: per-provider override wins,
+    empty override falls back to the generic setting."""
+    override = _setting("LLM_GEMINI_API_KEY_ENV_VAR", "")
     if override:
         return override
     return _resolve_api_key_env_var()
@@ -521,6 +555,166 @@ def _openai_usage(raw: Any) -> dict:
     return usage
 
 
+# --- Gemini implementation (issue #83) -------------------------------
+
+
+#: Fixed base URL for Google's Generative Language API. Not a setting: this
+#: adapter talks to exactly one API, unlike ``OpenAICompatibleProvider``
+#: which is pointed at different gateways via ``LLM_OPENAI_BASE_URL``.
+GEMINI_API_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta"
+
+#: ``finishReason`` values that mean the model refused / declined to answer
+#: rather than completing or being truncated (mirrors how the
+#: OpenAI-compatible adapter maps ``content_filter`` to ``"refusal"``).
+_GEMINI_REFUSAL_FINISH_REASONS = frozenset(
+    {"SAFETY", "RECITATION", "OTHER", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"}
+)
+
+
+def _gemini_request(*, url: str, headers: dict, json_body: dict) -> httpx.Response:
+    """Make the outbound Gemini HTTP call.
+
+    Isolated in its own function so tests can monkeypatch it and never
+    construct a real ``httpx.Client`` or touch the network - the same seam
+    role ``_new_anthropic_client``/``_new_openai_client`` play for the SDK
+    providers. Does not raise for a non-2xx response; the caller decides.
+    """
+    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        return client.post(url, headers=headers, json=json_body)
+
+
+class GeminiProvider(Provider):
+    """Adapter for Google's Generative Language API, called directly via
+    ``httpx`` (no ``google-genai``/``google-generativeai`` dependency - see
+    issue #83 and ``_docs/llm_portability.md`` §4).
+
+    Request shape: ``system`` becomes ``systemInstruction``, ``prompt``
+    becomes a single ``user`` entry in ``contents``, ``max_tokens`` becomes
+    ``generationConfig.maxOutputTokens``, and ``response_format`` (a JSON
+    Schema dict) becomes ``generationConfig.responseMimeType`` +
+    ``responseSchema``. Response handling (refusal / truncation / empty /
+    schema validation) is shared with the base class via
+    :meth:`Provider._build_result`.
+    """
+
+    name = "gemini"
+
+    def _call(self, *, system, prompt, response_format, max_tokens):
+        api_key = self._require_api_key()
+        url = f"{GEMINI_API_BASE_URL}/models/{self.model}:generateContent"
+        headers = {
+            "x-goog-api-key": api_key,  # never the ?key= query param (issue #83)
+            "Content-Type": "application/json",
+        }
+        generation_config: dict[str, Any] = {"maxOutputTokens": max_tokens}
+        if response_format is not None:
+            generation_config["responseMimeType"] = "application/json"
+            generation_config["responseSchema"] = response_format
+        body = {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": generation_config,
+        }
+        response = _gemini_request(url=url, headers=headers, json_body=body)
+        response.raise_for_status()
+        return response.json()
+
+    def _extract(self, raw: Any) -> tuple[str, Optional[str], dict]:
+        raw = raw or {}
+        candidates = raw.get("candidates") or []
+        if not candidates:
+            return "", None, _gemini_usage(raw)
+
+        candidate = candidates[0] or {}
+        parts = ((candidate.get("content") or {}).get("parts")) or []
+        text = "".join(
+            part.get("text", "") for part in parts if isinstance(part, dict)
+        )
+        finish_reason = candidate.get("finishReason")
+        if finish_reason in _GEMINI_REFUSAL_FINISH_REASONS:
+            stop_reason = "refusal"
+        elif finish_reason == "MAX_TOKENS":
+            stop_reason = "max_tokens"
+        else:
+            # "STOP" (and anything else unrecognized) passes through as-is.
+            stop_reason = finish_reason
+        return text, stop_reason, _gemini_usage(raw)
+
+    def _map_exception(self, exc: BaseException) -> LLMError:
+        if isinstance(exc, httpx.HTTPStatusError):
+            return _classify_gemini_http_error(exc)
+        if isinstance(exc, httpx.TimeoutException):
+            return LLMTransientError("request timed out", reason="timeout")
+        if isinstance(exc, httpx.TransportError):
+            return LLMTransientError(
+                "connection error contacting provider", reason="connection"
+            )
+        return LLMTransientError(
+            f"unexpected provider error ({type(exc).__name__})", reason="unknown"
+        )
+
+
+def _gemini_usage(raw: dict) -> dict:
+    """Pull ``{input_tokens, output_tokens}`` out of ``usageMetadata``."""
+    usage_obj = raw.get("usageMetadata")
+    usage: dict = {}
+    if isinstance(usage_obj, dict):
+        if "promptTokenCount" in usage_obj:
+            usage["input_tokens"] = usage_obj["promptTokenCount"]
+        if "candidatesTokenCount" in usage_obj:
+            usage["output_tokens"] = usage_obj["candidatesTokenCount"]
+    return usage
+
+
+def _classify_gemini_http_error(exc: httpx.HTTPStatusError) -> LLMError:
+    """Map a Gemini HTTP error response to a typed :class:`LLMError`.
+
+    Gemini reports a bad API key as HTTP 400 with
+    ``error.status == "INVALID_ARGUMENT"``, not 401/403, so that needs an
+    explicit special case ahead of the generic "400 = bad_request" branch
+    (issue #83).
+    """
+    status = exc.response.status_code
+    try:
+        body = exc.response.json()
+    except ValueError:
+        body = {}
+    error = body.get("error") if isinstance(body, dict) else None
+    error = error if isinstance(error, dict) else {}
+    error_status = error.get("status")
+    error_message = error.get("message") or ""
+
+    if status == 403 or error_status == "PERMISSION_DENIED":
+        return LLMAuthError(
+            "provider rejected the credentials; check the configured API key"
+        )
+    if status == 400:
+        if error_status == "INVALID_ARGUMENT" and _looks_like_bad_api_key(
+            error_message
+        ):
+            return LLMAuthError(
+                "provider rejected the credentials; check the configured API key"
+            )
+        return LLMBadResponseError(
+            "provider rejected the request (HTTP 400)", reason="bad_request"
+        )
+    if status == 429:
+        return LLMRateLimitError(retry_after=_extract_retry_after(exc))
+    if status in (500, 503):
+        return LLMTransientError(
+            f"provider server error (HTTP {status})", reason="server_error"
+        )
+    # Unknown shape: treat as transient so a blip is retried, but bounded.
+    return LLMTransientError(
+        f"unexpected provider error (HTTP {status})", reason="unknown"
+    )
+
+
+def _looks_like_bad_api_key(message: str) -> bool:
+    lowered = (message or "").lower()
+    return "api key" in lowered or "api_key" in lowered
+
+
 def _classify_provider_exception(exc: BaseException) -> LLMError:
     """Map a provider SDK exception (or a test fake shaped like one) to a
     typed :class:`LLMError`, using duck typing so tests need not import the
@@ -809,6 +1003,7 @@ _PROVIDERS: dict[str, Callable[..., Provider]] = {
     # api_key_env_var.
     "grok": OpenAICompatibleProvider,
     "openrouter": OpenAICompatibleProvider,
+    "gemini": GeminiProvider,
 }
 
 #: Provider names that need the OpenAI-compatible constructor kwargs.
@@ -877,6 +1072,11 @@ def get_provider(name: Optional[str] = None) -> Provider:
             model=_resolve_model(),
             api_key_env_var=defaults["api_key_env_var"],
             base_url=defaults["base_url"],
+        )
+    if provider_name == "gemini":
+        return factory(
+            model=_resolve_gemini_model(),
+            api_key_env_var=_resolve_gemini_api_key_env_var(),
         )
     return factory(model=_resolve_model(), api_key_env_var=_resolve_api_key_env_var())
 

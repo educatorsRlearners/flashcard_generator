@@ -8,6 +8,7 @@ import no ``anthropic`` symbols, make no network calls, and pass with
 import json
 import types
 
+import httpx
 import pytest
 from django.test import override_settings
 
@@ -394,8 +395,10 @@ def test_provider_registry_is_keyed_by_provider_name():
     assert "openai" in llm._PROVIDERS
     assert "grok" in llm._PROVIDERS
     assert "openrouter" in llm._PROVIDERS
+    assert "gemini" in llm._PROVIDERS
     assert llm.SUPPORTED_PROVIDERS == (
         "anthropic",
+        "gemini",
         "grok",
         "openai",
         "openai-compatible",
@@ -1025,3 +1028,410 @@ def test_unknown_provider_still_unaffected_by_grok_openrouter_additions():
     assert "not-a-real-provider" in str(exc.value)
     for name in ("anthropic", "openai", "openai-compatible", "grok", "openrouter"):
         assert name in str(exc.value)
+
+
+# --- Gemini adapter (issue #83) ---------------------------------------
+# Network stubbed via _gemini_request, mirroring the Anthropic/OpenAI fakes
+# above: no real httpx.Client instantiated, no network call. Responses are
+# real httpx.Response objects so raise_for_status()/`.json()` in the
+# production code paths exercise their real behaviour.
+
+_GEMINI_REQUEST = httpx.Request("POST", "https://generativelanguage.googleapis.com/")
+
+
+def _gemini_response(
+    text="hello",
+    finish_reason="STOP",
+    in_tok=10,
+    out_tok=5,
+    candidates=None,
+    include_usage=True,
+):
+    if candidates is None:
+        candidates = [
+            {
+                "content": {"parts": [{"text": text}]},
+                "finishReason": finish_reason,
+            }
+        ]
+    body: dict = {"candidates": candidates}
+    if include_usage:
+        body["usageMetadata"] = {
+            "promptTokenCount": in_tok,
+            "candidatesTokenCount": out_tok,
+        }
+    return httpx.Response(200, json=body, request=_GEMINI_REQUEST)
+
+
+def _gemini_error_response(status_code, error_status=None, error_message="", headers=None):
+    body = {}
+    if error_status is not None or error_message:
+        body = {"error": {"status": error_status, "message": error_message}}
+    return httpx.Response(
+        status_code, json=body, request=_GEMINI_REQUEST, headers=headers or {}
+    )
+
+
+def _install_gemini_request(monkeypatch, results, seen=None):
+    calls = []
+
+    def _fake(*, url, headers, json_body):
+        calls.append({"url": url, "headers": headers, "json_body": json_body})
+        idx = min(len(calls) - 1, len(results) - 1)
+        item = results[idx]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(llm, "_gemini_request", _fake)
+    if seen is not None:
+        seen["calls"] = calls
+    return calls
+
+
+@pytest.fixture
+def gemini_key(monkeypatch):
+    monkeypatch.setenv("GOOGLE_API_KEY", "sk-test-not-a-real-key")
+
+
+@override_settings(
+    LLM_PROVIDER="gemini",
+    LLM_MODEL="gemini-2.5-flash",
+    LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+)
+def test_gemini_text_happy_path(monkeypatch, gemini_key):
+    calls = _install_gemini_request(monkeypatch, [_gemini_response("hi")])
+
+    result = llm.generate(system="be terse", prompt="say hi")
+
+    assert result.text == "hi"
+    assert result.parsed is None
+    assert result.model == "gemini-2.5-flash"
+    assert result.stop_reason == "STOP"
+    assert result.usage == {"input_tokens": 10, "output_tokens": 5}
+
+    call = calls[0]
+    assert call["url"] == (
+        "https://generativelanguage.googleapis.com/v1beta/"
+        "models/gemini-2.5-flash:generateContent"
+    )
+    assert call["headers"]["x-goog-api-key"] == "sk-test-not-a-real-key"
+    assert "key" not in call["url"]  # never the ?key= query param (issue #83)
+    assert call["json_body"]["systemInstruction"] == {
+        "parts": [{"text": "be terse"}]
+    }
+    assert call["json_body"]["contents"] == [
+        {"role": "user", "parts": [{"text": "say hi"}]}
+    ]
+    assert call["json_body"]["generationConfig"]["maxOutputTokens"] == 4096
+    assert "responseMimeType" not in call["json_body"]["generationConfig"]
+
+
+@override_settings(
+    LLM_PROVIDER="gemini",
+    LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+)
+def test_gemini_structured_output_happy_path(monkeypatch, gemini_key):
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+    payload = json.dumps({"answer": "Paris"})
+    calls = _install_gemini_request(monkeypatch, [_gemini_response(payload)])
+
+    result = llm.generate(
+        system="s", prompt="capital of France?", response_format=schema
+    )
+
+    assert result.parsed == {"answer": "Paris"}
+    config = calls[0]["json_body"]["generationConfig"]
+    assert config["responseMimeType"] == "application/json"
+    assert config["responseSchema"] == schema
+
+
+@override_settings(
+    LLM_PROVIDER="gemini",
+    LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+)
+def test_gemini_truncated_response_raises_bad_response(monkeypatch, gemini_key):
+    _install_gemini_request(
+        monkeypatch, [_gemini_response("half an answ", finish_reason="MAX_TOKENS")]
+    )
+
+    with pytest.raises(llm.LLMBadResponseError) as exc:
+        llm.generate(system="s", prompt="p")
+    assert exc.value.reason == "truncated"
+
+
+@pytest.mark.parametrize(
+    "finish_reason",
+    ["SAFETY", "RECITATION", "OTHER", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"],
+)
+@override_settings(
+    LLM_PROVIDER="gemini",
+    LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+)
+def test_gemini_refusal_finish_reasons_raise_bad_response(
+    monkeypatch, gemini_key, finish_reason
+):
+    _install_gemini_request(
+        monkeypatch, [_gemini_response("", finish_reason=finish_reason)]
+    )
+
+    with pytest.raises(llm.LLMBadResponseError) as exc:
+        llm.generate(system="s", prompt="p")
+    assert exc.value.reason == "refusal"
+
+
+@override_settings(
+    LLM_PROVIDER="gemini",
+    LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+)
+def test_gemini_empty_candidates_raises_bad_response(monkeypatch, gemini_key):
+    _install_gemini_request(monkeypatch, [_gemini_response(candidates=[])])
+
+    with pytest.raises(llm.LLMBadResponseError) as exc:
+        llm.generate(system="s", prompt="p")
+    assert exc.value.reason == "empty"
+
+
+@override_settings(
+    LLM_PROVIDER="gemini",
+    LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+)
+def test_gemini_missing_usage_metadata_yields_empty_usage(monkeypatch, gemini_key):
+    calls = _install_gemini_request(
+        monkeypatch, [_gemini_response("hi", include_usage=False)]
+    )
+
+    result = llm.generate(system="s", prompt="p")
+
+    assert result.usage == {}
+    assert len(calls) == 1
+
+
+@override_settings(
+    LLM_PROVIDER="gemini",
+    LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+)
+def test_gemini_missing_api_key_raises_auth_error(monkeypatch):
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    calls = _install_gemini_request(monkeypatch, [_gemini_response()])
+
+    with pytest.raises(llm.LLMAuthError) as exc:
+        llm.generate(system="s", prompt="p")
+
+    assert "GOOGLE_API_KEY" in str(exc.value)
+    assert calls == []
+
+
+@override_settings(
+    LLM_PROVIDER="gemini",
+    LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+)
+def test_gemini_403_maps_to_auth_error(monkeypatch, gemini_key):
+    calls = _install_gemini_request(monkeypatch, [_gemini_error_response(403)])
+
+    with pytest.raises(llm.LLMAuthError):
+        llm.generate(system="s", prompt="p")
+    assert len(calls) == 1  # not retried - auth errors are not transient
+
+
+@override_settings(
+    LLM_PROVIDER="gemini",
+    LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+)
+def test_gemini_400_permission_denied_maps_to_auth_error(monkeypatch, gemini_key):
+    _install_gemini_request(
+        monkeypatch,
+        [_gemini_error_response(400, error_status="PERMISSION_DENIED")],
+    )
+
+    with pytest.raises(llm.LLMAuthError):
+        llm.generate(system="s", prompt="p")
+
+
+@override_settings(
+    LLM_PROVIDER="gemini",
+    LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+)
+def test_gemini_400_invalid_api_key_maps_to_auth_error(monkeypatch, gemini_key):
+    _install_gemini_request(
+        monkeypatch,
+        [
+            _gemini_error_response(
+                400,
+                error_status="INVALID_ARGUMENT",
+                error_message="API key not valid. Please pass a valid API key.",
+            )
+        ],
+    )
+
+    with pytest.raises(llm.LLMAuthError):
+        llm.generate(system="s", prompt="p")
+
+
+@override_settings(
+    LLM_PROVIDER="gemini",
+    LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+)
+def test_gemini_generic_400_raises_bad_response(monkeypatch, gemini_key):
+    _install_gemini_request(
+        monkeypatch,
+        [
+            _gemini_error_response(
+                400,
+                error_status="INVALID_ARGUMENT",
+                error_message="request body is malformed",
+            )
+        ],
+    )
+
+    with pytest.raises(llm.LLMBadResponseError) as exc:
+        llm.generate(system="s", prompt="p")
+    assert exc.value.reason == "bad_request"
+
+
+@override_settings(
+    LLM_PROVIDER="gemini",
+    LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+)
+def test_gemini_400_with_no_body_raises_bad_response(monkeypatch, gemini_key):
+    _install_gemini_request(monkeypatch, [_gemini_error_response(400)])
+
+    with pytest.raises(llm.LLMBadResponseError) as exc:
+        llm.generate(system="s", prompt="p")
+    assert exc.value.reason == "bad_request"
+
+
+@override_settings(
+    LLM_PROVIDER="gemini",
+    LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+)
+def test_gemini_429_retries_then_raises_with_retry_after(monkeypatch, gemini_key):
+    calls = _install_gemini_request(
+        monkeypatch,
+        [_gemini_error_response(429, headers={"retry-after": "3"})],
+    )
+
+    with pytest.raises(llm.LLMRateLimitError) as exc:
+        llm.generate(system="s", prompt="p")
+
+    assert exc.value.retry_after == 3.0
+    assert len(calls) == llm.MAX_ATTEMPTS
+
+
+@override_settings(
+    LLM_PROVIDER="gemini",
+    LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+)
+def test_gemini_429_without_retry_after(monkeypatch, gemini_key):
+    _install_gemini_request(monkeypatch, [_gemini_error_response(429)])
+
+    with pytest.raises(llm.LLMRateLimitError) as exc:
+        llm.generate(system="s", prompt="p")
+    assert exc.value.retry_after is None
+
+
+@pytest.mark.parametrize("status_code", [500, 503])
+@override_settings(
+    LLM_PROVIDER="gemini",
+    LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+)
+def test_gemini_server_error_retried_then_transient(monkeypatch, gemini_key, status_code):
+    calls = _install_gemini_request(
+        monkeypatch, [_gemini_error_response(status_code)]
+    )
+
+    with pytest.raises(llm.LLMTransientError) as exc:
+        llm.generate(system="s", prompt="p")
+
+    assert exc.value.reason == "server_error"
+    assert len(calls) == llm.MAX_ATTEMPTS
+
+
+@override_settings(
+    LLM_PROVIDER="gemini",
+    LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+)
+def test_gemini_server_error_then_success_recovers(monkeypatch, gemini_key):
+    calls = _install_gemini_request(
+        monkeypatch, [_gemini_error_response(500), _gemini_response("recovered")]
+    )
+
+    result = llm.generate(system="s", prompt="p")
+
+    assert result.text == "recovered"
+    assert len(calls) == 2
+
+
+@override_settings(
+    LLM_PROVIDER="gemini",
+    LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+)
+def test_gemini_timeout_maps_to_transient_timeout(monkeypatch, gemini_key):
+    _install_gemini_request(monkeypatch, [httpx.TimeoutException("timed out")])
+
+    with pytest.raises(llm.LLMTransientError) as exc:
+        llm.generate(system="s", prompt="p")
+    assert exc.value.reason == "timeout"
+
+
+@override_settings(
+    LLM_PROVIDER="gemini",
+    LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+)
+def test_gemini_connect_error_maps_to_transient_connection(monkeypatch, gemini_key):
+    _install_gemini_request(monkeypatch, [httpx.ConnectError("connection refused")])
+
+    with pytest.raises(llm.LLMTransientError) as exc:
+        llm.generate(system="s", prompt="p")
+    assert exc.value.reason == "connection"
+
+
+def test_get_provider_gemini_model_and_key_env_var_overrides():
+    with override_settings(
+        LLM_MODEL="gemini-generic",
+        LLM_API_KEY_ENV_VAR="GENERIC_KEY",
+        LLM_GEMINI_MODEL="gemini-2.5-pro",
+        LLM_GEMINI_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+    ):
+        provider = llm.get_provider("gemini")
+
+    assert isinstance(provider, llm.GeminiProvider)
+    assert provider.model == "gemini-2.5-pro"
+    assert provider.api_key_env_var == "GOOGLE_API_KEY"
+
+
+def test_get_provider_gemini_falls_back_to_generic_settings_when_blank():
+    with override_settings(
+        LLM_MODEL="gemini-generic",
+        LLM_API_KEY_ENV_VAR="GENERIC_KEY",
+        LLM_GEMINI_MODEL="",
+        LLM_GEMINI_API_KEY_ENV_VAR="",
+    ):
+        provider = llm.get_provider("gemini")
+
+    assert provider.model == "gemini-generic"
+    assert provider.api_key_env_var == "GENERIC_KEY"
+
+
+def test_gemini_success_records_llm_call_row(monkeypatch, gemini_key):
+    with override_settings(
+        LLM_PROVIDER="gemini",
+        LLM_MODEL="gemini-2.5-flash",
+        LLM_API_KEY_ENV_VAR="GOOGLE_API_KEY",
+    ):
+        _install_gemini_request(
+            monkeypatch, [_gemini_response("hi", in_tok=12, out_tok=7)]
+        )
+        llm.generate(system="s", prompt="p")
+
+    from submissions.models import LLMCall
+
+    row = LLMCall.objects.get()
+    assert row.provider == "gemini"
+    assert row.status == "ok"
+    assert row.prompt_tokens == 12
+    assert row.completion_tokens == 7
