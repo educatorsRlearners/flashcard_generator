@@ -11,7 +11,7 @@ You implement one groomed task at a time.
 
 Skills
 
-- For extension work, use the claude-in-chrome skill to drive a real
+- For extension work, use the claude-in-chrome skill, chrome-devtools, and/or chrome-extensions to drive a real
   Brave/Chrome session and verify behavior end-to-end, rather than only
   inferring it from code or logs
 
