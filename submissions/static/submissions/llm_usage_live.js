@@ -37,9 +37,14 @@
 
     function setText(role, text) {
         var el = app.querySelector('[data-role="' + role + '"]');
-        if (el) {
-            el.textContent = text;
+        if (!el) {
+            return;
         }
+        var next = String(text);
+        if (el.textContent === next) {
+            return;
+        }
+        el.textContent = next;
     }
 
     function buildRows(rows, cellsFor) {
