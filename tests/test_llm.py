@@ -392,7 +392,15 @@ def test_provider_registry_is_keyed_by_provider_name():
     assert "anthropic" in llm._PROVIDERS
     assert "openai-compatible" in llm._PROVIDERS
     assert "openai" in llm._PROVIDERS
-    assert llm.SUPPORTED_PROVIDERS == ("anthropic", "openai", "openai-compatible")
+    assert "grok" in llm._PROVIDERS
+    assert "openrouter" in llm._PROVIDERS
+    assert llm.SUPPORTED_PROVIDERS == (
+        "anthropic",
+        "grok",
+        "openai",
+        "openai-compatible",
+        "openrouter",
+    )
 
 
 @override_settings(LLM_MODEL="claude-opus-5")
@@ -918,3 +926,102 @@ def test_contract_error_taxonomy(monkeypatch, provider_name):
                 _install_openai_client(monkeypatch, [exc])
             with pytest.raises(expected):
                 llm.generate(system="s", prompt="p")
+
+
+# --- named OpenAI-compatible providers: grok / openrouter (issue #84) ----
+# These are OpenAICompatibleProvider with a hardcoded base_url/api_key_env_var
+# per provider and no per-provider override settings (v1 scope decision) -
+# model still flows through the generic LLM_MODEL setting.
+
+
+def test_get_provider_grok_builds_openai_compatible_with_hardcoded_defaults():
+    provider = llm.get_provider("grok")
+
+    assert isinstance(provider, llm.OpenAICompatibleProvider)
+    assert provider.base_url == "https://api.x.ai/v1"
+    assert provider.api_key_env_var == "XAI_API_KEY"
+    assert provider.model == "claude-sonnet-5"  # the default LLM_MODEL
+
+
+def test_get_provider_openrouter_builds_openai_compatible_with_hardcoded_defaults():
+    provider = llm.get_provider("openrouter")
+
+    assert isinstance(provider, llm.OpenAICompatibleProvider)
+    assert provider.base_url == "https://openrouter.ai/api/v1"
+    assert provider.api_key_env_var == "OPENROUTER_API_KEY"
+    assert provider.model == "claude-sonnet-5"  # the default LLM_MODEL
+
+
+@override_settings(LLM_MODEL="grok-4")
+def test_get_provider_grok_model_is_configuration_not_hardcoded():
+    provider = llm.get_provider("grok")
+    assert provider.model == "grok-4"
+
+
+@override_settings(LLM_MODEL="anthropic/claude-3.5-sonnet")
+def test_get_provider_openrouter_model_is_configuration_not_hardcoded():
+    provider = llm.get_provider("openrouter")
+    assert provider.model == "anthropic/claude-3.5-sonnet"
+
+
+def test_grok_and_openrouter_ignore_openai_override_settings():
+    """Adding grok/openrouter must not route through the openai/
+    openai-compatible branch or pick up its override settings."""
+    with override_settings(
+        LLM_OPENAI_BASE_URL="http://should-not-apply.example/v1",
+        LLM_OPENAI_MODEL="should-not-apply",
+        LLM_OPENAI_API_KEY_ENV_VAR="SHOULD_NOT_APPLY",
+    ):
+        grok = llm.get_provider("grok")
+        openrouter = llm.get_provider("openrouter")
+
+    assert grok.base_url == "https://api.x.ai/v1"
+    assert grok.api_key_env_var == "XAI_API_KEY"
+    assert grok.model == "claude-sonnet-5"
+    assert openrouter.base_url == "https://openrouter.ai/api/v1"
+    assert openrouter.api_key_env_var == "OPENROUTER_API_KEY"
+    assert openrouter.model == "claude-sonnet-5"
+
+
+@override_settings(LLM_PROVIDER="grok", LLM_MODEL="grok-4")
+def test_grok_end_to_end_generate_happy_path(monkeypatch):
+    monkeypatch.setenv("XAI_API_KEY", "sk-test-not-a-real-key")
+    seen: dict = {}
+    client = _install_openai_client(monkeypatch, [_openai_response("hi")], seen)
+
+    result = llm.generate(system="be terse", prompt="say hi")
+
+    assert result.text == "hi"
+    assert result.model == "grok-4"
+    assert seen["base_url"] == "https://api.x.ai/v1"
+    assert seen["api_key"] == "sk-test-not-a-real-key"
+
+    from submissions.models import LLMCall
+
+    row = LLMCall.objects.get()
+    assert row.provider == "openai-compatible"
+
+
+@override_settings(LLM_PROVIDER="openrouter", LLM_MODEL="openai/gpt-4o")
+def test_openrouter_end_to_end_generate_happy_path(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-not-a-real-key")
+    seen: dict = {}
+    client = _install_openai_client(monkeypatch, [_openai_response("hi")], seen)
+
+    result = llm.generate(system="be terse", prompt="say hi")
+
+    assert result.text == "hi"
+    assert result.model == "openai/gpt-4o"
+    assert seen["base_url"] == "https://openrouter.ai/api/v1"
+    assert seen["api_key"] == "sk-test-not-a-real-key"
+
+
+def test_unknown_provider_still_unaffected_by_grok_openrouter_additions():
+    """grok/openrouter are additions to _PROVIDERS, not replacements - the
+    existing unknown-provider-name error path is unaffected."""
+    with override_settings(LLM_PROVIDER="not-a-real-provider"):
+        with pytest.raises(llm.LLMConfigError) as exc:
+            llm.get_provider()
+    assert "not-a-real-provider" in str(exc.value)
+    for name in ("anthropic", "openai", "openai-compatible", "grok", "openrouter"):
+        assert name in str(exc.value)

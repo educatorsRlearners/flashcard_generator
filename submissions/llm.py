@@ -18,6 +18,12 @@ provider and model are used is read from Django settings:
 *                             ``LLM_API_KEY_ENV_VAR`` for the OpenAI-compatible
 *                             provider (empty = fall back)
 
+``LLM_PROVIDER=grok`` and ``LLM_PROVIDER=openrouter`` (issue #84) are also
+``OpenAICompatibleProvider`` under the hood, with a hardcoded ``base_url``
+and default API-key env var per provider (``XAI_API_KEY`` /
+``OPENROUTER_API_KEY``) - no ``LLM_OPENAI_*``-style overrides for them in
+this version; see ``_NAMED_OPENAI_COMPATIBLE_DEFAULTS``.
+
 Adding a third provider is one entry in ``_PROVIDERS`` plus a new
 ``Provider`` subclass in this file - nothing else in the codebase changes,
 and ``import anthropic`` / ``import openai`` stay confined to this module.
@@ -798,10 +804,49 @@ _PROVIDERS: dict[str, Callable[..., Provider]] = {
     "anthropic": AnthropicProvider,
     "openai-compatible": OpenAICompatibleProvider,
     "openai": OpenAICompatibleProvider,
+    # Named OpenAI-compatible providers (issue #84) - see
+    # _NAMED_OPENAI_COMPATIBLE_DEFAULTS below for their hardcoded base_url /
+    # api_key_env_var.
+    "grok": OpenAICompatibleProvider,
+    "openrouter": OpenAICompatibleProvider,
 }
 
 #: Provider names that need the OpenAI-compatible constructor kwargs.
 _OPENAI_PROVIDER_NAMES = frozenset({"openai-compatible", "openai"})
+
+#: Hardcoded defaults for "named" OpenAI-compatible providers (issue #84):
+#: each is just an ``OpenAICompatibleProvider`` with a fixed ``base_url`` and
+#: ``api_key_env_var``. ``model`` still resolves through the generic
+#: ``LLM_MODEL`` setting via :func:`_resolve_model`, same as ``anthropic`` -
+#: it is not hardcoded here.
+#:
+#: v1 scope decision (issue #84 §10): unlike ``openai``/``openai-compatible``,
+#: these get no per-provider override settings in this issue (no
+#: ``LLM_GROK_BASE_URL``/``LLM_GROK_API_KEY_ENV_VAR``/``LLM_GROK_MODEL`` or
+#: ``LLM_OPENROUTER_*`` equivalents) - the values below are constants, not
+#: settings-driven. Broadening that is tracked in #98.
+#:
+#: Request-shape note (issue #84 §10, doc-based only - no live credentials
+#: available in this environment; live-credential verification is tracked in
+#: #98): per their public API docs, both xAI's and OpenRouter's
+#: chat-completions endpoints are OpenAI-compatible - Bearer auth header,
+#: a ``max_tokens`` field, and ``choices[0].message.content`` in the
+#: response - the exact shape ``OpenAICompatibleProvider`` already
+#: implements, so no adapter changes are needed for either.
+_NAMED_OPENAI_COMPATIBLE_DEFAULTS: dict[str, dict[str, str]] = {
+    "grok": {
+        "base_url": "https://api.x.ai/v1",
+        "api_key_env_var": "XAI_API_KEY",
+    },
+    # OpenRouter model ids are origin-prefixed (e.g.
+    # "anthropic/claude-3.5-sonnet", "openai/gpt-4o") - a bare/native model
+    # name, or something like "openrouter/auto", should not be assumed;
+    # ``LLM_MODEL`` must be set to one of OpenRouter's own prefixed ids.
+    "openrouter": {
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_env_var": "OPENROUTER_API_KEY",
+    },
+}
 
 SUPPORTED_PROVIDERS = tuple(sorted(_PROVIDERS))
 
@@ -825,6 +870,13 @@ def get_provider(name: Optional[str] = None) -> Provider:
             model=_resolve_openai_model(),
             api_key_env_var=_resolve_openai_api_key_env_var(),
             base_url=_resolve_openai_base_url(),
+        )
+    if provider_name in _NAMED_OPENAI_COMPATIBLE_DEFAULTS:
+        defaults = _NAMED_OPENAI_COMPATIBLE_DEFAULTS[provider_name]
+        return factory(
+            model=_resolve_model(),
+            api_key_env_var=defaults["api_key_env_var"],
+            base_url=defaults["base_url"],
         )
     return factory(model=_resolve_model(), api_key_env_var=_resolve_api_key_env_var())
 
