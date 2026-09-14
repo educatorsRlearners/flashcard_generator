@@ -127,25 +127,33 @@ HUEY_WORKER_STALE_SECONDS = int(os.environ.get("HUEY_WORKER_STALE_SECONDS", "15"
 # Which provider/model the in-process LLM client talks to. All of these are
 # configuration, not code: change the model with an env var, no code edit.
 # See README.md ("LLM client") for details.
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "anthropic")
-LLM_MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-5")
+# Shared fallback helper for the per-provider LLM_* env parsing below
+# (issue #126). Mirrors submissions/llm.py::_resolve_provider_setting without
+# importing it (settings load before the app - circular-import risk): the
+# provider/env-name mapping is duplicated here by name, kept in sync by hand.
+def _llm_env(name, default):
+    return os.environ.get(name, default)
+
+
+LLM_PROVIDER = _llm_env("LLM_PROVIDER", "anthropic")
+LLM_MODEL = _llm_env("LLM_MODEL", "claude-sonnet-5")
 # Name of the environment variable that holds the provider API key. The key
 # itself is read from os.environ at call time and never stored in settings.
-LLM_API_KEY_ENV_VAR = os.environ.get("LLM_API_KEY_ENV_VAR", "ANTHROPIC_API_KEY")
+LLM_API_KEY_ENV_VAR = _llm_env("LLM_API_KEY_ENV_VAR", "ANTHROPIC_API_KEY")
 # Default output-token ceiling when a caller does not pass max_tokens.
-LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "4096"))
+LLM_MAX_TOKENS = int(_llm_env("LLM_MAX_TOKENS", "4096"))
 # OpenAI-compatible provider (issue #27; adapter in submissions/llm.py).
 # Base URL of the OpenAI-compatible chat-completions endpoint. Point at any
 # OpenAI-compatible gateway (OpenAI, Ollama, vLLM, ...) with no code change.
-LLM_OPENAI_BASE_URL = os.environ.get(
+LLM_OPENAI_BASE_URL = _llm_env(
     "LLM_OPENAI_BASE_URL", "https://api.openai.com/v1"
 )
 # Optional per-provider overrides: when non-empty these win over the generic
 # LLM_MODEL / LLM_API_KEY_ENV_VAR above for the openai-compatible provider.
 # Empty (default) falls back to the generic settings, so a provider swap can
 # be just LLM_PROVIDER + LLM_MODEL (+ base URL / key env var as needed).
-LLM_OPENAI_MODEL = os.environ.get("LLM_OPENAI_MODEL", "")
-LLM_OPENAI_API_KEY_ENV_VAR = os.environ.get("LLM_OPENAI_API_KEY_ENV_VAR", "")
+LLM_OPENAI_MODEL = _llm_env("LLM_OPENAI_MODEL", "")
+LLM_OPENAI_API_KEY_ENV_VAR = _llm_env("LLM_OPENAI_API_KEY_ENV_VAR", "")
 
 # Gemini provider (issue #83; adapter in submissions/llm.py). Talks to
 # Google's Generative Language API directly via httpx, so there is no
@@ -156,17 +164,17 @@ LLM_OPENAI_API_KEY_ENV_VAR = os.environ.get("LLM_OPENAI_API_KEY_ENV_VAR", "")
 # key itself - conventionally set LLM_GEMINI_API_KEY_ENV_VAR=GOOGLE_API_KEY
 # (or set the generic LLM_API_KEY_ENV_VAR=GOOGLE_API_KEY and leave this
 # blank), and export GOOGLE_API_KEY yourself.
-LLM_GEMINI_MODEL = os.environ.get("LLM_GEMINI_MODEL", "")
-LLM_GEMINI_API_KEY_ENV_VAR = os.environ.get("LLM_GEMINI_API_KEY_ENV_VAR", "")
+LLM_GEMINI_MODEL = _llm_env("LLM_GEMINI_MODEL", "")
+LLM_GEMINI_API_KEY_ENV_VAR = _llm_env("LLM_GEMINI_API_KEY_ENV_VAR", "")
 
 # Grok provider (issue #98; adapter in submissions/llm.py). A named
 # OpenAI-compatible provider pointed at xAI's chat-completions endpoint.
 # Optional per-provider overrides below follow the same fallback pattern as
 # LLM_OPENAI_* above: empty falls back to the hardcoded base_url/key env var
 # defaults in submissions/llm.py (or the generic LLM_MODEL for the model).
-LLM_GROK_BASE_URL = os.environ.get("LLM_GROK_BASE_URL", "")
-LLM_GROK_MODEL = os.environ.get("LLM_GROK_MODEL", "")
-LLM_GROK_API_KEY_ENV_VAR = os.environ.get("LLM_GROK_API_KEY_ENV_VAR", "")
+LLM_GROK_BASE_URL = _llm_env("LLM_GROK_BASE_URL", "")
+LLM_GROK_MODEL = _llm_env("LLM_GROK_MODEL", "")
+LLM_GROK_API_KEY_ENV_VAR = _llm_env("LLM_GROK_API_KEY_ENV_VAR", "")
 
 # OpenRouter provider (issue #84/#98; adapter in submissions/llm.py). A named
 # OpenAI-compatible provider pointed at OpenRouter's chat-completions
@@ -174,9 +182,9 @@ LLM_GROK_API_KEY_ENV_VAR = os.environ.get("LLM_GROK_API_KEY_ENV_VAR", "")
 # pattern as LLM_OPENAI_* above: empty falls back to the hardcoded
 # base_url/key env var defaults in submissions/llm.py (or the generic
 # LLM_MODEL for the model).
-LLM_OPENROUTER_BASE_URL = os.environ.get("LLM_OPENROUTER_BASE_URL", "")
-LLM_OPENROUTER_MODEL = os.environ.get("LLM_OPENROUTER_MODEL", "")
-LLM_OPENROUTER_API_KEY_ENV_VAR = os.environ.get(
+LLM_OPENROUTER_BASE_URL = _llm_env("LLM_OPENROUTER_BASE_URL", "")
+LLM_OPENROUTER_MODEL = _llm_env("LLM_OPENROUTER_MODEL", "")
+LLM_OPENROUTER_API_KEY_ENV_VAR = _llm_env(
     "LLM_OPENROUTER_API_KEY_ENV_VAR", ""
 )
 
@@ -187,9 +195,9 @@ LLM_OPENROUTER_API_KEY_ENV_VAR = os.environ.get(
 # empty falls back to the hardcoded base_url/key env var defaults in
 # submissions/llm.py (or the generic LLM_MODEL for the model). No Zen model
 # id is hardcoded as a default anywhere.
-LLM_OPENCODE_ZEN_BASE_URL = os.environ.get("LLM_OPENCODE_ZEN_BASE_URL", "")
-LLM_OPENCODE_ZEN_MODEL = os.environ.get("LLM_OPENCODE_ZEN_MODEL", "")
-LLM_OPENCODE_ZEN_API_KEY_ENV_VAR = os.environ.get(
+LLM_OPENCODE_ZEN_BASE_URL = _llm_env("LLM_OPENCODE_ZEN_BASE_URL", "")
+LLM_OPENCODE_ZEN_MODEL = _llm_env("LLM_OPENCODE_ZEN_MODEL", "")
+LLM_OPENCODE_ZEN_API_KEY_ENV_VAR = _llm_env(
     "LLM_OPENCODE_ZEN_API_KEY_ENV_VAR", ""
 )
 

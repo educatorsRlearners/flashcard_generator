@@ -200,125 +200,74 @@ def _resolve_max_tokens(explicit: Optional[int]) -> int:
     return int(_setting("LLM_MAX_TOKENS", 4096))
 
 
+def _resolve_provider_setting(override_setting: str, fallback: Callable[[], str]) -> str:
+    """Shared override-wins/empty-falls-back resolver (issue #126).
+
+    ``override_setting`` is the per-provider ``LLM_*`` setting name; when its
+    value is truthy it wins, otherwise ``fallback()`` supplies the generic
+    setting or hardcoded default. Truthiness (``if override:``) is deliberate:
+    a whitespace-only override counts as set, matching the pre-change bodies.
+    """
+    override = _setting(override_setting, "")
+    if override:
+        return override
+    return fallback()
+
+
 def _resolve_openai_base_url() -> str:
     return _setting("LLM_OPENAI_BASE_URL", "https://api.openai.com/v1")
 
 
 def _resolve_openai_model() -> str:
-    """Model for the OpenAI-compatible provider: per-provider override wins,
-    empty override falls back to the generic ``LLM_MODEL``."""
-    override = _setting("LLM_OPENAI_MODEL", "")
-    if override:
-        return override
-    return _resolve_model()
+    return _resolve_provider_setting("LLM_OPENAI_MODEL", _resolve_model)
 
 
 def _resolve_openai_api_key_env_var() -> str:
-    """Key env var for the OpenAI-compatible provider: per-provider override
-    wins, empty override falls back to the generic setting."""
-    override = _setting("LLM_OPENAI_API_KEY_ENV_VAR", "")
-    if override:
-        return override
-    return _resolve_api_key_env_var()
+    return _resolve_provider_setting("LLM_OPENAI_API_KEY_ENV_VAR", _resolve_api_key_env_var)
 
 
 def _resolve_gemini_model() -> str:
-    """Model for the Gemini provider: per-provider override wins, empty
-    override falls back to the generic ``LLM_MODEL``."""
-    override = _setting("LLM_GEMINI_MODEL", "")
-    if override:
-        return override
-    return _resolve_model()
+    return _resolve_provider_setting("LLM_GEMINI_MODEL", _resolve_model)
 
 
 def _resolve_gemini_api_key_env_var() -> str:
-    """Key env var for the Gemini provider: per-provider override wins,
-    empty override falls back to the generic setting."""
-    override = _setting("LLM_GEMINI_API_KEY_ENV_VAR", "")
-    if override:
-        return override
-    return _resolve_api_key_env_var()
+    return _resolve_provider_setting("LLM_GEMINI_API_KEY_ENV_VAR", _resolve_api_key_env_var)
 
 
 def _resolve_grok_base_url() -> str:
-    """Base URL for the ``grok`` provider: per-provider override wins,
-    empty override falls back to the hardcoded default."""
-    override = _setting("LLM_GROK_BASE_URL", "")
-    if override:
-        return override
-    return _NAMED_OPENAI_COMPATIBLE_DEFAULTS["grok"]["base_url"]
+    return _resolve_provider_setting("LLM_GROK_BASE_URL", lambda: _NAMED_OPENAI_COMPATIBLE_DEFAULTS["grok"]["base_url"])
 
 
 def _resolve_grok_model() -> str:
-    """Model for the ``grok`` provider: per-provider override wins, empty
-    override falls back to the generic ``LLM_MODEL``."""
-    override = _setting("LLM_GROK_MODEL", "")
-    if override:
-        return override
-    return _resolve_model()
+    return _resolve_provider_setting("LLM_GROK_MODEL", _resolve_model)
 
 
 def _resolve_grok_api_key_env_var() -> str:
-    """Key env var for the ``grok`` provider: per-provider override wins,
-    empty override falls back to the hardcoded default."""
-    override = _setting("LLM_GROK_API_KEY_ENV_VAR", "")
-    if override:
-        return override
-    return _NAMED_OPENAI_COMPATIBLE_DEFAULTS["grok"]["api_key_env_var"]
+    return _resolve_provider_setting("LLM_GROK_API_KEY_ENV_VAR", lambda: _NAMED_OPENAI_COMPATIBLE_DEFAULTS["grok"]["api_key_env_var"])
 
 
 def _resolve_openrouter_base_url() -> str:
-    """Base URL for the ``openrouter`` provider: per-provider override wins,
-    empty override falls back to the hardcoded default."""
-    override = _setting("LLM_OPENROUTER_BASE_URL", "")
-    if override:
-        return override
-    return _NAMED_OPENAI_COMPATIBLE_DEFAULTS["openrouter"]["base_url"]
+    return _resolve_provider_setting("LLM_OPENROUTER_BASE_URL", lambda: _NAMED_OPENAI_COMPATIBLE_DEFAULTS["openrouter"]["base_url"])
 
 
 def _resolve_openrouter_model() -> str:
-    """Model for the ``openrouter`` provider: per-provider override wins,
-    empty override falls back to the generic ``LLM_MODEL``."""
-    override = _setting("LLM_OPENROUTER_MODEL", "")
-    if override:
-        return override
-    return _resolve_model()
+    return _resolve_provider_setting("LLM_OPENROUTER_MODEL", _resolve_model)
 
 
 def _resolve_openrouter_api_key_env_var() -> str:
-    """Key env var for the ``openrouter`` provider: per-provider override
-    wins, empty override falls back to the hardcoded default."""
-    override = _setting("LLM_OPENROUTER_API_KEY_ENV_VAR", "")
-    if override:
-        return override
-    return _NAMED_OPENAI_COMPATIBLE_DEFAULTS["openrouter"]["api_key_env_var"]
+    return _resolve_provider_setting("LLM_OPENROUTER_API_KEY_ENV_VAR", lambda: _NAMED_OPENAI_COMPATIBLE_DEFAULTS["openrouter"]["api_key_env_var"])
 
 
 def _resolve_opencode_zen_base_url() -> str:
-    """Base URL for the ``opencode-zen`` provider: per-provider override
-    wins, empty override falls back to the hardcoded default."""
-    override = _setting("LLM_OPENCODE_ZEN_BASE_URL", "")
-    if override:
-        return override
-    return _NAMED_OPENAI_COMPATIBLE_DEFAULTS["opencode-zen"]["base_url"]
+    return _resolve_provider_setting("LLM_OPENCODE_ZEN_BASE_URL", lambda: _NAMED_OPENAI_COMPATIBLE_DEFAULTS["opencode-zen"]["base_url"])
 
 
 def _resolve_opencode_zen_model() -> str:
-    """Model for the ``opencode-zen`` provider: per-provider override wins,
-    empty override falls back to the generic ``LLM_MODEL``."""
-    override = _setting("LLM_OPENCODE_ZEN_MODEL", "")
-    if override:
-        return override
-    return _resolve_model()
+    return _resolve_provider_setting("LLM_OPENCODE_ZEN_MODEL", _resolve_model)
 
 
 def _resolve_opencode_zen_api_key_env_var() -> str:
-    """Key env var for the ``opencode-zen`` provider: per-provider override
-    wins, empty override falls back to the hardcoded default."""
-    override = _setting("LLM_OPENCODE_ZEN_API_KEY_ENV_VAR", "")
-    if override:
-        return override
-    return _NAMED_OPENAI_COMPATIBLE_DEFAULTS["opencode-zen"]["api_key_env_var"]
+    return _resolve_provider_setting("LLM_OPENCODE_ZEN_API_KEY_ENV_VAR", lambda: _NAMED_OPENAI_COMPATIBLE_DEFAULTS["opencode-zen"]["api_key_env_var"])
 
 
 # --- Provider interface ----------------------------------------------
@@ -1110,8 +1059,80 @@ def _record_llm_call(
         logger.warning("failed to record LLMCall row", exc_info=True)
 
 
-# --- Extension popup curated models (issue #105) -----------------------
-
+# --- Extension popup curated models (issue #105, unified catalog #129) ---
+#
+# PROVIDER_CATALOG is the single source of truth for providers/models:
+# each entry carries the display id, backend registry key in _PROVIDERS,
+# curated model ids (verbatim from ``_docs/llm_portability_2.md`` §6),
+# key-env resolver, extension-visibility flag, and - for named
+# OpenAI-compatible providers - the hardcoded base_url / default key env
+# var (referencing _NAMED_OPENAI_COMPATIBLE_DEFAULTS, never re-typed).
+# EXTENSION_LLM_PROVIDER_ORDER / EXTENSION_LLM_CURATED_MODELS /
+# EXTENSION_LLM_REGISTRY_KEYS below are derived from it - there are no
+# independently-edited parallel literals.
+PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
+    {
+        "name": "anthropic",
+        "registry_key": "anthropic",
+        "curated_models": ["claude-sonnet-4-6", "claude-haiku-4-5"],
+        "key_env_resolver": _resolve_api_key_env_var,
+        "extension_visible": True,
+    },
+    {
+        "name": "openai",
+        "registry_key": "openai-compatible",
+        "curated_models": ["gpt-4o", "gpt-4o-mini"],
+        "key_env_resolver": _resolve_openai_api_key_env_var,
+        "extension_visible": True,
+    },
+    {
+        "name": "grok",
+        "registry_key": "grok",
+        "curated_models": ["grok-4", "grok-3-mini"],
+        "key_env_resolver": _resolve_grok_api_key_env_var,
+        "extension_visible": True,
+        "base_url": _NAMED_OPENAI_COMPATIBLE_DEFAULTS["grok"]["base_url"],
+        "default_key_env_var": _NAMED_OPENAI_COMPATIBLE_DEFAULTS["grok"][
+            "api_key_env_var"
+        ],
+    },
+    {
+        "name": "opencode-zen",
+        "registry_key": "opencode-zen",
+        "curated_models": ["claude-sonnet-4-5", "gpt-5.1", "grok-code"],
+        "key_env_resolver": _resolve_opencode_zen_api_key_env_var,
+        "extension_visible": True,
+        "base_url": _NAMED_OPENAI_COMPATIBLE_DEFAULTS["opencode-zen"]["base_url"],
+        "default_key_env_var": _NAMED_OPENAI_COMPATIBLE_DEFAULTS["opencode-zen"][
+            "api_key_env_var"
+        ],
+    },
+    {
+        "name": "openai-compatible",
+        "registry_key": "openai-compatible",
+        "curated_models": [],
+        "key_env_resolver": _resolve_openai_api_key_env_var,
+        "extension_visible": False,
+    },
+    {
+        "name": "gemini",
+        "registry_key": "gemini",
+        "curated_models": [],
+        "key_env_resolver": _resolve_gemini_api_key_env_var,
+        "extension_visible": False,
+    },
+    {
+        "name": "openrouter",
+        "registry_key": "openrouter",
+        "curated_models": [],
+        "key_env_resolver": _resolve_openrouter_api_key_env_var,
+        "extension_visible": False,
+        "base_url": _NAMED_OPENAI_COMPATIBLE_DEFAULTS["openrouter"]["base_url"],
+        "default_key_env_var": _NAMED_OPENAI_COMPATIBLE_DEFAULTS["openrouter"][
+            "api_key_env_var"
+        ],
+    },
+)
 
 #: Providers exposed at ``GET /api/extension/llm-config/``, in fixed
 #: display order. ``"openai"`` is the display name for the backend
@@ -1119,31 +1140,29 @@ def _record_llm_call(
 #: is emitted only when that key exists in :data:`_PROVIDERS`, so this
 #: endpoint needs no change when #104 lands. ``"openai-compatible"``,
 #: ``"gemini"`` and ``"openrouter"`` never appear in the response.
-EXTENSION_LLM_PROVIDER_ORDER: tuple[str, ...] = (
-    "anthropic",
-    "openai",
-    "grok",
-    "opencode-zen",
+#: Derived from :data:`PROVIDER_CATALOG` (issue #129).
+EXTENSION_LLM_PROVIDER_ORDER: tuple[str, ...] = tuple(
+    entry["name"] for entry in PROVIDER_CATALOG if entry["extension_visible"]
 )
 
 #: Curated model ids per exposed provider, verbatim from
 #: ``_docs/llm_portability_2.md`` §6. Static domain data, hence here
 #: beside :data:`_PROVIDERS` rather than in ``config/settings.py``.
+#: Derived from :data:`PROVIDER_CATALOG` (issue #129).
 EXTENSION_LLM_CURATED_MODELS: dict[str, list[str]] = {
-    "anthropic": ["claude-sonnet-4-6", "claude-haiku-4-5"],
-    "openai": ["gpt-4o", "gpt-4o-mini"],
-    "grok": ["grok-4", "grok-3-mini"],
-    "opencode-zen": ["claude-sonnet-4-5", "gpt-5.1", "grok-code"],
+    entry["name"]: list(entry["curated_models"])
+    for entry in PROVIDER_CATALOG
+    if entry["extension_visible"]
 }
 
 
 #: Display name → backend registry key in :data:`_PROVIDERS`. Only
 #: ``"openai"`` differs (registry key ``"openai-compatible"``).
+#: Derived from :data:`PROVIDER_CATALOG` (issue #129).
 EXTENSION_LLM_REGISTRY_KEYS: dict[str, str] = {
-    "anthropic": "anthropic",
-    "openai": "openai-compatible",
-    "grok": "grok",
-    "opencode-zen": "opencode-zen",
+    entry["name"]: entry["registry_key"]
+    for entry in PROVIDER_CATALOG
+    if entry["extension_visible"]
 }
 
 
