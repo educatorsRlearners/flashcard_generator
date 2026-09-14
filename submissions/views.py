@@ -11,7 +11,8 @@ from django.template.defaultfilters import floatformat
 from django.views.decorators.http import require_POST
 from django.utils import timezone
 
-from .models import Batch, Card, Feedback, LLMCall, SubmittedURL
+from .feedback import record_feedback
+from .models import Batch, Card, LLMCall, SubmittedURL
 from .tasks import push_accepted_cards_task
 
 
@@ -417,21 +418,12 @@ def card_review_decision(request, batch_pk, card_pk):
         card.rejection_reason = ""
     card.save(update_fields=["review_status", "rejection_reason"])
 
-    # issue #10: persist a durable, batch-deletion-proof snapshot of the
-    # decision. Only accept / reject are recorded (undecided is not feedback).
-    # The snapshot reads the card's *current* fields, so inline edits (#24)
-    # are what get stored; ``was_edited`` notes that the card was edited.
+    # issue #10/#131: persist a durable, batch-deletion-proof snapshot of the
+    # decision (see ``feedback.record_feedback`` - only accept / reject are
+    # recorded, undecided is not feedback). The snapshot reads the card's
+    # *current* fields, so inline edits (#24) are what get stored.
     if decision in (Card.ReviewStatus.ACCEPTED, Card.ReviewStatus.REJECTED):
-        tags = card.tags if isinstance(card.tags, dict) else {}
-        Feedback.objects.create(
-            note_type=card.note_type,
-            front=card.front,
-            back=card.back,
-            source_url=tags.get("source_url", "") or "",
-            decision=decision,
-            reason=card.rejection_reason,
-            was_edited=card.is_edited,
-        )
+        record_feedback(card, decision)
 
     payload = {
         "card_id": card.pk,

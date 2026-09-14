@@ -223,7 +223,13 @@ LLM_ALERT_WINDOW_MINUTES = os.environ.get("LLM_ALERT_WINDOW_MINUTES", "60")
 # settings/env change, no code edit.
 CARD_ANALOGY_LANGUAGE = os.environ.get("CARD_ANALOGY_LANGUAGE", "python")
 
-# --- Smart few-shot feedback selection (submissions/generation.py, issue #25)
+# --- Smart few-shot feedback selection (submissions/feedback.py, issue #25)
+# Relevance-ranked, token-budgeted pick of stored feedback examples for the
+# current page. All have documented defaults; change via env, no code edit.
+# * FEWSHOT_ENABLED: master switch (default on). Set FEWSHOT_ENABLED=0 to
+#   disable the few-shot section without editing prompt code; when disabled
+#   no Feedback DB query and no embedding/similarity call is made (a zero
+#   FEWSHOT_TOKEN_BUDGET disables it the same way).
 # Relevance-ranked, token-budgeted pick of stored feedback examples for the
 # current page. All have documented defaults; change via env, no code edit.
 # * FEWSHOT_TOKEN_BUDGET: max tokens for the whole few-shot section (both
@@ -244,6 +250,7 @@ CARD_ANALOGY_LANGUAGE = os.environ.get("CARD_ANALOGY_LANGUAGE", "python")
 #   ``fn(list[str]) -> list[list[float] | None]`` for a future #5 embedding
 #   method. Unset (default) uses the offline token-overlap default; a failing
 #   backend degrades to the recency cap instead of crashing generation.
+FEWSHOT_ENABLED = os.environ.get("FEWSHOT_ENABLED", "1") == "1"
 FEWSHOT_TOKEN_BUDGET = int(os.environ.get("FEWSHOT_TOKEN_BUDGET", "2000"))
 FEWSHOT_ACCEPTED_SHARE = float(os.environ.get("FEWSHOT_ACCEPTED_SHARE", "0.5"))
 FEWSHOT_SELECTION_MODE = os.environ.get("FEWSHOT_SELECTION_MODE", "relevance")
