@@ -1,8 +1,9 @@
 # Flashcard Generator extension
 
 This directory is an unpacked Chrome/Brave (MV3) extension. See the root
-`README.md`'s "Browser extension setup (native messaging host)" section
-for the full setup sequence.
+`README.md`'s [Getting started](../README.md#getting-started) section (and
+[Extension internals](../README.md#extension-internals) for reference
+detail) for the full setup sequence.
 
 ## `manifest.json`'s `"key"` field
 
@@ -10,8 +11,8 @@ for the full setup sequence.
 `"REPLACE_WITH_YOUR_OWN_OPENSSL_GENERATED_KEY"`. **This does not work as
 committed.** Chrome/Brave will refuse to derive a stable extension ID from
 it (or may refuse to load the extension at all). Before loading this
-extension, follow the root `README.md`'s "Browser extension setup" section,
-step 1:
+extension, follow the root `README.md`'s [Getting started](../README.md#getting-started)
+section, step 1:
 ```
 uv run python manage.py generate_signing_key
 ```

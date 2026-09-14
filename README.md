@@ -1,8 +1,3 @@
-<!-- DRIFT-PRONE SECTIONS: the provider table (§ LLM client) and Current Limitations
-     below drift against code. Source of truth: submissions/llm.py
-     EXTENSION_LLM_PROVIDER_ORDER / EXTENSION_LLM_CURATED_MODELS (popup seed
-     served by GET /api/extension/llm-config/) and SUPPORTED_PROVIDERS.
-     Update this table when adding a provider. -->
 <h1 align="center">Flashcard Generator</h1>
 
 <p align="center">
@@ -14,9 +9,14 @@
 </p>
 
 > A Brave/Chrome (MV3) browser extension that generates Anki flashcards from
-> the current page, reviewed before syncing via AnkiConnect. Pasting or
-> batching URLs is not the primary workflow — the extension popup on the
-> page you are reading is.
+> the current page, reviewed before syncing via AnkiConnect. The extension
+> popup on the page you are reading is how pages are submitted.
+
+> **Maintenance note:** the provider table ([LLM client](#llm-client)) and
+> [Current Limitations](#current-limitations) below are the most-likely-stale
+> sections of this file. Source of truth for both is `PROVIDER_CATALOG` in
+> `submissions/llm.py` (served to the popup via
+> `GET /api/extension/llm-config/`).
 
 <p align="center">
 
@@ -326,9 +326,11 @@ any section's own settings table.
 
 Per-provider API-key env vars are listed in the provider table in
 [LLM client](#llm-client). The extension popup's provider/model selection
-overrides `.env` per generation: it is stored as a per-submission override
-(`llm_provider_override` / `llm_model_override` on the submission) and
-never mutates settings.
+overrides `.env` per generation: the popup sends `provider` / `model`
+payload fields (`chosenLlm()` / `submitContent()` in `extension/popup.js`)
+and the backend stores them as a per-submission override
+(`llm_provider_override` / `llm_model_override` on the submission),
+never mutating settings or `.env`.
 
 ## Setup
 
@@ -391,11 +393,11 @@ consumer (tests run Huey tasks eagerly in-process).
 
 ## Background processing (Huey)
 
-Submitting a batch enqueues one background task per URL that runs the
+Each extension submission enqueues background work that runs the
 extraction path (below). The tasks are processed by a Huey consumer backed
 by a local SQLite file (`huey.sqlite3`) — no Redis or extra service. The
-`dev` command above starts the consumer automatically, so submitting a
-batch moves its URLs out of `pending` with no further step. Manual
+`dev` command above starts the consumer automatically, so a submission
+moves out of `pending` with no further step. Manual
 fallback in a second terminal (if you run `runserver` on its own):
 
 ```
@@ -404,8 +406,9 @@ uv run python manage.py run_huey
 
 `runserver` on its own does **not** start it (use `dev` instead).
 If the consumer is
-not running, the batch page shows the URLs stuck in `pending` with a notice
-and this command. Pending tasks are persisted, so restarting the consumer
+not running, a submission stays in `pending` (the contributor-facing batch
+page shows this state with a notice
+and this command). Pending tasks are persisted, so restarting the consumer
 after a crash resumes them. To run tasks inline without a consumer (e.g. a
 one-off script), set `HUEY_IMMEDIATE=1`.
 
@@ -619,7 +622,9 @@ batch, and inline on the `SubmittedURL` page).
 
 ## Deduplicate cards
 
-After generation, each new `Card` is embedded locally (no API calls) and
+Like the two sections above, the commands here are contributor/diagnostic
+tools — in the normal extension flow dedup runs automatically as the final
+step of card generation. After generation, each new `Card` is embedded locally (no API calls) and
 compared by cosine similarity against (a) cards already stored as `unique`
 from previous runs and (b) the other new cards in the same run. A card at
 or above `DEDUP_SIMILARITY_THRESHOLD` (in `submissions/dedup.py`, the single
@@ -841,10 +846,14 @@ update this table when adding a provider):
 | `gemini` | `GOOGLE_API_KEY` via `LLM_GEMINI_API_KEY_ENV_VAR` | Google's Generative Language API; no default key-var name is hardcoded — pair with `LLM_GEMINI_API_KEY_ENV_VAR=GOOGLE_API_KEY` |
 | `opencode-zen` | `OPENCODE_ZEN_API_KEY` | Per-provider overrides follow the generic `LLM_OPENCODE_ZEN_*` pattern (see `config/settings.py` + `submissions/llm.py`) |
 
-The extension popup (`GET /api/llm-config`) currently exposes only
+The extension popup (`GET /api/extension/llm-config/`) currently exposes only
 `anthropic` / `openai` / `grok` / `opencode-zen` with backend-curated
 models (`EXTENSION_LLM_CURATED_MODELS` in `submissions/llm.py` is the
-source of truth); `openrouter` and `gemini` are backend-only.
+source of truth); `openrouter` and `gemini` are backend-only. The popup's
+per-generation `provider` / `model` selection (`chosenLlm()` /
+`submitContent()` in `extension/popup.js`) is stored as a per-submission
+override (`llm_provider_override` / `llm_model_override`) and never mutates
+`.env`.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
