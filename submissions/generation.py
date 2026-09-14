@@ -41,14 +41,20 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional, Sequence
 
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from submissions import dedup, feedback, images, llm
+# ``dedup`` / ``images`` stay imported (no direct use below) so existing
+# patch points keep working.
+from submissions import dedup, feedback, images, llm, post_generation
 from submissions.models import Card, SubmittedURL
+
+# Backward-compat alias: the dedup-ready mark moved to the post-generation
+# stage runner (issue #130); it is still importable from here.
+from submissions.post_generation import _mark_dedup_ready  # noqa: F401,E402
 
 logger = logging.getLogger(__name__)
 
@@ -394,23 +400,11 @@ def _mark_generation_ok(submitted_url: SubmittedURL) -> None:
     submitted_url.generation_status = SubmittedURL.GenerationStatus.OK
     submitted_url.generation_error = ""
     # Reset for #78: a force-regeneration must not keep a stale True from an
-    # earlier run - the status endpoint should gate on *this* run's dedup.
+    # earlier run - the status endpoint should gate on *this* run's dedup work.
     submitted_url.dedup_ready = False
     submitted_url.save(
         update_fields=["generation_status", "generation_error", "dedup_ready"]
     )
-
-
-def _mark_dedup_ready(submitted_url: SubmittedURL) -> None:
-    """Record that ``dedup.dedup_cards()`` has been attempted (issue #78).
-
-    Called once the ``dedup_cards`` call below returns *or* raises - dedup is
-    best-effort here (see the try/except), so "attempted" - not "succeeded"
-    - is what unblocks the status endpoint's ``terminal`` flag. Otherwise a
-    ``ModelLoadError`` (or any other dedup exception) would poll forever.
-    """
-    submitted_url.dedup_ready = True
-    submitted_url.save(update_fields=["dedup_ready"])
 
 
 def _call_llm(
@@ -527,6 +521,7 @@ def generate_for(
     force: bool = False,
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    stages: Optional[Sequence[Callable]] = None,
 ) -> GenerationResult:
     """Generate and persist cards for one ``SubmittedURL``.
 
@@ -536,6 +531,10 @@ def generate_for(
 
     * ``force=False`` and the URL already has cards -> skipped.
     * ``force=True`` -> existing cards for the URL are deleted, then regenerated.
+    * ``stages`` (optional) replaces the default post-generation pipeline
+      (issue #130 injection seam): pass stubs or a subset to disable /
+      replace stages without editing this function. ``None`` runs every
+      default stage.
 
     :class:`llm.LLMError` subclasses (auth, rate-limit, transient, bad-response)
     are **not** caught here - the management command maps them to exit codes.
@@ -564,63 +563,14 @@ def generate_for(
         Card.objects.bulk_create(cards)
         _mark_generation_ok(submitted_url)
 
-    # Final step: local semantic dedup (#7). A missing embedding model must
-    # not fail generation - the standalone ``dedup_cards`` command is the
-    # place that hard-fails and tells the engineer to run the download.
-    try:
-        dedup.dedup_cards(cards)
-    except dedup.ModelLoadError as exc:
-        logger.warning(
-            "skipped post-generation dedup for %s: %s", submitted_url.url, exc
-        )
-    except Exception:  # noqa: BLE001 - dedup is best-effort here
-        logger.exception("post-generation dedup failed for %s", submitted_url.url)
-    finally:
-        # issue #78: mark dedup "attempted" whether it succeeded, was
-        # skipped (ModelLoadError) or raised something else, so the status
-        # endpoint's terminal flag never waits forever on a dedup failure.
-        _mark_dedup_ready(submitted_url)
-
-    # Live-deck semantic dedup (#29): compare the new cards against the notes
-    # currently in the batch's stored Anki deck (#76), never ANKI_DECK_NAME.
-    # Best-effort like local dedup - no stored deck skips live dedup with a
-    # warning (local-only applies), an unreachable Anki falls back to
-    # local-only; the returned ``AnkiDedupResult`` is stored on the
-    # ``GenerationResult`` (never discarded) so the command output surfaces
-    # the matched note / warning. Generation always completes.
-    anki_duplicates = 0
-    anki_matches: list = []
-    anki_warnings: list[str] = []
-    try:
-        from submissions import anki as _anki
-
-        batch_deck = getattr(getattr(submitted_url, "batch", None), "deck_name", None)
-        anki_result = _anki.dedup_cards_against_anki(cards, deck_name=batch_deck)
-        anki_duplicates = int(anki_result.duplicates or 0)
-        anki_matches = [
-            {
-                "note_id": m.note_id,
-                "note_text": m.note_text,
-                "similarity": m.similarity,
-            }
-            for m in (anki_result.matches or [])
-        ]
-        if getattr(anki_result, "warning", ""):
-            anki_warnings.append(anki_result.warning)
-    except Exception as exc:  # noqa: BLE001 - live-deck dedup is best-effort here
-        logger.exception("live-deck dedup failed for %s", submitted_url.url)
-        anki_warnings.append(
-            f"Anki deck dedup skipped (live-deck dedup failed: {exc}); "
-            "local-only dedup applied."
-        )
-
-    # Per-card images (#12): source-page image first, Draw Things fallback,
-    # otherwise no image. Best-effort - image trouble (unreachable Draw
-    # Things, a failed fetch) never fails or aborts card generation.
-    try:
-        images.attach_images(submitted_url, cards)
-    except Exception:  # noqa: BLE001 - images are strictly best-effort
-        logger.exception("image attachment failed for %s", submitted_url.url)
+    # Post-generation work (local semantic dedup plus the ready flag,
+    # live-deck Anki dedup, image attachment) runs through the stage runner
+    # (issue #130), so a stage can be disabled or replaced without editing
+    # this function. Persistence above always runs first.
+    post = post_generation.run_post_generation(submitted_url, cards, stages=stages)
+    anki_duplicates = post.anki_duplicates
+    anki_matches = post.anki_matches
+    anki_warnings = post.anki_warnings
 
     counts = {
         Card.NoteType.BASIC.value: sum(
