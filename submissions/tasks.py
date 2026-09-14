@@ -24,7 +24,7 @@ from django.utils import timezone
 from huey.contrib.djhuey import db_periodic_task, db_task
 from huey import crontab
 
-from .anki import AnkiUnreachableError, push_accepted_cards
+from .anki import AnkiUnreachableError, push_accepted_cards, push_batch_accepted_cards
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,15 @@ def push_accepted_cards_task(batch_id=None, *args, **kwargs) -> None:
     AnkiConnect error (bad note type, duplicate, ...) is already isolated to
     that one card inside ``push_accepted_cards`` itself and does not reach
     here at all. A deleted batch id is a silent no-op.
+
+    Push-outcome persistence (issue #140): when a single batch is targeted,
+    the final outcome (pushed / already-synced / failed counts, or
+    "unreachable") is written onto that ``Batch`` after
+    ``push_batch_accepted_cards`` returns (or raises), so ``card_review``
+    can show it on any later page load. The legacy no-id fallback (old
+    queued calls from before ``batch_id`` existed) scans every deck-assigned
+    batch at once and has no single batch to attribute an outcome to, so it
+    keeps its original log-only behaviour.
     """
     # Tolerate old queued calls that passed the id positionally inside
     # *args, or under a different kwarg name.
@@ -56,28 +65,47 @@ def push_accepted_cards_task(batch_id=None, *args, **kwargs) -> None:
             if key in kwargs:
                 batch_id = kwargs[key]
                 break
-    try:
-        if batch_id is not None:
-            from .models import Batch
+    if batch_id is not None:
+        from .models import Batch
 
-            pk = getattr(batch_id, "pk", batch_id)
-            try:
-                pk = int(pk)
-            except (TypeError, ValueError):
-                logger.info(
-                    "push_accepted_cards_task: ignoring unusable batch id %r",
-                    batch_id,
-                )
-                return
-            if not Batch.objects.filter(pk=pk).exists():
-                logger.info(
-                    "push_accepted_cards_task: batch %s gone, nothing to push",
-                    pk,
-                )
-                return
-            push_accepted_cards(batch_id=pk)
+        pk = getattr(batch_id, "pk", batch_id)
+        try:
+            pk = int(pk)
+        except (TypeError, ValueError):
+            logger.info(
+                "push_accepted_cards_task: ignoring unusable batch id %r",
+                batch_id,
+            )
+            return
+        batch = Batch.objects.filter(pk=pk).first()
+        if batch is None:
+            logger.info(
+                "push_accepted_cards_task: batch %s gone, nothing to push",
+                pk,
+            )
+            return
+        try:
+            result = push_batch_accepted_cards(batch)
+        except AnkiUnreachableError as exc:
+            logger.info(
+                "push_accepted_cards_task: Anki unreachable, leaving card(s) unsynced (%s)",
+                exc,
+            )
+            batch.record_push_unreachable()
+        except Exception:  # pragma: no cover - defensive
+            logger.exception(
+                "push_accepted_cards_task: unexpected error pushing to Anki"
+            )
         else:
-            push_accepted_cards()
+            batch.record_push_done(
+                deck_name=result.deck_name,
+                pushed=result.added_count,
+                skipped=result.skipped_already_synced,
+                failed=result.failed_count,
+            )
+        return
+    try:
+        push_accepted_cards()
     except AnkiUnreachableError as exc:
         logger.info(
             "push_accepted_cards_task: Anki unreachable, leaving card(s) unsynced (%s)",

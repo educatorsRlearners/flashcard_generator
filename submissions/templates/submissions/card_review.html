@@ -5,6 +5,13 @@
 {% block content %}
     <h1>Review cards - Batch {{ batch.pk }}</h1>
 
+    {% if batch.push_status %}
+        <p class="push-outcome push-outcome--{{ batch.push_status }}" id="push-outcome"
+           data-push-status="{{ batch.push_status }}">
+            <strong>Anki push:</strong> {{ batch.push_outcome_message }}
+        </p>
+    {% endif %}
+
     {% if not ready %}
         <p class="empty-state review-notready" id="review-notready">
             Cards are not ready yet - this batch is still extracting or

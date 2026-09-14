@@ -849,6 +849,11 @@ def card_review_finish(request, pk):
     # stored deck_name (issue #76), so it always pushes current DB state.
     # The batch id travels with the call; old no-arg task signatures still
     # work via the TypeError fallback (tasks.py itself is not touched here).
+    #
+    # issue #140: mark the push "pending" synchronously, before enqueuing,
+    # so a page load that lands before the (possibly still-queued) task
+    # completes shows a pending state rather than a stale earlier outcome.
+    batch.mark_push_pending()
     try:
         push_accepted_cards_task(batch.pk)
     except TypeError:

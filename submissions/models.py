@@ -1,4 +1,5 @@
 from django.db import models
+from django.utils import timezone
 
 
 class Batch(models.Model):
@@ -7,6 +8,132 @@ class Batch(models.Model):
     #: empty means "not chosen yet" - such batches are never pushed and
     #: never fall back to ANKI_DECK_NAME.
     deck_name = models.CharField(max_length=255, null=True, blank=True, default=None)
+
+    # --- Push-outcome tracking (issue #140) -------------------------
+    #
+    # ``card_review_finish`` fires the Anki push in the background
+    # (fire-and-forget, issue #57) so it cannot rely on Django's
+    # ``messages`` framework to tell the reviewer what happened - that
+    # only survives the one redirect immediately following the request
+    # that set it, and the task finishes on a later, unrelated request (or
+    # after the redirect has already rendered). These fields are the
+    # durable record ``card_review`` reads back on every page load instead.
+    class PushStatus(models.TextChoices):
+        """State of the most recent ``push_accepted_cards_task`` run.
+
+        The blank default means "Finish has never been clicked for this
+        batch" - nothing is shown. ``PENDING`` is set synchronously by
+        ``card_review_finish`` before the task is enqueued, so a page load
+        that lands before the task completes shows a pending state rather
+        than a stale or absent outcome. ``DONE`` / ``UNREACHABLE`` are set
+        by the task itself after ``push_batch_accepted_cards`` returns (or
+        raises ``AnkiUnreachableError``). Only the latest attempt is kept -
+        each write is an unconditional overwrite of absolute counts (never
+        a read-modify-write), so three overlapping Finish clicks end with
+        whichever task completes last, not a mix of the three.
+        """
+
+        PENDING = "pending", "Pending"
+        DONE = "done", "Done"
+        UNREACHABLE = "unreachable", "Unreachable"
+
+    push_status = models.CharField(
+        max_length=16, choices=PushStatus.choices, blank=True, default=""
+    )
+    #: Cards newly added to Anki by the latest push attempt.
+    push_pushed_count = models.IntegerField(default=0)
+    #: Accepted cards the latest push attempt found already synced from an
+    #: earlier push (``synced_at`` already set) - nothing new to push.
+    push_skipped_count = models.IntegerField(default=0)
+    #: Accepted cards that failed to push individually (e.g.
+    #: ``AnkiConnectError``) on the latest attempt.
+    push_failed_count = models.IntegerField(default=0)
+    #: Deck name the latest push attempt targeted (snapshot - ``deck_name``
+    #: may change on the batch after the fact; this is what was pushed to).
+    push_deck_name = models.CharField(max_length=255, blank=True, default="")
+    #: When the latest push attempt reached a terminal state (``done`` or
+    #: ``unreachable``). Null while ``push_status == "pending"`` or unset.
+    push_finished_at = models.DateTimeField(null=True, blank=True)
+
+    def mark_push_pending(self):
+        """Synchronously record "a push is in flight" (issue #140).
+
+        Called by ``card_review_finish`` before enqueuing
+        ``push_accepted_cards_task`` so a page load racing the background
+        task sees "pending", never a stale earlier outcome or nothing at
+        all.
+        """
+        self.push_status = self.PushStatus.PENDING
+        self.save(update_fields=["push_status"])
+
+    def record_push_done(self, *, deck_name, pushed, skipped, failed):
+        """Record a completed push attempt's outcome (issue #140)."""
+        self.push_status = self.PushStatus.DONE
+        self.push_deck_name = deck_name or ""
+        self.push_pushed_count = pushed
+        self.push_skipped_count = skipped
+        self.push_failed_count = failed
+        self.push_finished_at = timezone.now()
+        self.save(
+            update_fields=[
+                "push_status",
+                "push_deck_name",
+                "push_pushed_count",
+                "push_skipped_count",
+                "push_failed_count",
+                "push_finished_at",
+            ]
+        )
+
+    def record_push_unreachable(self):
+        """Record that the latest push attempt could not reach Anki."""
+        self.push_status = self.PushStatus.UNREACHABLE
+        self.push_pushed_count = 0
+        self.push_skipped_count = 0
+        self.push_failed_count = 0
+        self.push_finished_at = timezone.now()
+        self.save(
+            update_fields=[
+                "push_status",
+                "push_pushed_count",
+                "push_skipped_count",
+                "push_failed_count",
+                "push_finished_at",
+            ]
+        )
+
+    @property
+    def push_outcome_message(self):
+        """Human-readable push-outcome text for the review page, or ``""``
+        when Finish has never been clicked (nothing to show)."""
+        if self.push_status == self.PushStatus.PENDING:
+            return "Anki push in progress…"
+        if self.push_status == self.PushStatus.UNREACHABLE:
+            return (
+                "Anki push failed: Anki/AnkiConnect was unreachable. "
+                "Accepted cards were not pushed; try again once Anki is running."
+            )
+        if self.push_status == self.PushStatus.DONE:
+            pushed = self.push_pushed_count
+            failed = self.push_failed_count
+            skipped = self.push_skipped_count
+            deck = self.push_deck_name
+            if pushed and failed:
+                return (
+                    f"{pushed} card(s) pushed to deck '{deck}', "
+                    f"{failed} card(s) failed to push."
+                )
+            if failed:
+                return (
+                    f"0 card(s) pushed to deck '{deck}', "
+                    f"{failed} card(s) failed to push."
+                )
+            if pushed:
+                return f"{pushed} card(s) pushed to deck '{deck}'."
+            if skipped:
+                return f"{skipped} card(s) already synced, nothing new to push."
+            return "No accepted cards to push."
+        return ""
 
     class Meta:
         ordering = ["-created_at", "-id"]

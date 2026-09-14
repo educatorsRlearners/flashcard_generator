@@ -114,6 +114,37 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
     margin: 1rem 0 1.25rem;
 }
 
+/* Anki push outcome banner (issue #140) - visually/textually distinct
+   from .review-tally: left-accent bar + icon, not the plain bordered box. */
+.push-outcome {
+    border-radius: 8px;
+    border: 1px solid var(--info-bd);
+    border-left-width: 5px;
+    background: var(--info-bg);
+    color: var(--info-fg);
+    padding: 0.65rem 0.85rem;
+    margin: 0 0 1.25rem;
+}
+.push-outcome::before { content: "\21bb  "; }
+.push-outcome--pending {
+    border-color: var(--warning-bd);
+    background: var(--warning-bg);
+    color: var(--warning-fg);
+}
+.push-outcome--pending::before { content: "\231b  "; }
+.push-outcome--done {
+    border-color: var(--success-bd);
+    background: var(--success-bg);
+    color: var(--success-fg);
+}
+.push-outcome--done::before { content: "\2713  "; }
+.push-outcome--unreachable {
+    border-color: var(--error-bd);
+    background: var(--error-bg);
+    color: var(--error-fg);
+}
+.push-outcome--unreachable::before { content: "\26a0  "; }
+
 .review-grid {
     list-style: none;
     margin: 0 0 1.5rem;
