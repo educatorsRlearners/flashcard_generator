@@ -99,64 +99,72 @@ macOS-only; Linux/Windows native-messaging support is tracked separately
 in #43):
 
 1. ```
-   uv sync
-   uv run python manage.py migrate
+   make setup
    ```
+   One command takes a fresh checkout to extension-ready: installs deps
+   (`uv sync`), applies migrations, pins a real signing key into
+   `extension/manifest.json`'s `"key"` field (private key to gitignored
+   `.extension_signing_key.pem`), registers the native messaging host,
+   mints the extension auth token (`.extension_token`), writes
+   `EXTENSION_ID=<derived-id>` into `.env` (creating `.env` from
+   `.env.example` first when missing), presence-checks the configured LLM
+   key (fails fast naming the exact env var — no network call), and
+   finishes with `make check`. Re-running is safe: present artifacts are
+   skipped, the key/token are never regenerated, and the `.env` line is
+   updated in place. Start the backend day to day with `make run` (same
+   fast ensure, then `runserver` + Huey consumer together).
    Heavier optional pieces (Playwright/Chromium, sentence-transformer
    weights, Tesseract) aren't required for this basic flow — see
    [Setup](#setup) if a feature later asks for one of them.
-2. ```
-   uv run python manage.py generate_signing_key
+   Manual fallback (the same steps by hand, no `make`):
    ```
-   Generates a signing keypair and pins it into `extension/manifest.json`'s
-   `"key"` field, so the extension's ID stays stable across reloads. The
-   private key is written to `.extension_signing_key.pem` at the project
-   root (gitignored). Re-running once a real key is already pinned fails
-   unless you pass `--force` (which regenerates both keys and gives the
-   extension a new ID — repeat steps 3-4 below if you do this).
-3. Load the extension unpacked: `brave://extensions` (or
-   `chrome://extensions`) → enable Developer mode → "Load unpacked" →
-   select the `extension/` directory. Because the key is pinned in step 2,
-   the ID Brave/Chrome assigns stays stable across future reloads — you
-   don't need to copy it down, the next step derives it itself.
-4. ```
+   uv sync
+   uv run python manage.py migrate
+   uv run python manage.py generate_signing_key
    uv run python manage.py install_native_host
    ```
-   Derives the extension ID from `extension/manifest.json`'s pinned key
-   (printed to stdout as `Extension ID derived from
-   extension/manifest.json: <id>` so you can cross-check it against the ID
-   shown on `brave://extensions`/`chrome://extensions`), registers the
-   native messaging host, mints the extension auth token, and writes
-   `EXTENSION_ID=<id>` into `.env` for you (creating `.env` from
-   `.env.example` first if it doesn't exist yet). Full detail on what this
+   Re-running `generate_signing_key` once a real key is already pinned
+   fails unless you pass `--force` (which regenerates both keys and gives
+   the extension a new ID — repeat step 2 and re-run
+   `install_native_host` if you do this); `make setup` never passes
+   `--force`.
+2. Load the extension unpacked: `brave://extensions` (or
+   `chrome://extensions`) → enable Developer mode → "Load unpacked" →
+   select the `extension/` directory. Because the key is pinned in step 1,
+   the ID Brave/Chrome assigns stays stable across future reloads — you
+   don't need to copy it down, step 1 already derived it itself (printed
+   as `Extension ID derived from extension/manifest.json: <id>` so you
+   can cross-check it against the ID shown on
+   `brave://extensions`/`chrome://extensions`). Full detail on what step 1
    wires up lives in [Extension internals](#extension-internals).
 
-   Pass `--extension-id <id>` explicitly only to override the derived ID
-   (e.g. testing/multi-profile setups) — if it disagrees with the ID
-   derived from the manifest, a warning naming both is printed but the
-   explicit value still wins.
+   Pass `--extension-id <id>` to `install_native_host` explicitly only to
+   override the derived ID (e.g. testing/multi-profile setups) — if it
+   disagrees with the ID derived from the manifest, a warning naming both
+   is printed but the explicit value still wins.
 
    **Restart any already-running backend** (`manage.py dev`, or
    `runserver`/`run_huey` started manually) after this — `.env` is only
    read once at process start, so a live process keeps using its old
-   `EXTENSION_ID` until restarted.
+   `EXTENSION_ID` until restarted. `make setup` / `make run` print this
+   reminder (plus the derived ID) every time.
 
    If Brave/Chrome was already open when the manifest was written, reload
    the extension once more before using it.
 
 **Use:**
 
-5. Click the extension's popup on any regular webpage you're reading
+3. Click the extension's popup on any regular webpage you're reading
    (`brave://` and `chrome://` and extension pages themselves are unreadable). This
    extracts the page and hands it to the backend — see
    [Extract content](#extract-content).
-6. The backend turns the extracted text into flashcards (see
+4. The backend turns the extracted text into flashcards (see
    [Generate cards](#generate-cards)), filters out ones that duplicate
    cards you already have (see [Deduplicate cards](#deduplicate-cards)),
    and attaches an image to each (see [Card images](#card-images)).
-7. The popup opens the batch's review grid. Accept, reject, or edit each
+5. The popup opens the batch's review grid. Accept, reject, or edit each
    card — see [Review grid](#review-grid).
-8. Click **Finish** to push the accepted cards into a single Anki deck —
+6. Click **Finish** to push the accepted cards into a single Anki deck —
    see [Push to Anki](#push-to-anki).
 
 If anything above doesn't behave as described, the full manual
@@ -167,9 +175,13 @@ is in `_docs/extension_manual_checklist.md`.
 
 | Command | What it does |
 | --- | --- |
-| `uv sync` | Install dependencies |
+| `make setup` | One-command extension-ready setup: deps, migrations, signing key, native host + token + `EXTENSION_ID`, LLM-key presence check, then `make check` (idempotent; primary path) |
+| `make run` | Fast-ensure the same artifacts, then start `runserver` + the Huey consumer together, prefixed logs (`[web]` / `[worker]`), Ctrl-C stops both (primary path) |
+| `make check` | Verify non-pip prerequisites (Anki / local image gen warn only) |
+| `make install` | Deps + migrations only (`make setup` covers this and more) |
+| `uv sync` | Install dependencies (manual fallback for the `make setup` step) |
 | `uv run pytest` | Run the whole test suite |
-| `uv run python manage.py dev` | Dev entrypoint: starts `runserver` + the Huey consumer together, prefixed logs (`[web]` / `[worker]`), Ctrl-C stops both |
+| `uv run python manage.py dev` | Dev entrypoint: starts `runserver` + the Huey consumer together, prefixed logs (`[web]` / `[worker]`), Ctrl-C stops both (manual fallback for `make run`) |
 | `uv run python manage.py run_huey` | Run the background task consumer alone (manual fallback; normally started automatically by `dev`) |
 | `uv run python manage.py push_to_anki` | Push accepted cards to Anki via AnkiConnect (idempotent) |
 
@@ -321,12 +333,13 @@ never mutates settings.
 ## Setup
 
 First-time setup uses the verified Makefile targets (all exist in
-`Makefile`):
+`Makefile`) — `make setup` is the primary path, `uv` commands below it
+are the manual fallback:
 
 ```
-make setup    # install deps, run migrations, then check prerequisites
+make setup    # deps, migrations, signing key, native host + token + EXTENSION_ID, LLM-key check, then check prerequisites
 make check    # verify non-pip prerequisites (Anki / local image gen warn only)
-make run      # start runserver + Huey consumer together (same as manage.py dev)
+make run      # fast-ensure the same artifacts, then start runserver + Huey consumer together (same as manage.py dev)
 ```
 
 Then load the extension unpacked: `brave://extensions` (or
@@ -356,7 +369,10 @@ the extraction path (see [Extract content](#extract-content)).
 The extension is how you use this app day to day (see
 [Getting started](#getting-started)); the native host spawns the backend
 for you. This section is for a contributor who wants to run the backend
-directly — e.g. to work on it without going through the extension:
+directly — e.g. to work on it without going through the extension.
+`make run` (primary path) fast-ensures the setup artifacts first
+(deps/migrations/key/native host/LLM key, skipping present ones), then
+starts `dev`; the `uv` commands below are the manual fallback:
 
 ```
 uv run python manage.py migrate
