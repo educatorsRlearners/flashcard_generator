@@ -83,7 +83,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterator, NamedTuple, Optional
 
 import httpx
 from django.conf import settings
@@ -159,6 +159,21 @@ class LLMBadResponseError(LLMError):
     def __init__(self, message: str, *, reason: str = "bad_response"):
         super().__init__(message)
         self.reason = reason
+
+
+def _timeout_transient_error() -> LLMTransientError:
+    """Shared timeout mapping used by the generic classifier and Gemini."""
+    return LLMTransientError("request timed out", reason="timeout")
+
+
+def _connection_transient_error() -> LLMTransientError:
+    """Shared connection-error mapping used by the generic classifier and Gemini."""
+    return LLMTransientError("connection error contacting provider", reason="connection")
+
+
+def _unknown_transient_error(name: str) -> LLMTransientError:
+    """Shared unknown-error mapping (single message template)."""
+    return LLMTransientError(f"unexpected provider error ({name})", reason="unknown")
 
 
 # --- Result type -------------------------------------------------------
@@ -275,7 +290,10 @@ def _resolve_opencode_zen_api_key_env_var() -> str:
 
 class Provider:
     """A provider adapter. Subclasses implement :meth:`_call` and
-    :meth:`_map_exception`; the retry loop and response handling live here."""
+    :meth:`_extract`; exception mapping defaults to
+    :func:`_classify_provider_exception` (override :meth:`_map_exception`
+    only for HTTP-status specifics, as Gemini does). The retry loop and
+    response handling live here."""
 
     name = "base"
 
@@ -313,41 +331,30 @@ class Provider:
         try:
             self._require_api_key()
 
-            attempt = 0
-            while True:
-                attempt += 1
+            raw = self._call_with_transient_retries(
+                lambda: self._call(
+                    system=system,
+                    prompt=prompt,
+                    response_format=response_format,
+                    max_tokens=max_tokens,
+                )
+            )
+            if response_format is not None:
                 try:
-                    raw = self._call(
+                    result = self._build_result(raw, response_format)
+                except LLMBadResponseError as exc:
+                    if exc.reason not in _JSON_RETRYABLE_REASONS:
+                        raise
+                    json_retried = True
+                    result = self._retry_malformed_json(
                         system=system,
                         prompt=prompt,
                         response_format=response_format,
                         max_tokens=max_tokens,
+                        bad_raw=raw,
                     )
-                except LLMError:
-                    raise
-                except BaseException as exc:  # noqa: BLE001 - provider SDK error
-                    mapped = self._map_exception(exc)
-                    if _is_retryable(mapped) and attempt < MAX_ATTEMPTS:
-                        _sleep(_backoff_seconds(attempt, mapped))
-                        continue
-                    raise mapped from None
-                if response_format is not None:
-                    try:
-                        result = self._build_result(raw, response_format)
-                    except LLMBadResponseError as exc:
-                        if exc.reason not in _JSON_RETRYABLE_REASONS:
-                            raise
-                        json_retried = True
-                        result = self._retry_malformed_json(
-                            system=system,
-                            prompt=prompt,
-                            response_format=response_format,
-                            max_tokens=max_tokens,
-                            bad_raw=raw,
-                        )
-                else:
-                    result = self._build_result(raw, response_format)
-                break
+            else:
+                result = self._build_result(raw, response_format)
         except LLMError as exc:
             _record_llm_call(
                 model=self.model,
@@ -389,8 +396,37 @@ class Provider:
     def _call(self, *, system, prompt, response_format, max_tokens):  # pragma: no cover
         raise NotImplementedError
 
-    def _map_exception(self, exc: BaseException) -> LLMError:  # pragma: no cover
-        raise NotImplementedError
+    def _map_exception(self, exc: BaseException) -> LLMError:
+        """Default exception mapping shared by all providers (issue #128).
+
+        Duck-typed SDK-error classifier; subclasses override only for
+        HTTP-status specifics (as Gemini does).
+        """
+        return _classify_provider_exception(exc)
+
+    def _call_with_transient_retries(self, fn: Callable[[], Any]) -> Any:
+        """Run ``fn`` with the shared transient-retry policy (issue #128).
+
+        One implementation used by both :meth:`generate` and
+        :meth:`_retry_malformed_json`: try ``fn``, map unknown exceptions via
+        :meth:`_map_exception`, retry while :func:`_is_retryable` holds and
+        the ``MAX_ATTEMPTS`` budget remains, sleeping
+        :func:`_backoff_seconds`. An already-mapped :class:`LLMError`
+        propagates unchanged (retried only if retryable).
+        """
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                return fn()
+            except LLMError:
+                raise
+            except BaseException as exc:  # noqa: BLE001 - provider SDK error
+                mapped = self._map_exception(exc)
+                if _is_retryable(mapped) and attempt < MAX_ATTEMPTS:
+                    _sleep(_backoff_seconds(attempt, mapped))
+                    continue
+                raise mapped from None
 
     def _extract(self, raw: Any) -> tuple[str, Optional[str], dict]:
         """Return (text, stop_reason, usage) from a provider response."""
@@ -420,25 +456,15 @@ class Provider:
         bad_text, _, _ = self._extract(bad_raw)
         follow_up_prompt = f"{prompt}\n\n{bad_text}\n\n{JSON_RETRY_INSTRUCTION}"
 
-        attempt = 0
-        while True:
-            attempt += 1
-            try:
-                retry_raw = self._call(
-                    system=system,
-                    prompt=follow_up_prompt,
-                    response_format=response_format,
-                    max_tokens=max_tokens,
-                )
-            except LLMError:
-                raise
-            except BaseException as exc:  # noqa: BLE001 - provider SDK error
-                mapped = self._map_exception(exc)
-                if _is_retryable(mapped) and attempt < MAX_ATTEMPTS:
-                    _sleep(_backoff_seconds(attempt, mapped))
-                    continue
-                raise mapped from None
-            return self._build_result(retry_raw, response_format)
+        retry_raw = self._call_with_transient_retries(
+            lambda: self._call(
+                system=system,
+                prompt=follow_up_prompt,
+                response_format=response_format,
+                max_tokens=max_tokens,
+            )
+        )
+        return self._build_result(retry_raw, response_format)
 
     # -- shared response handling --
 
@@ -519,9 +545,6 @@ class AnthropicProvider(Provider):
                     usage[attr] = val
         return "".join(parts), stop_reason, usage
 
-    def _map_exception(self, exc: BaseException) -> LLMError:
-        return _classify_provider_exception(exc)
-
 
 # --- OpenAI-compatible implementation (issue #27) --------------------
 
@@ -597,12 +620,6 @@ class OpenAICompatibleProvider(Provider):
             # as a "max_tokens"/truncated bad response.
             return text, "max_tokens", _openai_usage(raw)
         return text, finish_reason, _openai_usage(raw)
-
-    def _map_exception(self, exc: BaseException) -> LLMError:
-        # OpenAI SDK errors carry ``status_code`` and names like
-        # ``AuthenticationError`` / ``RateLimitError`` / ``APITimeoutError``,
-        # the same duck-typed shape the shared classifier handles.
-        return _classify_provider_exception(exc)
 
 
 def _openai_usage(raw: Any) -> dict:
@@ -708,14 +725,10 @@ class GeminiProvider(Provider):
         if isinstance(exc, httpx.HTTPStatusError):
             return _classify_gemini_http_error(exc)
         if isinstance(exc, httpx.TimeoutException):
-            return LLMTransientError("request timed out", reason="timeout")
+            return _timeout_transient_error()
         if isinstance(exc, httpx.TransportError):
-            return LLMTransientError(
-                "connection error contacting provider", reason="connection"
-            )
-        return LLMTransientError(
-            f"unexpected provider error ({type(exc).__name__})", reason="unknown"
-        )
+            return _connection_transient_error()
+        return _unknown_transient_error(type(exc).__name__)
 
 
 def _gemini_usage(raw: dict) -> dict:
@@ -795,9 +808,9 @@ def _classify_provider_exception(exc: BaseException) -> LLMError:
     if status == 429 or "RateLimit" in name:
         return LLMRateLimitError(retry_after=_extract_retry_after(exc))
     if "Timeout" in name:
-        return LLMTransientError("request timed out", reason="timeout")
+        return _timeout_transient_error()
     if "APIConnection" in name or "Connection" in name:
-        return LLMTransientError("connection error contacting provider", reason="connection")
+        return _connection_transient_error()
     if isinstance(status, int) and status >= 500:
         return LLMTransientError(f"provider server error (HTTP {status})", reason="server_error")
     if isinstance(status, int) and 400 <= status < 500:
@@ -805,7 +818,7 @@ def _classify_provider_exception(exc: BaseException) -> LLMError:
             f"provider rejected the request (HTTP {status})", reason="bad_request"
         )
     # Unknown shape: treat as transient so a blip is retried, but bounded.
-    return LLMTransientError(f"unexpected provider error ({name})", reason="unknown")
+    return _unknown_transient_error(name)
 
 
 def _extract_retry_after(exc: BaseException) -> Optional[float]:
@@ -1060,6 +1073,78 @@ def _record_llm_call(
 
 
 # --- Extension popup curated models (issue #105, unified catalog #129) ---
+# PROVIDER_CATALOG (the single source of truth) is defined below, after
+# _NAMED_OPENAI_COMPATIBLE_DEFAULTS which its named-provider entries
+# reference - followed by the derived EXTENSION_LLM_* constants. Kept in
+# this section header so the #105 domain data stays beside _PROVIDERS.
+
+
+# --- Provider registry (the seam #27 extends) --------------------
+
+
+#: The one obvious place a new provider is wired in. Key == ``LLM_PROVIDER``.
+#: ``"openai"`` is a short alias for ``"openai-compatible"``.
+_PROVIDERS: dict[str, Callable[..., Provider]] = {
+    "anthropic": AnthropicProvider,
+    "openai-compatible": OpenAICompatibleProvider,
+    "openai": OpenAICompatibleProvider,
+    # Named OpenAI-compatible providers (issue #84) - see
+    # _NAMED_OPENAI_COMPATIBLE_DEFAULTS below for their hardcoded base_url /
+    # api_key_env_var.
+    "grok": OpenAICompatibleProvider,
+    "openrouter": OpenAICompatibleProvider,
+    "opencode-zen": OpenAICompatibleProvider,
+    "gemini": GeminiProvider,
+}
+
+#: Provider names that need the OpenAI-compatible constructor kwargs.
+_OPENAI_PROVIDER_NAMES = frozenset({"openai-compatible", "openai"})
+
+#: Hardcoded defaults for "named" OpenAI-compatible providers (issue #84,
+#: extended by #104 for ``opencode-zen``):
+#: each is just an ``OpenAICompatibleProvider``. These are the fallback
+#: ``base_url``/``api_key_env_var`` used when the corresponding
+#: ``LLM_GROK_*``/``LLM_OPENROUTER_*``/``LLM_OPENCODE_ZEN_*`` override setting
+#: (issue #98 / #104) is unset
+#: or empty; ``model`` falls back to the generic ``LLM_MODEL`` setting via
+#: :func:`_resolve_model` the same way, unless ``LLM_GROK_MODEL``/
+#: ``LLM_OPENROUTER_MODEL``/``LLM_OPENCODE_ZEN_MODEL`` is set.
+#:
+#: Request-shape note: for ``grok``, live-verified (issue #102) against the
+#: real xAI chat-completions endpoint using model ``grok-4.3`` - Bearer auth
+#: header, a ``max_tokens`` field, and ``choices[0].message.content`` in the
+#: response all matched what ``OpenAICompatibleProvider`` already sends/
+#: expects, including the structured-output path: a non-``None``
+#: ``response_format`` round-tripped into ``LLMResult.parsed`` with no
+#: schema/parse error. No adapter change was needed. For ``openrouter`` this
+#: remains doc-based only - no live credentials available in this
+#: environment; live-credential verification is tracked in #119.
+_NAMED_OPENAI_COMPATIBLE_DEFAULTS: dict[str, dict[str, str]] = {
+    "grok": {
+        "base_url": "https://api.x.ai/v1",
+        "api_key_env_var": "XAI_API_KEY",
+    },
+    # OpenRouter model ids are origin-prefixed (e.g.
+    # "anthropic/claude-3.5-sonnet", "openai/gpt-4o") - a bare/native model
+    # name, or something like "openrouter/auto", should not be assumed;
+    # ``LLM_MODEL`` must be set to one of OpenRouter's own prefixed ids.
+    "openrouter": {
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_env_var": "OPENROUTER_API_KEY",
+    },
+    # Zen's only OpenAI-compatible route is /v1/chat/completions (per
+    # https://opencode.ai/docs/zen): /v1/messages is Anthropic-shaped,
+    # /v1/responses is the OpenAI Responses API, /v1/models/* is
+    # Google-shaped - none of which this adapter speaks. No Zen model id is
+    # hardcoded here; set LLM_MODEL / LLM_OPENCODE_ZEN_MODEL explicitly
+    # (curated chat-completions ids are #105's job).
+    "opencode-zen": {
+        "base_url": "https://opencode.ai/zen/v1/chat/completions",
+        "api_key_env_var": "OPENCODE_ZEN_API_KEY",
+    },
+}
+
+# --- Unified provider/model catalog (issue #129) -----------------------
 #
 # PROVIDER_CATALOG is the single source of truth for providers/models:
 # each entry carries the display id, backend registry key in _PROVIDERS,
@@ -1165,73 +1250,76 @@ EXTENSION_LLM_REGISTRY_KEYS: dict[str, str] = {
     if entry["extension_visible"]
 }
 
-
-# --- Provider registry (the seam #27 extends) --------------------
-
-
-#: The one obvious place a new provider is wired in. Key == ``LLM_PROVIDER``.
-#: ``"openai"`` is a short alias for ``"openai-compatible"``.
-_PROVIDERS: dict[str, Callable[..., Provider]] = {
-    "anthropic": AnthropicProvider,
-    "openai-compatible": OpenAICompatibleProvider,
-    "openai": OpenAICompatibleProvider,
-    # Named OpenAI-compatible providers (issue #84) - see
-    # _NAMED_OPENAI_COMPATIBLE_DEFAULTS below for their hardcoded base_url /
-    # api_key_env_var.
-    "grok": OpenAICompatibleProvider,
-    "openrouter": OpenAICompatibleProvider,
-    "opencode-zen": OpenAICompatibleProvider,
-    "gemini": GeminiProvider,
-}
-
-#: Provider names that need the OpenAI-compatible constructor kwargs.
-_OPENAI_PROVIDER_NAMES = frozenset({"openai-compatible", "openai"})
-
-#: Hardcoded defaults for "named" OpenAI-compatible providers (issue #84,
-#: extended by #104 for ``opencode-zen``):
-#: each is just an ``OpenAICompatibleProvider``. These are the fallback
-#: ``base_url``/``api_key_env_var`` used when the corresponding
-#: ``LLM_GROK_*``/``LLM_OPENROUTER_*``/``LLM_OPENCODE_ZEN_*`` override setting
-#: (issue #98 / #104) is unset
-#: or empty; ``model`` falls back to the generic ``LLM_MODEL`` setting via
-#: :func:`_resolve_model` the same way, unless ``LLM_GROK_MODEL``/
-#: ``LLM_OPENROUTER_MODEL``/``LLM_OPENCODE_ZEN_MODEL`` is set.
-#:
-#: Request-shape note: for ``grok``, live-verified (issue #102) against the
-#: real xAI chat-completions endpoint using model ``grok-4.3`` - Bearer auth
-#: header, a ``max_tokens`` field, and ``choices[0].message.content`` in the
-#: response all matched what ``OpenAICompatibleProvider`` already sends/
-#: expects, including the structured-output path: a non-``None``
-#: ``response_format`` round-tripped into ``LLMResult.parsed`` with no
-#: schema/parse error. No adapter change was needed. For ``openrouter`` this
-#: remains doc-based only - no live credentials available in this
-#: environment; live-credential verification is tracked in #119.
-_NAMED_OPENAI_COMPATIBLE_DEFAULTS: dict[str, dict[str, str]] = {
-    "grok": {
-        "base_url": "https://api.x.ai/v1",
-        "api_key_env_var": "XAI_API_KEY",
-    },
-    # OpenRouter model ids are origin-prefixed (e.g.
-    # "anthropic/claude-3.5-sonnet", "openai/gpt-4o") - a bare/native model
-    # name, or something like "openrouter/auto", should not be assumed;
-    # ``LLM_MODEL`` must be set to one of OpenRouter's own prefixed ids.
-    "openrouter": {
-        "base_url": "https://openrouter.ai/api/v1",
-        "api_key_env_var": "OPENROUTER_API_KEY",
-    },
-    # Zen's only OpenAI-compatible route is /v1/chat/completions (per
-    # https://opencode.ai/docs/zen): /v1/messages is Anthropic-shaped,
-    # /v1/responses is the OpenAI Responses API, /v1/models/* is
-    # Google-shaped - none of which this adapter speaks. No Zen model id is
-    # hardcoded here; set LLM_MODEL / LLM_OPENCODE_ZEN_MODEL explicitly
-    # (curated chat-completions ids are #105's job).
-    "opencode-zen": {
-        "base_url": "https://opencode.ai/zen/v1/chat/completions",
-        "api_key_env_var": "OPENCODE_ZEN_API_KEY",
-    },
-}
-
 SUPPORTED_PROVIDERS = tuple(sorted(_PROVIDERS))
+
+
+class _ProviderSpec(NamedTuple):
+    """Shared construction/key spec for one registry key (issue #127).
+
+    ``model_resolver`` / ``key_resolver`` / ``base_url_resolver`` are
+    zero-arg callables returning the settings-derived values; the
+    ``lambda: _resolve_*()`` wrappers (rather than bare function refs)
+    resolve the module global at call time so ``monkeypatch.setattr``
+    on the ``_resolve_*`` helpers keeps working. ``base_url_resolver``
+    is ``None`` for adapters whose constructor takes no ``base_url``
+    (``anthropic``, ``gemini``).
+    """
+
+    factory: Callable[..., Provider]
+    model_resolver: Callable[[], str]
+    key_resolver: Callable[[], str]
+    base_url_resolver: Optional[Callable[[], str]]
+
+
+#: One shared spec table driving :func:`get_provider` construction and
+#: ``GET /api/extension/llm-config/`` key resolution. ``openai`` is the
+#: short alias for ``openai-compatible`` (same resolvers); the named
+#: OpenAI-compatible entries reuse the ``_resolve_*`` helpers that fall
+#: back to :data:`_NAMED_OPENAI_COMPATIBLE_DEFAULTS`.
+_PROVIDER_SPECS: dict[str, _ProviderSpec] = {
+    "anthropic": _ProviderSpec(
+        AnthropicProvider,
+        lambda: _resolve_model(),
+        lambda: _resolve_api_key_env_var(),
+        None,
+    ),
+    "openai-compatible": _ProviderSpec(
+        OpenAICompatibleProvider,
+        lambda: _resolve_openai_model(),
+        lambda: _resolve_openai_api_key_env_var(),
+        lambda: _resolve_openai_base_url(),
+    ),
+    "openai": _ProviderSpec(
+        OpenAICompatibleProvider,
+        lambda: _resolve_openai_model(),
+        lambda: _resolve_openai_api_key_env_var(),
+        lambda: _resolve_openai_base_url(),
+    ),
+    "grok": _ProviderSpec(
+        OpenAICompatibleProvider,
+        lambda: _resolve_grok_model(),
+        lambda: _resolve_grok_api_key_env_var(),
+        lambda: _resolve_grok_base_url(),
+    ),
+    "openrouter": _ProviderSpec(
+        OpenAICompatibleProvider,
+        lambda: _resolve_openrouter_model(),
+        lambda: _resolve_openrouter_api_key_env_var(),
+        lambda: _resolve_openrouter_base_url(),
+    ),
+    "opencode-zen": _ProviderSpec(
+        OpenAICompatibleProvider,
+        lambda: _resolve_opencode_zen_model(),
+        lambda: _resolve_opencode_zen_api_key_env_var(),
+        lambda: _resolve_opencode_zen_base_url(),
+    ),
+    "gemini": _ProviderSpec(
+        GeminiProvider,
+        lambda: _resolve_gemini_model(),
+        lambda: _resolve_gemini_api_key_env_var(),
+        None,
+    ),
+}
 
 
 def _model_override_or(current: str, override: Optional[str]) -> str:
@@ -1266,47 +1354,21 @@ def get_provider(
         provider_name = raw_name.strip().lower() or (
             _resolve_provider_name() or ""
         ).strip().lower()
-    factory = _PROVIDERS.get(provider_name)
-    if factory is None:
+    spec = _PROVIDER_SPECS.get(provider_name)
+    if spec is None:
         exc = LLMConfigError(
             f"Unknown LLM_PROVIDER {provider_name!r}. "
             f"Supported providers: {', '.join(SUPPORTED_PROVIDERS)}."
         )
         exc.attempted_provider_name = provider_name
         raise exc
-    if provider_name in _OPENAI_PROVIDER_NAMES:
-        return factory(
-            model=_model_override_or(_resolve_openai_model(), model),
-            api_key_env_var=_resolve_openai_api_key_env_var(),
-            base_url=_resolve_openai_base_url(),
-        )
-    if provider_name == "grok":
-        return factory(
-            model=_model_override_or(_resolve_grok_model(), model),
-            api_key_env_var=_resolve_grok_api_key_env_var(),
-            base_url=_resolve_grok_base_url(),
-        )
-    if provider_name == "openrouter":
-        return factory(
-            model=_model_override_or(_resolve_openrouter_model(), model),
-            api_key_env_var=_resolve_openrouter_api_key_env_var(),
-            base_url=_resolve_openrouter_base_url(),
-        )
-    if provider_name == "opencode-zen":
-        return factory(
-            model=_model_override_or(_resolve_opencode_zen_model(), model),
-            api_key_env_var=_resolve_opencode_zen_api_key_env_var(),
-            base_url=_resolve_opencode_zen_base_url(),
-        )
-    if provider_name == "gemini":
-        return factory(
-            model=_model_override_or(_resolve_gemini_model(), model),
-            api_key_env_var=_resolve_gemini_api_key_env_var(),
-        )
-    return factory(
-        model=_model_override_or(_resolve_model(), model),
-        api_key_env_var=_resolve_api_key_env_var(),
-    )
+    kwargs: dict[str, Any] = {
+        "model": _model_override_or(spec.model_resolver(), model),
+        "api_key_env_var": spec.key_resolver(),
+    }
+    if spec.base_url_resolver is not None:
+        kwargs["base_url"] = spec.base_url_resolver()
+    return spec.factory(**kwargs)
 
 
 def check() -> None:
