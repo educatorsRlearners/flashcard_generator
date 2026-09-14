@@ -1821,3 +1821,94 @@ def test_llm_grok_model_env_var_wires_through_real_settings_pipeline(monkeypatch
         monkeypatch.delenv("LLM_GROK_MODEL", raising=False)
         importlib.reload(settings_module)
         django.conf.settings._wrapped = django.conf.empty
+
+
+# --- shared default mapping + transient-retry helper (issue #128) --------
+
+
+def test_provider_default_map_exception_shared(monkeypatch, anthropic_key):
+    # Base class defines the default; Anthropic/OpenAI-compatible inherit it
+    # with no override of their own.
+    assert "_map_exception" not in llm.AnthropicProvider.__dict__
+    assert "_map_exception" not in llm.OpenAICompatibleProvider.__dict__
+    assert "_map_exception" in llm.GeminiProvider.__dict__
+    provider = llm.get_provider("anthropic")
+    err = FakeTimeoutError("boom")
+    mapped = provider._map_exception(err)
+    assert isinstance(mapped, llm.LLMTransientError)
+    assert mapped.reason == "timeout"
+    assert str(mapped) == str(llm._timeout_transient_error())
+
+
+def test_gemini_non_http_reuses_shared_messages():
+    provider = llm.GeminiProvider(model="m", api_key_env_var="K")
+    timeout_mapped = provider._map_exception(httpx.TimeoutException("t"))
+    assert isinstance(timeout_mapped, llm.LLMTransientError)
+    assert str(timeout_mapped) == "request timed out"
+    assert timeout_mapped.reason == "timeout"
+    conn_mapped = provider._map_exception(httpx.ConnectError("c"))
+    assert isinstance(conn_mapped, llm.LLMTransientError)
+    assert str(conn_mapped) == "connection error contacting provider"
+    assert conn_mapped.reason == "connection"
+
+
+def test_opencode_zen_inherits_default_mapping():
+    provider = llm.get_provider("opencode-zen")
+    assert isinstance(provider, llm.OpenAICompatibleProvider)
+    assert "_map_exception" not in type(provider).__dict__
+    err = FakeAPIError(500)
+    mapped = provider._map_exception(err)
+    assert isinstance(mapped, llm.LLMTransientError)
+    assert mapped.reason == "server_error"
+
+
+def test_helper_llmerror_propagates_unchanged():
+    provider = llm.AnthropicProvider(model="m", api_key_env_var="K")
+    sentinel = llm.LLMRateLimitError("limited")
+    calls = []
+
+    def fn():
+        calls.append(1)
+        raise sentinel
+
+    with pytest.raises(llm.LLMRateLimitError) as excinfo:
+        provider._call_with_transient_retries(fn)
+    assert excinfo.value is sentinel
+    assert len(calls) == 1
+
+
+def test_helper_retries_transient_max_attempts(monkeypatch):
+    provider = llm.AnthropicProvider(model="m", api_key_env_var="K")
+    sleeps = []
+    monkeypatch.setattr(llm, "_sleep", lambda seconds: sleeps.append(seconds))
+    calls = []
+
+    def fn():
+        calls.append(1)
+        raise FakeTimeoutError("boom")
+
+    with pytest.raises(llm.LLMTransientError):
+        provider._call_with_transient_retries(fn)
+    assert len(calls) == llm.MAX_ATTEMPTS
+    assert len(sleeps) == llm.MAX_ATTEMPTS - 1
+
+
+def test_json_retry_path_uses_shared_helper(monkeypatch, anthropic_key):
+    # The JSON-retry follow-up gets its own MAX_ATTEMPTS-sized transient
+    # budget through the same helper.
+    client = FakeClient([FakeTimeoutError("boom")])
+    monkeypatch.setattr(llm, "_new_anthropic_client", lambda api_key: client)
+    sleeps = []
+    monkeypatch.setattr(llm, "_sleep", lambda seconds: sleeps.append(seconds))
+    provider = llm.get_provider("anthropic")
+    schema = {"type": "object", "properties": {}, "required": []}
+    with pytest.raises(llm.LLMTransientError):
+        provider._retry_malformed_json(
+            system="s",
+            prompt="p",
+            response_format=schema,
+            max_tokens=10,
+            bad_raw=_response(text="not json"),
+        )
+    assert len(client.messages.calls) == llm.MAX_ATTEMPTS
+    assert len(sleeps) == llm.MAX_ATTEMPTS - 1
