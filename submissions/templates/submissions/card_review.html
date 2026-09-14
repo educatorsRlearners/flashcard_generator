@@ -220,7 +220,7 @@
         if (decision === "rejected") {
             body.set("reason", li.querySelector('[data-role="reason"]').value);
         }
-        fetch(form.action, {
+        return fetch(form.action, {
             method: "POST",
             headers: {
                 "X-Requested-With": "XMLHttpRequest",
@@ -239,7 +239,10 @@
             } else if (errorEl) {
                 showError(errorEl, res.data.error);
             }
-        }).catch(function () { form.submit(); });
+        }).catch(function () {
+            var errorEl = li.querySelector('[data-role="decision-error"]');
+            if (errorEl) { showError(errorEl, "Something went wrong. Please try again."); }
+        });
     }
 
     grid.addEventListener("click", function (e) {
@@ -247,15 +250,24 @@
         if (!btn) { return; }
         var li = btn.closest(".review-card");
         var role = btn.getAttribute("data-role");
-        if (role === "accept") { e.preventDefault(); submit(li, "accepted"); }
+        if (role === "accept") {
+            e.preventDefault();
+            btn.disabled = true;
+            submit(li, "accepted").then(function () { btn.disabled = false; });
+        }
         else if (role === "reject") {
             e.preventDefault();
             if (li.getAttribute("data-review-status") !== "rejected") {
                 li.querySelector('[data-role="reason-wrap"]').hidden = false;
             }
-            submit(li, "rejected");
+            btn.disabled = true;
+            submit(li, "rejected").then(function () { btn.disabled = false; });
         }
-        else if (role === "save-reason") { e.preventDefault(); submit(li, "rejected"); }
+        else if (role === "save-reason") {
+            e.preventDefault();
+            btn.disabled = true;
+            submit(li, "rejected").then(function () { btn.disabled = false; });
+        }
     });
 
     function postForm(url, params) {

@@ -237,6 +237,89 @@ def test_decision_submit_js_branches_on_response_ok():
     assert ok_check_at < applied_at
 
 
+def test_decision_submit_js_catch_does_not_navigate(client):
+    """#139: a failed decision request (fetch rejects, or `.json()` throws)
+    must never fall back to a native ``form.submit()`` - that's a full page
+    navigation that aborts every other in-flight card request."""
+    from pathlib import Path
+
+    from django.conf import settings
+
+    template = Path(
+        settings.BASE_DIR,
+        "submissions/templates/submissions/card_review.html",
+    ).read_text()
+
+    start = template.index("function submit(li, decision)")
+    end = template.index("\n    }", start)
+    submit_fn = template[start:end]
+
+    assert "form.submit" not in submit_fn
+
+    catch_start = submit_fn.index(".catch(")
+    catch_block = submit_fn[catch_start:]
+    # The catch block must surface the failure inline via the existing
+    # showError()/decision-error pattern, not navigate or reload.
+    assert "showError" in catch_block
+    assert "decision-error" in catch_block
+
+
+def test_decision_buttons_disable_while_in_flight_and_reenable_on_settle():
+    """#139: Accept/Reject/Save-reason buttons follow the same
+    disable-before-request / re-enable-on-settle pattern already used by
+    the edit-save and image-replace handlers, instead of relying on the
+    (removed) form.submit() fallback."""
+    from pathlib import Path
+
+    from django.conf import settings
+
+    template = Path(
+        settings.BASE_DIR,
+        "submissions/templates/submissions/card_review.html",
+    ).read_text()
+
+    start = template.index('if (role === "accept") {')
+    end = template.index("function postForm", start)
+    decision_click_handler = template[start:end]
+
+    for role in ('role === "accept"', 'role === "reject"', 'role === "save-reason"'):
+        assert role in decision_click_handler
+
+    assert decision_click_handler.count("btn.disabled = true") == 3
+    assert decision_click_handler.count("btn.disabled = false") == 3
+    # Re-enabling must happen once the submit() promise settles, not via a
+    # second, page-navigating fallback.
+    assert "form.submit" not in decision_click_handler
+
+
+def test_decision_failure_on_one_card_leaves_other_cards_decided(client):
+    """#139 acceptance: with N cards where one card's decision request
+    fails, the other N-1 decisions still reach the server and are reflected
+    in Card.review_status - a failure on one card must not touch any other
+    card's request. (The JS can't be executed here; this pins the backend
+    half of the guarantee - each card's decision POST is already
+    independent per-request, so a client-side failure on one never stops
+    the others from being sent.)"""
+    batch = Batch.objects.create()
+    su = _url(batch)
+    ok_cards = [_card(su, batch, front=f"Q{i}", source_term=f"T{i}") for i in range(3)]
+    failing_card = _card(su, batch, front="Qfail", source_term="Tfail")
+
+    for card in ok_cards:
+        resp = _decide(client, batch, card, "accepted")
+        assert resp.status_code == 200
+
+    # Simulate the failing card's request never landing (e.g. the fetch
+    # rejected client-side before reaching the server at all).
+
+    for card in ok_cards:
+        card.refresh_from_db()
+        assert card.review_status == Card.ReviewStatus.ACCEPTED
+
+    failing_card.refresh_from_db()
+    assert failing_card.review_status == Card.ReviewStatus.UNDECIDED
+
+
 def test_decision_on_truly_nonexistent_card_still_404s(client):
     """A card that never existed / isn't in this batch is still a real
     404 - only the dedup-race case is special-cased (#78)."""
