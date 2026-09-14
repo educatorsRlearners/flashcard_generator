@@ -410,6 +410,12 @@ def card_review_decision(request, batch_pk, card_pk):
     if decision not in Card.ReviewStatus.values:
         return JsonResponse({"error": "invalid decision"}, status=400)
 
+    # issue #142: capture the card's *prior* stored outcome before it is
+    # overwritten below, so a retried/duplicate POST that leaves the
+    # outcome unchanged can be detected and skipped further down.
+    prior_review_status = card.review_status
+    prior_rejection_reason = card.rejection_reason
+
     card.review_status = decision
     if decision == Card.ReviewStatus.REJECTED:
         card.rejection_reason = request.POST.get("reason", "").strip()
@@ -422,7 +428,17 @@ def card_review_decision(request, batch_pk, card_pk):
     # decision (see ``feedback.record_feedback`` - only accept / reject are
     # recorded, undecided is not feedback). The snapshot reads the card's
     # *current* fields, so inline edits (#24) are what get stored.
-    if decision in (Card.ReviewStatus.ACCEPTED, Card.ReviewStatus.REJECTED):
+    #
+    # issue #142: skip the snapshot when the incoming decision is a retry of
+    # the card's prior outcome - same decision, and for rejections the same
+    # reason - so retried/duplicate POSTs don't create duplicate Feedback
+    # rows. A genuine change (including flip-flopping accept/reject, or
+    # re-rejecting with an edited reason) still records as before.
+    outcome_unchanged = decision == prior_review_status and (
+        decision != Card.ReviewStatus.REJECTED
+        or card.rejection_reason == prior_rejection_reason
+    )
+    if decision in (Card.ReviewStatus.ACCEPTED, Card.ReviewStatus.REJECTED) and not outcome_unchanged:
         record_feedback(card, decision)
 
     payload = {

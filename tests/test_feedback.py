@@ -95,6 +95,50 @@ def test_undecided_writes_no_feedback(client):
     assert Feedback.objects.count() == 0
 
 
+# --- retry idempotency (issue #142) -----------------------------------
+
+
+def test_repeated_identical_accept_does_not_duplicate_feedback(client):
+    batch = Batch.objects.create()
+    card = _make_card(batch)
+
+    _decide(client, batch, card, "accepted")
+    assert Feedback.objects.count() == 1
+
+    _decide(client, batch, card, "accepted")
+    assert Feedback.objects.count() == 1
+
+
+def test_repeated_identical_reject_with_same_reason_does_not_duplicate_feedback(client):
+    batch = Batch.objects.create()
+    card = _make_card(batch)
+
+    _decide(client, batch, card, "rejected", reason="too vague")
+    assert Feedback.objects.count() == 1
+
+    _decide(client, batch, card, "rejected", reason="too vague")
+    assert Feedback.objects.count() == 1
+
+
+def test_repeated_reject_with_changed_reason_records_new_feedback(client):
+    batch = Batch.objects.create()
+    card = _make_card(batch)
+
+    _decide(client, batch, card, "rejected", reason="too vague")
+    assert Feedback.objects.count() == 1
+
+    _decide(client, batch, card, "rejected", reason="wrong answer")
+    assert Feedback.objects.count() == 2
+    latest = Feedback.objects.order_by("-pk").first()
+    assert latest.reason == "wrong answer"
+
+
+# Note: a genuine decision change (e.g. rejected -> accepted) still records
+# a new Feedback row on retry-detection. This is already covered by
+# ``test_switching_decision_updates_stored_value`` (tests/test_card_review.py)
+# together with the persistence tests above, so it is not duplicated here.
+
+
 def test_feedback_survives_batch_deletion(client):
     batch = Batch.objects.create()
     card = _make_card(batch)
