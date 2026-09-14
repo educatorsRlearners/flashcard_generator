@@ -40,23 +40,44 @@ def auth_header(token):
     return {"HTTP_AUTHORIZATION": f"Bearer {token}"}
 
 
-EXPECTED_MODELS = {
-    "anthropic": ["claude-sonnet-4-6", "claude-haiku-4-5"],
-    "openai": ["gpt-4o", "gpt-4o-mini"],
-    "grok": ["grok-4", "grok-3-mini"],
-    "opencode-zen": ["claude-sonnet-4-5", "gpt-5.1", "grok-code"],
-}
+def catalog_models():
+    """Curated models per extension-visible catalog entry (issue #129):
+    derived from ``llm.PROVIDER_CATALOG`` - no independent duplicate."""
+    return {
+        entry["name"]: list(entry["curated_models"])
+        for entry in llm_module.PROVIDER_CATALOG
+        if entry["extension_visible"]
+    }
 
 
 def expected_names():
-    """Order from llm.EXTENSION_LLM_PROVIDER_ORDER, minus any name whose
-    registry key is absent from _PROVIDERS (opencode-zen until #104)."""
+    """Order from llm.PROVIDER_CATALOG, minus any entry whose registry
+    key is absent from _PROVIDERS (opencode-zen until #104)."""
     names = []
-    for name in llm_module.EXTENSION_LLM_PROVIDER_ORDER:
-        registry_key = llm_module.EXTENSION_LLM_REGISTRY_KEYS.get(name, name)
-        if registry_key in llm_module._PROVIDERS:
-            names.append(name)
+    for entry in llm_module.PROVIDER_CATALOG:
+        if not entry["extension_visible"]:
+            continue
+        if entry["registry_key"] in llm_module._PROVIDERS:
+            names.append(entry["name"])
     return names
+
+
+def test_catalog_registry_and_curated_invariants():
+    """Issue #129: every catalog entry's registry key exists in
+    ``_PROVIDERS``, and every extension-exposed entry has a non-empty
+    curated model list."""
+    assert llm_module.PROVIDER_CATALOG
+    for entry in llm_module.PROVIDER_CATALOG:
+        assert entry["registry_key"] in llm_module._PROVIDERS
+        if entry["extension_visible"]:
+            assert entry["curated_models"]
+    # Named OpenAI-compatible catalog entries stay in agreement with
+    # _NAMED_OPENAI_COMPATIBLE_DEFAULTS.
+    for name in ("grok", "openrouter", "opencode-zen"):
+        entry = next(e for e in llm_module.PROVIDER_CATALOG if e["name"] == name)
+        expected = llm_module._NAMED_OPENAI_COMPATIBLE_DEFAULTS[name]
+        assert entry["base_url"] == expected["base_url"]
+        assert entry["default_key_env_var"] == expected["api_key_env_var"]
 
 
 def test_exact_shape_and_provider_order(client, llm_config_url, token):
@@ -86,11 +107,12 @@ def test_fixed_order_is_spec_order(client, llm_config_url, token):
 
 
 def test_curated_models_match_spec_table(client, llm_config_url, token):
-    assert llm_module.EXTENSION_LLM_CURATED_MODELS == EXPECTED_MODELS
+    expected = catalog_models()
+    assert llm_module.EXTENSION_LLM_CURATED_MODELS == expected
     resp = client.get(llm_config_url, **auth_header(token))
     by_name = {p["name"]: p["models"] for p in resp.json()["providers"]}
     for name, models in by_name.items():
-        assert models == EXPECTED_MODELS[name]
+        assert models == expected[name]
 
 
 def test_forbidden_names_never_appear(client, llm_config_url, token):
@@ -117,19 +139,13 @@ def test_opencode_zen_appears_when_registered(client, llm_config_url, token, mon
     providers = dict(llm_module._PROVIDERS)
     providers["opencode-zen"] = llm_module.OpenAICompatibleProvider
     monkeypatch.setattr(llm_module, "_PROVIDERS", providers)
-    monkeypatch.setattr(
-        llm_module,
-        "_resolve_opencode_zen_api_key_env_var",
-        lambda: "OPENCODE_ZEN_API_KEY",
-        raising=False,
-    )
     monkeypatch.delenv("OPENCODE_ZEN_API_KEY", raising=False)
     resp = client.get(llm_config_url, **auth_header(token))
     assert resp.status_code == 200
     names = [p["name"] for p in resp.json()["providers"]]
     assert names == ["anthropic", "openai", "grok", "opencode-zen"]
     zen = resp.json()["providers"][-1]
-    assert zen["models"] == EXPECTED_MODELS["opencode-zen"]
+    assert zen["models"] == catalog_models()["opencode-zen"]
     assert zen["key_configured"] is False
 
 
