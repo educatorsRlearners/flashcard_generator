@@ -786,6 +786,37 @@ def test_edit_one_card_leaves_other_cards_decision_intact(client):
     assert second.front == "Q2"
 
 
+def test_edit_save_js_catch_does_not_navigate():
+    """#141: a failed edit-save request (fetch rejects, or `.json()`
+    throws) must never fall back to a native ``wrap.submit()`` - that's a
+    full page navigation that aborts every other in-flight card request,
+    same anti-pattern already fixed for decisions in #139."""
+    from pathlib import Path
+
+    from django.conf import settings
+
+    template = Path(
+        settings.BASE_DIR,
+        "submissions/templates/submissions/card_review.html",
+    ).read_text()
+
+    start = template.index('role === "edit-save"')
+    end = template.index('role === "edit-revert"', start)
+    edit_save_branch = template[start:end]
+
+    assert "wrap.submit" not in edit_save_branch
+    assert "form.submit" not in edit_save_branch
+
+    catch_start = edit_save_branch.index(".catch(")
+    catch_block = edit_save_branch[catch_start:]
+    # The catch block must surface the failure inline via the existing
+    # showError()/edit-error pattern, not navigate or reload, and must
+    # still re-enable the button so the user can retry manually.
+    assert "showError" in catch_block
+    assert "edit-error" in catch_block
+    assert "btn.disabled = false" in catch_block
+
+
 def test_feedback_stores_edited_content_and_notes_edited(client):
     from submissions.models import Feedback
 

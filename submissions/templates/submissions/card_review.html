@@ -354,7 +354,10 @@
                 } else {
                     showError(wrap.querySelector('[data-role="edit-error"]'), res.data.error);
                 }
-            }).catch(function () { btn.disabled = false; wrap.submit ? wrap.submit() : null; });
+            }).catch(function () {
+                btn.disabled = false;
+                showError(wrap.querySelector('[data-role="edit-error"]'), "Something went wrong. Please try again.");
+            });
         }
         else if (role === "edit-revert") {
             postForm(wrap.getAttribute("data-revert-url"), {}).then(function (res) {
