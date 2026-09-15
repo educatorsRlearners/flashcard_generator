@@ -60,8 +60,8 @@ override settings for both, following the same override-wins/empty-falls-
 back pattern as ``LLM_OPENAI_*``/``LLM_GEMINI_*``; see
 ``_NAMED_OPENAI_COMPATIBLE_DEFAULTS``. ``LLM_PROVIDER=opencode-zen``
 (issue #104) is a third named ``OpenAICompatibleProvider`` pointed at
-Zen's OpenAI-compatible route
-(``https://opencode.ai/zen/v1/chat/completions``) with hardcoded default
+Zen's OpenAI-compatible route (base ``https://opencode.ai/zen/v1`` - the
+OpenAI SDK appends ``/chat/completions`` itself) with hardcoded default
 key env var ``OPENCODE_ZEN_API_KEY`` and ``LLM_OPENCODE_ZEN_*`` overrides
 following the same pattern.
 
@@ -1132,14 +1132,17 @@ _NAMED_OPENAI_COMPATIBLE_DEFAULTS: dict[str, dict[str, str]] = {
         "base_url": "https://openrouter.ai/api/v1",
         "api_key_env_var": "OPENROUTER_API_KEY",
     },
-    # Zen's only OpenAI-compatible route is /v1/chat/completions (per
-    # https://opencode.ai/docs/zen): /v1/messages is Anthropic-shaped,
-    # /v1/responses is the OpenAI Responses API, /v1/models/* is
-    # Google-shaped - none of which this adapter speaks. No Zen model id is
-    # hardcoded here; set LLM_MODEL / LLM_OPENCODE_ZEN_MODEL explicitly
-    # (curated chat-completions ids are #105's job).
+    # Zen's OpenAI-compatible route is served from base ``/v1``: the OpenAI
+    # SDK's ``client.chat.completions.create()`` appends ``/chat/completions``
+    # to ``base_url`` itself, so the default must end at ``/v1`` (a default
+    # already ending in ``/chat/completions`` would double the segment).
+    # /v1/messages is Anthropic-shaped, /v1/responses is the OpenAI
+    # Responses API, /v1/models/* is Google-shaped - none of which this
+    # adapter speaks. No Zen model id is hardcoded here; set LLM_MODEL /
+    # LLM_OPENCODE_ZEN_MODEL explicitly (curated chat-completions ids are
+    # #105's job).
     "opencode-zen": {
-        "base_url": "https://opencode.ai/zen/v1/chat/completions",
+        "base_url": "https://opencode.ai/zen/v1",
         "api_key_env_var": "OPENCODE_ZEN_API_KEY",
     },
 }

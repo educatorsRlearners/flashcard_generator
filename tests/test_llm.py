@@ -1202,7 +1202,7 @@ def test_get_provider_opencode_zen_builds_openai_compatible_with_hardcoded_defau
     provider = llm.get_provider("opencode-zen")
 
     assert isinstance(provider, llm.OpenAICompatibleProvider)
-    assert provider.base_url == "https://opencode.ai/zen/v1/chat/completions"
+    assert provider.base_url == "https://opencode.ai/zen/v1"
     assert provider.api_key_env_var == "OPENCODE_ZEN_API_KEY"
     assert provider.model == "claude-sonnet-5"  # the default LLM_MODEL
 
@@ -1235,7 +1235,7 @@ def test_get_provider_opencode_zen_falls_back_to_hardcoded_defaults_when_blank()
     ):
         provider = llm.get_provider("opencode-zen")
 
-    assert provider.base_url == "https://opencode.ai/zen/v1/chat/completions"
+    assert provider.base_url == "https://opencode.ai/zen/v1"
     assert provider.model == "claude-sonnet-5"
     assert provider.api_key_env_var == "OPENCODE_ZEN_API_KEY"
 
@@ -1250,7 +1250,7 @@ def test_opencode_zen_ignores_openai_override_settings():
     ):
         provider = llm.get_provider("opencode-zen")
 
-    assert provider.base_url == "https://opencode.ai/zen/v1/chat/completions"
+    assert provider.base_url == "https://opencode.ai/zen/v1"
     assert provider.api_key_env_var == "OPENCODE_ZEN_API_KEY"
     assert provider.model == "claude-sonnet-5"
 
@@ -1266,7 +1266,7 @@ def test_opencode_zen_ignores_grok_and_openrouter_override_settings():
     ):
         provider = llm.get_provider("opencode-zen")
 
-    assert provider.base_url == "https://opencode.ai/zen/v1/chat/completions"
+    assert provider.base_url == "https://opencode.ai/zen/v1"
     assert provider.model == "claude-sonnet-5"
     assert provider.api_key_env_var == "OPENCODE_ZEN_API_KEY"
 
@@ -1300,7 +1300,7 @@ def test_opencode_zen_end_to_end_generate_happy_path(monkeypatch):
 
     assert result.text == "hi"
     assert result.model == "kimi-k2.5"
-    assert seen["base_url"] == "https://opencode.ai/zen/v1/chat/completions"
+    assert seen["base_url"] == "https://opencode.ai/zen/v1"
     assert seen["api_key"] == "sk-test-not-a-real-key"
 
     from submissions.models import LLMCall
@@ -1308,6 +1308,109 @@ def test_opencode_zen_end_to_end_generate_happy_path(monkeypatch):
     assert LLMCall.objects.count() == 1
     row = LLMCall.objects.get()
     assert row.provider == "openai-compatible"
+
+
+@override_settings(LLM_PROVIDER="opencode-zen", LLM_MODEL="kimi-k2.5")
+def test_opencode_zen_outbound_url_hits_chat_completions_exactly_once(monkeypatch):
+    """Regression test for #148: the default ``base_url`` must end at
+    ``/v1`` because the OpenAI SDK's ``client.chat.completions.create()``
+    appends ``/chat/completions`` itself. A default already ending in
+    ``/chat/completions`` doubles the segment on the wire.
+
+    Mocks only at the ``_new_openai_client`` seam (which wraps the
+    ``openai.OpenAI`` constructor) with a real SDK client fronted by an
+    ``httpx.MockTransport`` - no network - then asserts the outbound
+    request URL is exactly ``.../v1/chat/completions``.
+    """
+    import httpx
+    import openai
+
+    monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "sk-test-not-a-real-key")
+    captured: dict = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "created": 1234567890,
+                "model": "kimi-k2.5",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "hi"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                },
+            },
+            request=request,
+        )
+
+    http_client = httpx.Client(transport=httpx.MockTransport(_handler))
+    real_openai_client = openai.OpenAI
+
+    def _factory(api_key, base_url):
+        captured["base_url"] = base_url
+        return real_openai_client(
+            api_key=api_key,
+            base_url=base_url,
+            http_client=http_client,
+            max_retries=0,
+        )
+
+    monkeypatch.setattr(llm, "_new_openai_client", _factory)
+
+    provider = llm.get_provider("opencode-zen")
+    assert provider.base_url == "https://opencode.ai/zen/v1"
+
+    result = llm.generate(system="be terse", prompt="say hi")
+
+    assert result.text == "hi"
+    assert captured["base_url"] == "https://opencode.ai/zen/v1"
+    assert captured["url"] == "https://opencode.ai/zen/v1/chat/completions"
+    assert "/chat/completions/chat/completions" not in captured["url"]
+
+
+def test_grok_and_openrouter_defaults_unchanged():
+    """The #148 fix touches only the opencode-zen default - grok/openrouter
+    keep their ``/v1``-style defaults (no same doubling bug introduced)."""
+    assert llm._NAMED_OPENAI_COMPATIBLE_DEFAULTS["grok"]["base_url"] == (
+        "https://api.x.ai/v1"
+    )
+    assert llm._NAMED_OPENAI_COMPATIBLE_DEFAULTS["openrouter"]["base_url"] == (
+        "https://openrouter.ai/api/v1"
+    )
+    assert llm.get_provider("grok").base_url == "https://api.x.ai/v1"
+    assert llm.get_provider("openrouter").base_url == (
+        "https://openrouter.ai/api/v1"
+    )
+
+
+def test_provider_catalog_opencode_zen_picks_up_corrected_default():
+    """``PROVIDER_CATALOG`` references ``_NAMED_OPENAI_COMPATIBLE_DEFAULTS``
+    (never a re-typed literal), so it picks up the corrected URL."""
+    entry = next(e for e in llm.PROVIDER_CATALOG if e["name"] == "opencode-zen")
+    assert entry["base_url"] == "https://opencode.ai/zen/v1"
+    assert (
+        entry["base_url"]
+        == llm._NAMED_OPENAI_COMPATIBLE_DEFAULTS["opencode-zen"]["base_url"]
+    )
+
+
+def test_opencode_zen_custom_base_url_override_passed_through_verbatim():
+    """A custom ``LLM_OPENCODE_ZEN_BASE_URL`` is passed to the SDK client
+    unchanged (override semantics from #104 are untouched by #148)."""
+    with override_settings(LLM_OPENCODE_ZEN_BASE_URL="https://custom.example/v1"):
+        provider = llm.get_provider("opencode-zen")
+
+    assert provider.base_url == "https://custom.example/v1"
 
 
 @override_settings(LLM_PROVIDER="opencode-zen")
