@@ -426,3 +426,21 @@ def test_deleted_and_unusable_batch_ids_are_silent_noop(monkeypatch):
     other.refresh_from_db()
     assert other.push_status == Batch.PushStatus.PENDING
     assert other.push_finished_at is None
+
+
+def test_failed_banner_uses_error_pattern_css():
+    """UX fix (#147): .push-outcome--failed must follow the existing
+    --unreachable error pattern (red/error + failure icon), not fall back
+    to the base info-blue style with the default retry icon."""
+    from pathlib import Path
+
+    css = (
+        Path(__file__).resolve().parent.parent
+        / "submissions" / "static" / "submissions" / "app.css"
+    ).read_text()
+    assert ".push-outcome--failed" in css
+    failed_block = css.split(".push-outcome--failed")[1].split("}")[0]
+    assert "var(--error-bg)" in failed_block
+    assert "var(--error-fg)" in failed_block
+    assert "var(--error-bd)" in failed_block
+    assert "21bb" not in failed_block.lower()  # default info/retry icon

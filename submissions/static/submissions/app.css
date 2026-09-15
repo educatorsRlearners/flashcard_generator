@@ -144,6 +144,14 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
     color: var(--error-fg);
 }
 .push-outcome--unreachable::before { content: "\26a0  "; }
+/* Terminal task-level failure (issue #147) - same error pattern as
+   --unreachable: a failure must not fall back to the base info-blue style. */
+.push-outcome--failed {
+    border-color: var(--error-bd);
+    background: var(--error-bg);
+    color: var(--error-fg);
+}
+.push-outcome--failed::before { content: "\26a0  "; }
 
 .review-grid {
     list-style: none;
