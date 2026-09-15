@@ -274,6 +274,13 @@ def _resolve_openrouter_api_key_env_var() -> str:
 
 
 def _resolve_opencode_zen_base_url() -> str:
+    # Blank ("" / whitespace-only) counts as unset and falls back to the
+    # hardcoded default; any other value passes through verbatim via the
+    # shared override-wins resolver (issue #148 QA: _resolve_provider_setting
+    # uses truthiness, so whitespace would otherwise count as set).
+    override = _setting("LLM_OPENCODE_ZEN_BASE_URL", "")
+    if isinstance(override, str) and not override.strip():
+        return _NAMED_OPENAI_COMPATIBLE_DEFAULTS["opencode-zen"]["base_url"]
     return _resolve_provider_setting("LLM_OPENCODE_ZEN_BASE_URL", lambda: _NAMED_OPENAI_COMPATIBLE_DEFAULTS["opencode-zen"]["base_url"])
 
 

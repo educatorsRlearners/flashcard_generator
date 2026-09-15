@@ -1240,6 +1240,17 @@ def test_get_provider_opencode_zen_falls_back_to_hardcoded_defaults_when_blank()
     assert provider.api_key_env_var == "OPENCODE_ZEN_API_KEY"
 
 
+def test_get_provider_opencode_zen_whitespace_base_url_falls_back_to_default():
+    """QA FAIL on #148: a whitespace-only ``LLM_OPENCODE_ZEN_BASE_URL``
+    must fall back to the corrected default, not pass through verbatim."""
+    with override_settings(LLM_OPENCODE_ZEN_BASE_URL="   "):
+        provider = llm.get_provider("opencode-zen")
+        assert provider.base_url == "https://opencode.ai/zen/v1"
+        assert llm._resolve_opencode_zen_base_url() == (
+            "https://opencode.ai/zen/v1"
+        )
+
+
 def test_opencode_zen_ignores_openai_override_settings():
     """opencode-zen must not route through the openai/openai-compatible
     branch or pick up its override settings."""
