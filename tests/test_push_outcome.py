@@ -282,3 +282,147 @@ def _decide_accept(client, batch, card):
         {"decision": "accepted"},
         HTTP_X_REQUESTED_WITH="XMLHttpRequest",
     )
+
+
+# --- unexpected task-level failure (issue #147) ----------------------------
+
+
+def test_unexpected_error_records_failed_status(client, monkeypatch):
+    """A task-level ``RuntimeError`` mid-push leaves a terminal ``failed``
+    state instead of stuck-pending (issue #147)."""
+    import logging
+
+    from submissions import tasks as push_tasks
+
+    batch = Batch.objects.create()
+    su = _url(batch)
+    c1 = _card(su, batch)
+    _decide_accept(client, batch, c1)
+
+    fake = FakeAnki(existing_decks=["Flashcard Generator"])
+    monkeypatch.setattr(anki, "AnkiConnectClient", lambda *a, **k: fake)
+
+    def _boom(b):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(push_tasks, "push_batch_accepted_cards", _boom)
+
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    task_logger = logging.getLogger(push_tasks.__name__)
+    task_logger.addHandler(handler)
+    try:
+        with monkeypatch.context() as m:
+            # ensure the task runs with the logger at a level caplog-style
+            # handlers can see; the handler above captures everything.
+            _finish(client, batch)
+    finally:
+        task_logger.removeHandler(handler)
+
+    batch.refresh_from_db()
+    assert batch.push_status == Batch.PushStatus.FAILED
+    assert batch.push_finished_at is not None
+    # Counts are zeroed: the crash may have happened mid-push, so any
+    # partial totals are unknown and must not be reported.
+    assert batch.push_pushed_count == 0
+    assert batch.push_skipped_count == 0
+    assert batch.push_failed_count == 0
+    # logger.exception kept with the existing message.
+    assert any(
+        "unexpected error pushing to Anki" in r.getMessage() for r in records
+    )
+
+
+def test_failed_banner_shown_and_persists(client, monkeypatch):
+    from submissions import tasks as push_tasks
+
+    batch = Batch.objects.create()
+    su = _url(batch)
+    c1 = _card(su, batch)
+    _decide_accept(client, batch, c1)
+
+    fake = FakeAnki(existing_decks=["Flashcard Generator"])
+    monkeypatch.setattr(anki, "AnkiConnectClient", lambda *a, **k: fake)
+    monkeypatch.setattr(
+        push_tasks,
+        "push_batch_accepted_cards",
+        lambda b: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    _finish(client, batch)
+    batch.refresh_from_db()
+    assert batch.push_status == "failed"
+
+    first = _review_page(client, batch).content.decode()
+    assert 'data-push-status="failed"' in first
+    assert "push-outcome--failed" in first
+    assert "failed" in first.lower()
+    assert "in progress" not in first.lower()
+
+    second = _review_page(client, batch).content.decode()
+    third = _review_page(client, batch).content.decode()
+    for content in (second, third):
+        assert 'data-push-status="failed"' in content
+        assert "failed" in content.lower()
+        assert "in progress" not in content.lower()
+
+
+def test_failed_mid_push_keeps_synced_cards_but_zeroes_counts(
+    client, monkeypatch
+):
+    """Cards synced before the mid-push crash stay synced; the terminal
+    ``failed`` state does not claim counts it did not measure."""
+    from submissions import tasks as push_tasks
+
+    batch = Batch.objects.create()
+    su = _url(batch)
+    c1 = _card(su, batch)
+    c2 = _card(su, batch, front="Q2", source_term="Y")
+    _decide_accept(client, batch, c1)
+    _decide_accept(client, batch, c2)
+
+    fake = FakeAnki(existing_decks=["Flashcard Generator"])
+    monkeypatch.setattr(anki, "AnkiConnectClient", lambda *a, **k: fake)
+
+    def _sync_one_then_boom(b):
+        c1.anki_note_id = 4242
+        c1.synced_at = timezone.now()
+        c1.save(update_fields=["anki_note_id", "synced_at"])
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        push_tasks, "push_batch_accepted_cards", _sync_one_then_boom
+    )
+
+    _finish(client, batch)
+
+    batch.refresh_from_db()
+    assert batch.push_status == Batch.PushStatus.FAILED
+    assert batch.push_finished_at is not None
+    assert batch.push_pushed_count == 0
+    assert batch.push_skipped_count == 0
+    assert batch.push_failed_count == 0
+    c1.refresh_from_db()
+    assert c1.synced_at is not None  # partial progress kept
+    assert c1.anki_note_id == 4242
+
+
+def test_deleted_and_unusable_batch_ids_are_silent_noop(monkeypatch):
+    """Deleted / invalid batch ids never crash and never write status."""
+    from submissions import tasks as push_tasks
+
+    batch = Batch.objects.create(deck_name="Flashcard Generator")
+    pk = batch.pk
+    batch.delete()
+
+    push_tasks.push_accepted_cards_task(pk)
+    push_tasks.push_accepted_cards_task("abc")
+    assert Batch.objects.filter(pk=pk).count() == 0
+
+    other = Batch.objects.create(deck_name="Flashcard Generator")
+    other.mark_push_pending()
+    push_tasks.push_accepted_cards_task("abc")
+    other.refresh_from_db()
+    assert other.push_status == Batch.PushStatus.PENDING
+    assert other.push_finished_at is None

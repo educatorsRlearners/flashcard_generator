@@ -25,9 +25,10 @@ class Batch(models.Model):
         batch" - nothing is shown. ``PENDING`` is set synchronously by
         ``card_review_finish`` before the task is enqueued, so a page load
         that lands before the task completes shows a pending state rather
-        than a stale or absent outcome. ``DONE`` / ``UNREACHABLE`` are set
+        than a stale or absent outcome. ``DONE`` / ``UNREACHABLE`` / ``FAILED``
+        are set
         by the task itself after ``push_batch_accepted_cards`` returns (or
-        raises ``AnkiUnreachableError``). Only the latest attempt is kept -
+        raises ``AnkiUnreachableError`` / an unexpected exception, issue #147). Only the latest attempt is kept -
         each write is an unconditional overwrite of absolute counts (never
         a read-modify-write), so three overlapping Finish clicks end with
         whichever task completes last, not a mix of the three.
@@ -36,6 +37,7 @@ class Batch(models.Model):
         PENDING = "pending", "Pending"
         DONE = "done", "Done"
         UNREACHABLE = "unreachable", "Unreachable"
+        FAILED = "failed", "Failed"
 
     push_status = models.CharField(
         max_length=16, choices=PushStatus.choices, blank=True, default=""
@@ -51,8 +53,8 @@ class Batch(models.Model):
     #: Deck name the latest push attempt targeted (snapshot - ``deck_name``
     #: may change on the batch after the fact; this is what was pushed to).
     push_deck_name = models.CharField(max_length=255, blank=True, default="")
-    #: When the latest push attempt reached a terminal state (``done`` or
-    #: ``unreachable``). Null while ``push_status == "pending"`` or unset.
+    #: When the latest push attempt reached a terminal state (``done``,
+    #: ``unreachable`` or ``failed``). Null while ``push_status == "pending"`` or unset.
     push_finished_at = models.DateTimeField(null=True, blank=True)
 
     def mark_push_pending(self):
@@ -102,6 +104,31 @@ class Batch(models.Model):
             ]
         )
 
+    def record_push_failed(self):
+        """Record a task-level unexpected failure (issue #147).
+
+        Mirrors :meth:`record_push_unreachable`: counts are zeroed because
+        the crash may have happened mid-push, so any pushed/skipped totals
+        measured before the crash are unknown and must not be reported.
+        Cards synced before the crash stay synced (their ``synced_at`` is
+        untouched); a later manual ``push_to_anki`` / retry picks up the
+        remainder.
+        """
+        self.push_status = self.PushStatus.FAILED
+        self.push_pushed_count = 0
+        self.push_skipped_count = 0
+        self.push_failed_count = 0
+        self.push_finished_at = timezone.now()
+        self.save(
+            update_fields=[
+                "push_status",
+                "push_pushed_count",
+                "push_skipped_count",
+                "push_failed_count",
+                "push_finished_at",
+            ]
+        )
+
     @property
     def push_outcome_message(self):
         """Human-readable push-outcome text for the review page, or ``""``
@@ -112,6 +139,11 @@ class Batch(models.Model):
             return (
                 "Anki push failed: Anki/AnkiConnect was unreachable. "
                 "Accepted cards were not pushed; try again once Anki is running."
+            )
+        if self.push_status == self.PushStatus.FAILED:
+            return (
+                "Anki push failed: an unexpected error occurred. "
+                "Accepted cards may not have been pushed; try finishing again."
             )
         if self.push_status == self.PushStatus.DONE:
             pushed = self.push_pushed_count

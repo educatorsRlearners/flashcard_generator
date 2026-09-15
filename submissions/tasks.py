@@ -92,10 +92,11 @@ def push_accepted_cards_task(batch_id=None, *args, **kwargs) -> None:
                 exc,
             )
             batch.record_push_unreachable()
-        except Exception:  # pragma: no cover - defensive
+        except Exception:
             logger.exception(
                 "push_accepted_cards_task: unexpected error pushing to Anki"
             )
+            batch.record_push_failed()
         else:
             batch.record_push_done(
                 deck_name=result.deck_name,
