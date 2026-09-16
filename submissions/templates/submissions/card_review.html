@@ -546,21 +546,34 @@
     var el = document.getElementById("push-outcome");
     if (!el) { return; }
     var status = el.getAttribute("data-push-status") || "";
-    /* Only pending (in flight) and done (already finished on load) need a
-       timer. Blank (Finish never clicked), unreachable and failed never
-       poll and never close. */
-    if (status !== "pending" && status !== "done") { return; }
+    /* Blank (Finish never clicked) never polls. Pending (in flight), done
+       (already finished on load) and unreachable/failed (waiting on the
+       periodic retry task, #58) all start a poll loop -- pending/done at
+       the fast cadence, unreachable/failed at a slow one since #58 only
+       runs every 10 minutes. */
+    if (status !== "pending" && status !== "done"
+        && status !== "unreachable" && status !== "failed") { return; }
     var url = el.getAttribute("data-push-status-url");
     if (!url) { return; }
 
     var POLL_INTERVAL_MS = 1000; /* matches extension/popup.js */
+    var SLOW_POLL_INTERVAL_MS = 30000; /* unreachable/failed: #58 retries every 10 min */
     var CLOSE_DELAY_MS = 3000;
     var finished = false; /* terminal state reached or page unloading */
     var pollTimer = null;
+    var currentIntervalMs = null;
     var closeTimer = null;
 
     function stopPolling() {
         if (pollTimer) { window.clearInterval(pollTimer); pollTimer = null; }
+        currentIntervalMs = null;
+    }
+
+    function startPolling(intervalMs) {
+        if (currentIntervalMs === intervalMs) { return; }
+        stopPolling();
+        currentIntervalMs = intervalMs;
+        pollTimer = window.setInterval(poll, intervalMs);
     }
 
     function cancelAll() {
@@ -593,15 +606,19 @@
 
     function onStatus(nextStatus, message) {
         if (finished) { return; }
+        var currentStatus = el.getAttribute("data-push-status") || "";
         if (nextStatus === "done") {
             render("done", message);
             scheduleClose();
         } else if (nextStatus === "unreachable" || nextStatus === "failed") {
-            render(nextStatus, message);
-            finished = true;
-            stopPolling();
+            /* Only re-render on an actual status change so repeated slow
+               polls that return the same failure status never flicker. */
+            if (nextStatus !== currentStatus) { render(nextStatus, message); }
+            /* The periodic retry task (#58) may still flip this to "done"
+               in the background, so keep polling -- just slowly. */
+            startPolling(SLOW_POLL_INTERVAL_MS);
         }
-        /* pending: keep polling. Anything else: ignore, keep polling. */
+        /* pending: keep polling at the fast cadence. Anything else: ignore. */
     }
 
     function poll() {
@@ -624,8 +641,10 @@
 
     if (status === "done") {
         scheduleClose();
+    } else if (status === "unreachable" || status === "failed") {
+        startPolling(SLOW_POLL_INTERVAL_MS);
     } else {
-        pollTimer = window.setInterval(poll, POLL_INTERVAL_MS);
+        startPolling(POLL_INTERVAL_MS);
     }
 })();
 </script>

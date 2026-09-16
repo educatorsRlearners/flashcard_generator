@@ -135,9 +135,59 @@ def test_failed_page_never_closes(client):
     batch.record_push_failed()
     content = _review_page(client, batch).content.decode()
     assert 'data-push-status="failed"' in content
-    # The script's terminal-state guard renders the failure banner and stops
-    # polling instead of scheduling a close.
+    # (#161) unreachable/failed no longer stop polling -- they keep polling
+    # (slowly) so a tab left open notices when the periodic retry (#58)
+    # later succeeds. Only reaching "done" schedules a close.
     assert 'nextStatus === "unreachable" || nextStatus === "failed"' in content
+    assert "startPolling(SLOW_POLL_INTERVAL_MS)" in content
+
+
+def test_unreachable_page_exposes_slow_poll_hook(client):
+    batch = Batch.objects.create()
+    batch.record_push_unreachable()
+    content = _review_page(client, batch).content.decode()
+    assert 'data-push-status="unreachable"' in content
+    assert f'data-push-status-url="{_status_url(batch)}"' in content
+    assert "SLOW_POLL_INTERVAL_MS = 30000" in content
+
+
+def test_failed_page_exposes_slow_poll_hook(client):
+    batch = Batch.objects.create()
+    batch.record_push_failed()
+    content = _review_page(client, batch).content.decode()
+    assert 'data-push-status="failed"' in content
+    assert f'data-push-status-url="{_status_url(batch)}"' in content
+    assert "SLOW_POLL_INTERVAL_MS = 30000" in content
+
+
+def test_slow_poll_interval_distinct_from_fast_interval(client):
+    batch = Batch.objects.create()
+    batch.record_push_failed()
+    content = _review_page(client, batch).content.decode()
+    assert "POLL_INTERVAL_MS = 1000" in content
+    assert "SLOW_POLL_INTERVAL_MS = 30000" in content
+
+
+def test_failure_to_done_transition_updates_banner_and_schedules_close(client):
+    """A slow poll observing done must render the done banner and close."""
+    batch = Batch.objects.create()
+    batch.record_push_failed()
+    content = _review_page(client, batch).content.decode()
+    # onStatus renders "done" and calls scheduleClose() regardless of which
+    # status the tab was previously showing -- there is no branch that
+    # requires having started from "pending" to reach the done/close path.
+    assert 'nextStatus === "done"' in content
+    assert 'render("done", message)' in content
+    assert "scheduleClose();" in content
+
+
+def test_repeated_failure_status_skips_render_to_avoid_flicker(client):
+    """Only an actual status change re-renders; repeats must not flicker."""
+    batch = Batch.objects.create()
+    batch.record_push_failed()
+    content = _review_page(client, batch).content.decode()
+    assert "var currentStatus = el.getAttribute" in content
+    assert "if (nextStatus !== currentStatus) { render(nextStatus, message); }" in content
 
 
 def test_blank_status_page_has_no_poll_hook(client):
