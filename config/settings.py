@@ -3,6 +3,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from submissions.settings_utils import parse_bool_setting
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Load a local, git-ignored .env file (e.g. ANTHROPIC_API_KEY) before any
@@ -250,13 +252,21 @@ CARD_ANALOGY_LANGUAGE = os.environ.get("CARD_ANALOGY_LANGUAGE", "python")
 #   ``fn(list[str]) -> list[list[float] | None]`` for a future #5 embedding
 #   method. Unset (default) uses the offline token-overlap default; a failing
 #   backend degrades to the recency cap instead of crashing generation.
-FEWSHOT_ENABLED = os.environ.get("FEWSHOT_ENABLED", "1") == "1"
+FEWSHOT_ENABLED = parse_bool_setting(os.environ.get("FEWSHOT_ENABLED", "1"))
 FEWSHOT_TOKEN_BUDGET = int(os.environ.get("FEWSHOT_TOKEN_BUDGET", "2000"))
 FEWSHOT_ACCEPTED_SHARE = float(os.environ.get("FEWSHOT_ACCEPTED_SHARE", "0.5"))
 FEWSHOT_SELECTION_MODE = os.environ.get("FEWSHOT_SELECTION_MODE", "relevance")
 FEWSHOT_MIN_FEEDBACK_CHARS = int(os.environ.get("FEWSHOT_MIN_FEEDBACK_CHARS", "20"))
 FEWSHOT_CHARS_PER_TOKEN = int(os.environ.get("FEWSHOT_CHARS_PER_TOKEN", "4"))
 FEWSHOT_EMBED_FN = os.environ.get("FEWSHOT_EMBED_FN", "")
+
+# --- Local semantic dedup master switch (submissions/post_generation.py, issue #78)
+# DEDUP_ENABLED: master switch (default on). Set DEDUP_ENABLED=0 to skip the
+# local-dedup embedding call while still marking dedup_ready. Parsed with the
+# same shared helper as FEWSHOT_ENABLED above (issue #149), so "0"/"false"/
+# "no"/"off"/"" (case-insensitive, whitespace tolerated) disable and unset
+# (or "1"/"true") leaves dedup on.
+DEDUP_ENABLED = parse_bool_setting(os.environ.get("DEDUP_ENABLED", "1"))
 
 # --- Image OCR (submissions/extraction.py, issue #19) ----------------------
 # URLs that *are* an image (PNG/JPEG/WebP/TIFF) or an image-only (scanned)

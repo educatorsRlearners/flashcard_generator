@@ -29,7 +29,7 @@ from typing import Callable, Optional, Sequence
 
 from django.conf import settings
 
-from submissions import dedup, images
+from submissions import dedup, images, settings_utils
 from submissions.models import SubmittedURL
 
 logger = logging.getLogger(__name__)
@@ -41,19 +41,15 @@ DEDUP_ENABLED_DEFAULT: bool = True
 def dedup_enabled() -> bool:
     """Master switch for local semantic dedup (``DEDUP_ENABLED``).
 
-    Default True. Accepts ``True``/``False`` booleans as well as common
-    string forms (``"0"``/``"false"``/``"no"``/``"off"`` disable). When
-    disabled, the local-dedup stage skips the embedding call but still
-    marks ``dedup_ready`` (see :func:`local_dedup_stage`), so generation
+    Default True. Parsed with the shared
+    :func:`submissions.settings_utils.parse_bool_setting` helper (``"0"`` /
+    ``"false"`` / ``"no"`` / ``"off"`` disable). When disabled, the
+    local-dedup stage skips the embedding call but still marks
+    ``dedup_ready`` (see :func:`local_dedup_stage`), so generation
     completes and the status endpoint never waits forever.
     """
     raw = getattr(settings, "DEDUP_ENABLED", DEDUP_ENABLED_DEFAULT)
-    if isinstance(raw, bool):
-        return raw
-    if raw is None:
-        return DEDUP_ENABLED_DEFAULT
-    text = str(raw).strip().lower()
-    return text not in ("0", "false", "no", "off", "")
+    return settings_utils.parse_bool_setting(raw, default=DEDUP_ENABLED_DEFAULT)
 
 
 def _mark_dedup_ready(submitted_url: SubmittedURL) -> None:

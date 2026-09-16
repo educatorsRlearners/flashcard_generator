@@ -47,6 +47,7 @@ import re
 
 from django.conf import settings
 
+from submissions import settings_utils
 from submissions.models import Card, Feedback
 
 logger = logging.getLogger(__name__)
@@ -145,18 +146,14 @@ def _non_whitespace_len(text: str) -> int:
 def fewshot_enabled() -> bool:
     """Master switch for the few-shot section (``FEWSHOT_ENABLED``).
 
-    Default True. Accepts ``True``/``False`` booleans as well as common
-    string forms (``"0"``/``"false"``/``"no"``/``"off"`` disable). When
-    disabled, selection returns ``([], [])`` and rendering returns ``""``
-    without any ``Feedback`` DB query or embedding/similarity call.
+    Default True. Parsed with the shared
+    :func:`submissions.settings_utils.parse_bool_setting` helper (``"0"`` /
+    ``"false"`` / ``"no"`` / ``"off"`` disable). When disabled, selection
+    returns ``([], [])`` and rendering returns ``""`` without any
+    ``Feedback`` DB query or embedding/similarity call.
     """
     raw = getattr(settings, "FEWSHOT_ENABLED", True)
-    if isinstance(raw, bool):
-        return raw
-    if raw is None:
-        return True
-    text = str(raw).strip().lower()
-    return text not in ("0", "false", "no", "off", "")
+    return settings_utils.parse_bool_setting(raw, default=True)
 
 
 def fewshot_token_budget() -> int:
