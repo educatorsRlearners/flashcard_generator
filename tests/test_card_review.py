@@ -910,6 +910,102 @@ def test_image_remove_js_catch_does_not_navigate():
     assert "applyImage" in branch
 
 
+def test_image_revert_js_disables_and_catches():
+    """#159: a failed image-revert request must disable the button before
+    the request, re-enable it in both .then and .catch, and surface the
+    failure inline via imageMessage(), matching the image-remove pattern
+    from #145."""
+    from pathlib import Path
+
+    from django.conf import settings
+
+    template = Path(
+        settings.BASE_DIR,
+        "submissions/templates/submissions/card_review.html",
+    ).read_text()
+
+    start = template.index('role === "image-revert"')
+    end = template.index("grid.addEventListener", start)
+    branch = template[start:end]
+
+    assert "btn.disabled = true" in branch
+
+    catch_start = branch.index(".catch(")
+    then_block = branch[:catch_start]
+    catch_block = branch[catch_start:]
+
+    # Re-enabled in the .then success/failure paths.
+    assert "btn.disabled = false" in then_block
+    # And re-enabled again in .catch.
+    assert "btn.disabled = false" in catch_block
+    assert 'imageMessage(li, "Something went wrong. Please try again.")' in catch_block
+
+
+def test_image_regen_js_catch_shows_message():
+    """#159: image-regen's existing .catch already restored the button's
+    disabled state and text, but silently swallowed the failure; it must
+    now also call imageMessage() so the user sees something went wrong."""
+    from pathlib import Path
+
+    from django.conf import settings
+
+    template = Path(
+        settings.BASE_DIR,
+        "submissions/templates/submissions/card_review.html",
+    ).read_text()
+
+    start = template.index('role === "image-regen"')
+    end = template.index('role === "image-remove"', start)
+    branch = template[start:end]
+
+    catch_start = branch.index(".catch(")
+    catch_block = branch[catch_start:]
+
+    assert "btn.disabled = false" in catch_block
+    assert "btn.textContent = orig" in catch_block
+    assert 'imageMessage(li, "Something went wrong. Please try again.")' in catch_block
+
+
+def test_candidate_select_js_guards_double_submit_and_catches():
+    """#159: the thumbnail click handler (candidate-select) has no native
+    .disabled since its target is an <img>, so it needs an in-flight guard
+    (set before the request, cleared in both .then and .catch) plus a
+    .catch that surfaces failures via imageMessage()."""
+    from pathlib import Path
+
+    from django.conf import settings
+
+    template = Path(
+        settings.BASE_DIR,
+        "submissions/templates/submissions/card_review.html",
+    ).read_text()
+
+    start = template.index('e.target.closest("[data-candidate-url]")')
+    branch = template[start:]
+    end = branch.index("\n    });\n", branch.index("postForm"))
+    branch = branch[: end + len("\n    });\n")]
+
+    assert ".catch(" in branch
+
+    # A guard flag is checked at the top of the handler...
+    guard_check = branch.index("if (thumb.getAttribute")
+    request_start = branch.index("postForm(")
+    assert guard_check < request_start
+
+    # ...set before the request is sent...
+    set_start = branch.index("thumb.setAttribute")
+    assert guard_check < set_start < request_start
+
+    catch_start = branch.index(".catch(")
+    then_block = branch[request_start:catch_start]
+    catch_block = branch[catch_start:]
+
+    # ...and cleared in both .then and .catch.
+    assert "removeAttribute" in then_block or "setAttribute" in then_block
+    assert "removeAttribute" in catch_block or "setAttribute" in catch_block
+    assert 'imageMessage(li, "Something went wrong. Please try again.")' in catch_block
+
+
 def test_feedback_stores_edited_content_and_notes_edited(client):
     from submissions.models import Feedback
 

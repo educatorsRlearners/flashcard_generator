@@ -467,7 +467,11 @@
                 btn.textContent = orig;
                 if (res.ok) { imageMessage(li, ""); applyImage(li, res.data); }
                 else { imageMessage(li, res.data.error); }
-            }).catch(function () { btn.disabled = false; btn.textContent = orig; });
+            }).catch(function () {
+                btn.disabled = false;
+                btn.textContent = orig;
+                imageMessage(li, "Something went wrong. Please try again.");
+            });
         }
         else if (role === "image-remove") {
             btn.disabled = true;
@@ -481,9 +485,14 @@
             });
         }
         else if (role === "image-revert") {
+            btn.disabled = true;
             postForm(ctl.getAttribute("data-revert-url"), {}).then(function (res) {
+                btn.disabled = false;
                 if (res.ok) { imageMessage(li, ""); applyImage(li, res.data); }
                 else { imageMessage(li, res.data.error); }
+            }).catch(function () {
+                btn.disabled = false;
+                imageMessage(li, "Something went wrong. Please try again.");
             });
         }
     });
@@ -491,11 +500,14 @@
     grid.addEventListener("click", function (e) {
         var thumb = e.target.closest("[data-candidate-url]");
         if (!thumb) { return; }
+        if (thumb.getAttribute("data-selecting") === "true") { return; }
         var li = thumb.closest(".review-card");
         var ctl = thumb.closest('[data-role="image-control"]');
+        thumb.setAttribute("data-selecting", "true");
         postForm(ctl.getAttribute("data-select-url"), {
             candidate_url: thumb.getAttribute("data-candidate-url"),
         }).then(function (res) {
+            thumb.removeAttribute("data-selecting");
             if (res.ok) {
                 imageMessage(li, "");
                 li.querySelector('[data-role="image-candidates"]').hidden = true;
@@ -503,6 +515,9 @@
             } else {
                 imageMessage(li, res.data.error);
             }
+        }).catch(function () {
+            thumb.removeAttribute("data-selecting");
+            imageMessage(li, "Something went wrong. Please try again.");
         });
     });
 
