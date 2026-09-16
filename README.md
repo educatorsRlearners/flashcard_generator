@@ -882,6 +882,13 @@ uv run python manage.py push_to_anki
   error (bad note type, etc.) fails just that card; an Anki duplicate is
   reported as skipped-duplicate. The command prints counts of
   added / skipped / failed with reasons.
+- Periodic retry: `retry_anki_push_task` (`submissions/tasks.py`, every 10
+  minutes under the existing Huey consumer — no new process) re-pushes
+  accepted+unsynced cards grouped per batch stored deck. While Anki is
+  unreachable it stays silent apart from one INFO log line, marks nothing
+  synced, and retries on the next interval; each batch with pushed cards
+  records `done` so a later review-page load shows done instead of the
+  stale `unreachable` banner.
 
 Settings (`config/settings.py`, each also an env var of the same name):
 

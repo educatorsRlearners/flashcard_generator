@@ -10,6 +10,10 @@ common case (issue #57; per-batch deck in issue #76).
 Also hosts :func:`check_llm_alerts_task` (issue #90), a periodic check that
 logs a warning when recent LLM cost or failure rate crosses a configured
 threshold - see its docstring.
+
+Also hosts :func:`retry_anki_push_task` (issue #58), a periodic retry that
+pushes accepted+unsynced cards left behind when Anki was unreachable at
+Finish time - see its docstring.
 """
 
 from __future__ import annotations
@@ -24,7 +28,12 @@ from django.utils import timezone
 from huey.contrib.djhuey import db_periodic_task, db_task
 from huey import crontab
 
-from .anki import AnkiUnreachableError, push_accepted_cards, push_batch_accepted_cards
+from .anki import (
+    AnkiUnreachableError,
+    normalize_deck_name,
+    push_accepted_cards,
+    push_batch_accepted_cards,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +123,69 @@ def push_accepted_cards_task(batch_id=None, *args, **kwargs) -> None:
         )
     except Exception:  # pragma: no cover - defensive
         logger.exception("push_accepted_cards_task: unexpected error pushing to Anki")
+
+
+@db_periodic_task(crontab(minute="*/10"))
+def retry_anki_push_task() -> None:
+    """Retry Anki pushes left unsynced because Anki was unreachable (issue #58).
+
+    Runs every 10 minutes under both ``manage.py dev`` and standalone
+    ``manage.py run_huey`` (same ``db_periodic_task`` + ``crontab``
+    mechanism as :func:`check_llm_alerts_task`; no new process or
+    scheduler wiring).
+
+    For every batch with a stored ``deck_name``, pushes that batch's
+    accepted+unsynced cards to its own deck via
+    :func:`push_batch_accepted_cards` (the same per-batch Finish path
+    ``push_accepted_cards_task`` uses - no reimplemented deck grouping, no
+    new locking). Overlap with a manual ``push_to_anki`` or a
+    Finish-triggered push is safe through the existing ``synced_at``
+    idempotency: a card with non-null ``synced_at`` is never sent again, so
+    a racing run pushes zero new notes for already-synced cards.
+
+    Batches with no stored deck (NULL/empty) are skipped and
+    ``ANKI_DECK_NAME`` is never used as a target.
+
+    Outcome persistence (interaction with #155, which stops review-page
+    polling on failure): each batch that had cards pushed records
+    ``record_push_done(...)`` so a later review-page load shows done
+    instead of a stale ``unreachable`` banner. Batches with nothing to
+    push (no accepted+unsynced cards, or only already-synced cards) and
+    batches hit while Anki is unreachable are left untouched.
+
+    Anki unreachable aborts the run with a single INFO line (same wording
+    family as ``push_accepted_cards_task``), propagates no exception so
+    the consumer stays up, marks nothing synced, and retries on the next
+    interval.
+    """
+    from .models import Batch
+
+    try:
+        for batch in Batch.objects.order_by("pk"):
+            if not normalize_deck_name(getattr(batch, "deck_name", None)):
+                continue
+            try:
+                result = push_batch_accepted_cards(batch)
+            except AnkiUnreachableError:
+                raise
+            except Exception:
+                logger.exception(
+                    "retry_anki_push_task: unexpected error pushing batch %s to Anki",
+                    batch.pk,
+                )
+                continue
+            if result.added_count > 0:
+                batch.record_push_done(
+                    deck_name=result.deck_name,
+                    pushed=result.added_count,
+                    skipped=result.skipped_already_synced,
+                    failed=result.failed_count,
+                )
+    except AnkiUnreachableError as exc:
+        logger.info(
+            "retry_anki_push_task: Anki unreachable, leaving card(s) unsynced (%s)",
+            exc,
+        )
 
 
 # --- LLM cost/failure-rate alerting (issue #90) ---------------------------
