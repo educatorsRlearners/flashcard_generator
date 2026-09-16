@@ -1442,6 +1442,81 @@ def test_opencode_zen_custom_base_url_override_passed_through_verbatim():
     assert provider.base_url == "https://custom.example/v1"
 
 
+# --- one key-resolver definition per provider (issue #163) -------------
+# ``_PROVIDER_SPECS[...].key_resolver`` is now literally the same callable
+# object as the matching ``PROVIDER_CATALOG`` entry's ``key_env_resolver``,
+# so the two tables cannot independently drift, and monkeypatching the
+# underlying ``_resolve_*`` helper is honored by both.
+
+
+@pytest.mark.parametrize(
+    "spec_key,catalog_name",
+    [
+        ("anthropic", "anthropic"),
+        ("openai-compatible", "openai-compatible"),
+        ("openai", "openai"),
+        ("grok", "grok"),
+        ("openrouter", "openrouter"),
+        ("opencode-zen", "opencode-zen"),
+        ("gemini", "gemini"),
+    ],
+)
+def test_provider_spec_key_resolver_is_the_catalog_entrys_key_env_resolver(
+    spec_key, catalog_name
+):
+    """Each ``_PROVIDER_SPECS`` entry's ``key_resolver`` *is* (identity,
+    not just equal output) the matching ``PROVIDER_CATALOG`` entry's
+    ``key_env_resolver`` - one definition, not two independently
+    maintained ones."""
+    catalog_entry = next(
+        e for e in llm.PROVIDER_CATALOG if e["name"] == catalog_name
+    )
+    assert llm._PROVIDER_SPECS[spec_key].key_resolver is catalog_entry["key_env_resolver"]
+
+
+def test_monkeypatching_resolve_api_key_env_var_is_reflected_by_both_tables(
+    monkeypatch,
+):
+    """Monkeypatching the module-global ``_resolve_api_key_env_var`` helper
+    is honored both by ``PROVIDER_CATALOG``'s ``key_env_resolver`` (as
+    called by ``extension_api.llm_config``) and by
+    ``_PROVIDER_SPECS["anthropic"].key_resolver`` (as called by
+    ``get_provider``) - proving both read from the same underlying
+    definition rather than a frozen, independently-captured reference."""
+    monkeypatch.setattr(llm, "_resolve_api_key_env_var", lambda: "PATCHED_KEY_VAR")
+
+    catalog_entry = next(e for e in llm.PROVIDER_CATALOG if e["name"] == "anthropic")
+    assert catalog_entry["key_env_resolver"]() == "PATCHED_KEY_VAR"
+    assert llm._PROVIDER_SPECS["anthropic"].key_resolver() == "PATCHED_KEY_VAR"
+
+    provider = llm.get_provider("anthropic")
+    assert provider.api_key_env_var == "PATCHED_KEY_VAR"
+
+
+def test_monkeypatching_resolve_openai_api_key_env_var_is_reflected_by_both_tables(
+    monkeypatch,
+):
+    """Same as above for a named OpenAI-compatible provider, which shares
+    its resolver between two catalog entries (``openai`` and
+    ``openai-compatible``) and two spec keys."""
+    monkeypatch.setattr(
+        llm, "_resolve_openai_api_key_env_var", lambda: "PATCHED_OPENAI_KEY_VAR"
+    )
+
+    for catalog_name in ("openai", "openai-compatible"):
+        catalog_entry = next(
+            e for e in llm.PROVIDER_CATALOG if e["name"] == catalog_name
+        )
+        assert catalog_entry["key_env_resolver"]() == "PATCHED_OPENAI_KEY_VAR"
+
+    for spec_key in ("openai", "openai-compatible"):
+        assert (
+            llm._PROVIDER_SPECS[spec_key].key_resolver() == "PATCHED_OPENAI_KEY_VAR"
+        )
+
+    assert llm.get_provider("openai").api_key_env_var == "PATCHED_OPENAI_KEY_VAR"
+
+
 @override_settings(LLM_PROVIDER="opencode-zen")
 def test_opencode_zen_missing_api_key_raises_auth_error(monkeypatch):
     monkeypatch.delenv("OPENCODE_ZEN_API_KEY", raising=False)

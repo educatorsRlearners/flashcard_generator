@@ -1175,26 +1175,44 @@ _NAMED_OPENAI_COMPATIBLE_DEFAULTS: dict[str, dict[str, str]] = {
 # EXTENSION_LLM_PROVIDER_ORDER / EXTENSION_LLM_CURATED_MODELS /
 # EXTENSION_LLM_REGISTRY_KEYS below are derived from it - there are no
 # independently-edited parallel literals.
+#
+# ``key_env_resolver`` values are built by :func:`_late_key_env_resolver`
+# rather than written as bare ``_resolve_*`` references (issue #163): each
+# entry names its ``_resolve_*`` helper exactly once, here, and the
+# returned callable looks that helper up in the module globals *at call
+# time* rather than capturing the function object up front. This is what
+# lets ``_PROVIDER_SPECS`` (below) reuse these exact callables as its own
+# ``key_resolver`` values with no second, independently-maintained set of
+# ``lambda: _resolve_*()`` wrappers - and it means both tables keep
+# reacting to ``monkeypatch.setattr(llm, "_resolve_*", ...)`` even though
+# the callables themselves were constructed once, at import time.
+def _late_key_env_resolver(resolver_name: str) -> Callable[[], str]:
+    def _resolve() -> str:
+        return globals()[resolver_name]()
+
+    return _resolve
+
+
 PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
     {
         "name": "anthropic",
         "registry_key": "anthropic",
         "curated_models": ["claude-sonnet-4-6", "claude-haiku-4-5"],
-        "key_env_resolver": _resolve_api_key_env_var,
+        "key_env_resolver": _late_key_env_resolver("_resolve_api_key_env_var"),
         "extension_visible": True,
     },
     {
         "name": "openai",
         "registry_key": "openai-compatible",
         "curated_models": ["gpt-4o", "gpt-4o-mini"],
-        "key_env_resolver": _resolve_openai_api_key_env_var,
+        "key_env_resolver": _late_key_env_resolver("_resolve_openai_api_key_env_var"),
         "extension_visible": True,
     },
     {
         "name": "grok",
         "registry_key": "grok",
         "curated_models": ["grok-4", "grok-3-mini"],
-        "key_env_resolver": _resolve_grok_api_key_env_var,
+        "key_env_resolver": _late_key_env_resolver("_resolve_grok_api_key_env_var"),
         "extension_visible": True,
         "base_url": _NAMED_OPENAI_COMPATIBLE_DEFAULTS["grok"]["base_url"],
         "default_key_env_var": _NAMED_OPENAI_COMPATIBLE_DEFAULTS["grok"][
@@ -1205,7 +1223,9 @@ PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
         "name": "opencode-zen",
         "registry_key": "opencode-zen",
         "curated_models": ["kimi-k2.6", "glm-5.3", "deepseek-v4-pro"],
-        "key_env_resolver": _resolve_opencode_zen_api_key_env_var,
+        "key_env_resolver": _late_key_env_resolver(
+            "_resolve_opencode_zen_api_key_env_var"
+        ),
         "extension_visible": True,
         "base_url": _NAMED_OPENAI_COMPATIBLE_DEFAULTS["opencode-zen"]["base_url"],
         "default_key_env_var": _NAMED_OPENAI_COMPATIBLE_DEFAULTS["opencode-zen"][
@@ -1217,7 +1237,7 @@ PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
         "name": "openai-compatible",
         "registry_key": "openai-compatible",
         "curated_models": [],
-        "key_env_resolver": _resolve_openai_api_key_env_var,
+        "key_env_resolver": _late_key_env_resolver("_resolve_openai_api_key_env_var"),
         "extension_visible": False,
     },
     {
@@ -1225,7 +1245,7 @@ PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
         "name": "gemini",
         "registry_key": "gemini",
         "curated_models": [],
-        "key_env_resolver": _resolve_gemini_api_key_env_var,
+        "key_env_resolver": _late_key_env_resolver("_resolve_gemini_api_key_env_var"),
         "extension_visible": False,
     },
     {
@@ -1233,7 +1253,9 @@ PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
         "name": "openrouter",
         "registry_key": "openrouter",
         "curated_models": [],
-        "key_env_resolver": _resolve_openrouter_api_key_env_var,
+        "key_env_resolver": _late_key_env_resolver(
+            "_resolve_openrouter_api_key_env_var"
+        ),
         "extension_visible": False,
         "base_url": _NAMED_OPENAI_COMPATIBLE_DEFAULTS["openrouter"]["base_url"],
         "default_key_env_var": _NAMED_OPENAI_COMPATIBLE_DEFAULTS["openrouter"][
@@ -1241,6 +1263,14 @@ PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
         ],
     },
 )
+
+#: ``PROVIDER_CATALOG`` entries indexed by their ``name`` field (issue
+#: #163), so ``_PROVIDER_SPECS`` below can reuse a catalog entry's exact
+#: ``key_env_resolver`` callable as its own ``key_resolver`` instead of
+#: re-declaring an equivalent wrapper.
+_PROVIDER_CATALOG_BY_NAME: dict[str, dict[str, Any]] = {
+    entry["name"]: entry for entry in PROVIDER_CATALOG
+}
 
 #: Providers exposed at ``GET /api/extension/llm-config/``, in fixed
 #: display order. ``"openai"`` is the display name for the backend
@@ -1280,11 +1310,16 @@ class _ProviderSpec(NamedTuple):
     """Shared construction/key spec for one registry key (issue #127).
 
     ``model_resolver`` / ``key_resolver`` / ``base_url_resolver`` are
-    zero-arg callables returning the settings-derived values; the
-    ``lambda: _resolve_*()`` wrappers (rather than bare function refs)
-    resolve the module global at call time so ``monkeypatch.setattr``
-    on the ``_resolve_*`` helpers keeps working. ``base_url_resolver``
-    is ``None`` for adapters whose constructor takes no ``base_url``
+    zero-arg callables returning the settings-derived values. For
+    ``key_resolver``, the callable is the exact one already built for the
+    matching ``PROVIDER_CATALOG`` entry's ``key_env_resolver`` (issue
+    #163) - so the two tables cannot drift, since only ``PROVIDER_CATALOG``
+    names the underlying ``_resolve_*`` helper. ``model_resolver`` and
+    ``base_url_resolver`` remain local ``lambda: _resolve_*()`` wrappers
+    (out of scope for #163); like ``key_resolver``, they resolve the
+    module global at call time so ``monkeypatch.setattr`` on the
+    ``_resolve_*`` helpers keeps working. ``base_url_resolver`` is
+    ``None`` for adapters whose constructor takes no ``base_url``
     (``anthropic``, ``gemini``).
     """
 
@@ -1298,48 +1333,51 @@ class _ProviderSpec(NamedTuple):
 #: ``GET /api/extension/llm-config/`` key resolution. ``openai`` is the
 #: short alias for ``openai-compatible`` (same resolvers); the named
 #: OpenAI-compatible entries reuse the ``_resolve_*`` helpers that fall
-#: back to :data:`_NAMED_OPENAI_COMPATIBLE_DEFAULTS`.
+#: back to :data:`_NAMED_OPENAI_COMPATIBLE_DEFAULTS`. ``key_resolver``
+#: values are taken directly from the matching :data:`PROVIDER_CATALOG`
+#: entry's ``key_env_resolver`` (issue #163) - see
+#: :data:`_PROVIDER_CATALOG_BY_NAME` and :class:`_ProviderSpec`.
 _PROVIDER_SPECS: dict[str, _ProviderSpec] = {
     "anthropic": _ProviderSpec(
         AnthropicProvider,
         lambda: _resolve_model(),
-        lambda: _resolve_api_key_env_var(),
+        _PROVIDER_CATALOG_BY_NAME["anthropic"]["key_env_resolver"],
         None,
     ),
     "openai-compatible": _ProviderSpec(
         OpenAICompatibleProvider,
         lambda: _resolve_openai_model(),
-        lambda: _resolve_openai_api_key_env_var(),
+        _PROVIDER_CATALOG_BY_NAME["openai-compatible"]["key_env_resolver"],
         lambda: _resolve_openai_base_url(),
     ),
     "openai": _ProviderSpec(
         OpenAICompatibleProvider,
         lambda: _resolve_openai_model(),
-        lambda: _resolve_openai_api_key_env_var(),
+        _PROVIDER_CATALOG_BY_NAME["openai"]["key_env_resolver"],
         lambda: _resolve_openai_base_url(),
     ),
     "grok": _ProviderSpec(
         OpenAICompatibleProvider,
         lambda: _resolve_grok_model(),
-        lambda: _resolve_grok_api_key_env_var(),
+        _PROVIDER_CATALOG_BY_NAME["grok"]["key_env_resolver"],
         lambda: _resolve_grok_base_url(),
     ),
     "openrouter": _ProviderSpec(
         OpenAICompatibleProvider,
         lambda: _resolve_openrouter_model(),
-        lambda: _resolve_openrouter_api_key_env_var(),
+        _PROVIDER_CATALOG_BY_NAME["openrouter"]["key_env_resolver"],
         lambda: _resolve_openrouter_base_url(),
     ),
     "opencode-zen": _ProviderSpec(
         OpenAICompatibleProvider,
         lambda: _resolve_opencode_zen_model(),
-        lambda: _resolve_opencode_zen_api_key_env_var(),
+        _PROVIDER_CATALOG_BY_NAME["opencode-zen"]["key_env_resolver"],
         lambda: _resolve_opencode_zen_base_url(),
     ),
     "gemini": _ProviderSpec(
         GeminiProvider,
         lambda: _resolve_gemini_model(),
-        lambda: _resolve_gemini_api_key_env_var(),
+        _PROVIDER_CATALOG_BY_NAME["gemini"]["key_env_resolver"],
         None,
     ),
 }
