@@ -1153,7 +1153,9 @@ _NAMED_OPENAI_COMPATIBLE_DEFAULTS: dict[str, dict[str, str]] = {
     # already ending in ``/chat/completions`` would double the segment).
     # /v1/messages is Anthropic-shaped, /v1/responses is the OpenAI
     # Responses API, /v1/models/* is Google-shaped - none of which this
-    # adapter speaks. No Zen model id is hardcoded here; set LLM_MODEL /
+    # adapter speaks. Only ``/v1/chat/completions`` is supported here (issue
+    # #115); the other route families are deferred to #160. No Zen model id
+    # is hardcoded here; set LLM_MODEL /
     # LLM_OPENCODE_ZEN_MODEL explicitly (curated chat-completions ids are
     # #105's job).
     "opencode-zen": {
@@ -1202,7 +1204,7 @@ PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
     {
         "name": "opencode-zen",
         "registry_key": "opencode-zen",
-        "curated_models": ["claude-sonnet-4-5", "gpt-5.1", "grok-code"],
+        "curated_models": ["kimi-k2.6", "glm-5.3", "deepseek-v4-pro"],
         "key_env_resolver": _resolve_opencode_zen_api_key_env_var,
         "extension_visible": True,
         "base_url": _NAMED_OPENAI_COMPATIBLE_DEFAULTS["opencode-zen"]["base_url"],

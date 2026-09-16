@@ -115,6 +115,27 @@ def test_curated_models_match_spec_table(client, llm_config_url, token):
         assert models == expected[name]
 
 
+def test_opencode_zen_curated_models_are_chat_completions_ids(
+    client, llm_config_url, token, monkeypatch
+):
+    """Issue #115: the ``opencode-zen`` curated list holds only ids that
+    live on Zen's ``/v1/chat/completions`` route (checked 2026-09-16; none
+    in the deprecated-models table)."""
+    expected = ["kimi-k2.6", "glm-5.3", "deepseek-v4-pro"]
+    entry = next(e for e in llm_module.PROVIDER_CATALOG if e["name"] == "opencode-zen")
+    assert list(entry["curated_models"]) == expected
+    for retired in ("claude-sonnet-4-5", "gpt-5.1", "grok-code"):
+        for catalog_entry in llm_module.PROVIDER_CATALOG:
+            assert retired not in catalog_entry["curated_models"]
+    monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "sk-test-not-a-real-key")
+    resp = client.get(llm_config_url, **auth_header(token))
+    assert resp.status_code == 200
+    zen = next(p for p in resp.json()["providers"] if p["name"] == "opencode-zen")
+    assert zen["models"] == expected
+    # Presence boolean only: no key material anywhere in the response.
+    assert "sk-test-not-a-real-key" not in resp.content.decode()
+
+
 def test_forbidden_names_never_appear(client, llm_config_url, token):
     resp = client.get(llm_config_url, **auth_header(token))
     names = [p["name"] for p in resp.json()["providers"]]

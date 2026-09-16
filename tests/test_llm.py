@@ -1422,6 +1422,17 @@ def test_provider_catalog_opencode_zen_picks_up_corrected_default():
     )
 
 
+def test_provider_catalog_opencode_zen_curated_models_are_chat_completions_ids():
+    """Issue #115: ``PROVIDER_CATALOG`` offers only ids that live on Zen's
+    ``/v1/chat/completions`` route (checked 2026-09-16; none in the
+    deprecated-models table)."""
+    entry = next(e for e in llm.PROVIDER_CATALOG if e["name"] == "opencode-zen")
+    assert list(entry["curated_models"]) == ["kimi-k2.6", "glm-5.3", "deepseek-v4-pro"]
+    for retired in ("claude-sonnet-4-5", "gpt-5.1", "grok-code"):
+        for catalog_entry in llm.PROVIDER_CATALOG:
+            assert retired not in catalog_entry["curated_models"]
+
+
 def test_opencode_zen_custom_base_url_override_passed_through_verbatim():
     """A custom ``LLM_OPENCODE_ZEN_BASE_URL`` is passed to the SDK client
     unchanged (override semantics from #104 are untouched by #148)."""

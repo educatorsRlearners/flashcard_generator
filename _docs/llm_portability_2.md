@@ -84,7 +84,7 @@ catalogs don't change often enough to justify it).
 | Anthropic | `claude-sonnet-4-6`, `claude-haiku-4-5` |
 | OpenAI | `gpt-4o`, `gpt-4o-mini` |
 | Grok | `grok-4`, `grok-3-mini` |
-| OpenCode Zen | `claude-sonnet-4-5`, `gpt-5.1`, `grok-code` |
+| OpenCode Zen | `kimi-k2.6`, `glm-5.3`, `deepseek-v4-pro` |
 
 This list lives in one place on the **backend** (not hardcoded in the
 extension) so updating it doesn't require reloading the unpacked extension

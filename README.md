@@ -923,7 +923,7 @@ construction and llm-config key resolution):
 | `anthropic` (default) | `claude-sonnet-4-6`, `claude-haiku-4-5` | `ANTHROPIC_API_KEY` | Default provider |
 | `openai` | `gpt-4o`, `gpt-4o-mini` | `OPENAI_API_KEY` via `LLM_OPENAI_API_KEY_ENV_VAR` | Display name for registry key `openai-compatible`; base URL via `LLM_OPENAI_BASE_URL` |
 | `grok` (xAI) | `grok-4`, `grok-3-mini` | `XAI_API_KEY` | xAI's OpenAI-compatible endpoint |
-| `opencode-zen` | `claude-sonnet-4-5`, `gpt-5.1`, `grok-code` | `OPENCODE_ZEN_API_KEY` | Per-provider overrides follow the generic `LLM_OPENCODE_ZEN_*` pattern (see `config/settings.py` + `submissions/llm.py`) |
+| `opencode-zen` | `kimi-k2.6`, `glm-5.3`, `deepseek-v4-pro` | `OPENCODE_ZEN_API_KEY` | Per-provider overrides follow the generic `LLM_OPENCODE_ZEN_*` pattern (see `config/settings.py` + `submissions/llm.py`) |
 | `openai-compatible` (backend-only) | — | `OPENAI_API_KEY` via `LLM_OPENAI_API_KEY_ENV_VAR` | Generic OpenAI-compatible endpoint (Ollama, vLLM, gateways) |
 | `gemini` (backend-only) | — | `GOOGLE_API_KEY` via `LLM_GEMINI_API_KEY_ENV_VAR` | Google's Generative Language API; no default key-var name is hardcoded — pair with `LLM_GEMINI_API_KEY_ENV_VAR=GOOGLE_API_KEY` |
 | `openrouter` (backend-only) | — | `OPENROUTER_API_KEY` | Origin-prefixed model ids (e.g. `anthropic/claude-3.5-sonnet`, `openai/gpt-4o`) |
