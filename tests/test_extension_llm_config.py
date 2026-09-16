@@ -65,8 +65,13 @@ def expected_names():
 def test_catalog_registry_and_curated_invariants():
     """Issue #129: every catalog entry's registry key exists in
     ``_PROVIDERS``, and every extension-exposed entry has a non-empty
-    curated model list."""
+    curated model list. Issue #133: the hidden set stays pinned."""
     assert llm_module.PROVIDER_CATALOG
+    assert {e["name"] for e in llm_module.PROVIDER_CATALOG if not e["extension_visible"]} == {
+        "openai-compatible",
+        "gemini",
+        "openrouter",
+    }
     for entry in llm_module.PROVIDER_CATALOG:
         assert entry["registry_key"] in llm_module._PROVIDERS
         if entry["extension_visible"]:

@@ -1213,6 +1213,7 @@ PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
         ],
     },
     {
+        # Hidden (#133): generic power-user endpoint (Ollama, vLLM, gateways) with arbitrary user-supplied base URL, so no meaningful curated model list exists for a popup dropdown.
         "name": "openai-compatible",
         "registry_key": "openai-compatible",
         "curated_models": [],
@@ -1220,6 +1221,7 @@ PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
         "extension_visible": False,
     },
     {
+        # Hidden (#133): registered backend provider (#83) never extension-verified with no curated model list; exposing it would promise an untested popup path.
         "name": "gemini",
         "registry_key": "gemini",
         "curated_models": [],
@@ -1227,6 +1229,7 @@ PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
         "extension_visible": False,
     },
     {
+        # Hidden (#133): live request-shape verification blocked with no key (#119, doc-based only) and origin-prefixed model ids (e.g. anthropic/claude-3.5-sonnet) with no safe curated list for a popup dropdown.
         "name": "openrouter",
         "registry_key": "openrouter",
         "curated_models": [],
