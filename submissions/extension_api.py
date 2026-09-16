@@ -319,10 +319,9 @@ def llm_config(request):
     ``llm_module.PROVIDER_CATALOG`` display order, skipping hidden entries
     and any entry whose registry key is absent from
     ``llm_module._PROVIDERS`` (currently ``opencode-zen`` until #104
-    lands); ``key_configured`` is a presence boolean via the shared
-    ``llm_module._PROVIDER_SPECS`` key resolvers also used by
-    ``get_provider`` (issue #127; never the key itself, no ``Provider``
-    construction, no network); ``default`` echoes
+    lands); ``key_configured`` is a presence boolean via each catalog
+    entry's own ``key_env_resolver`` (issue #151; never the key itself,
+    no ``Provider`` construction, no network); ``default`` echoes
     ``settings.LLM_PROVIDER`` / ``settings.LLM_MODEL`` verbatim and
     never errors. Auth + CORS mirror :func:`decks`.
     """
@@ -341,10 +340,7 @@ def llm_config(request):
             continue
         if entry["registry_key"] not in llm_module._PROVIDERS:
             continue
-        spec = llm_module._PROVIDER_SPECS.get(entry["registry_key"])
-        if spec is None:
-            continue
-        env_var = spec.key_resolver()
+        env_var = entry["key_env_resolver"]()
         key_configured = bool((os.environ.get(env_var) or "").strip()) if env_var else False
         providers.append(
             {

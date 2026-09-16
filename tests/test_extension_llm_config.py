@@ -200,6 +200,64 @@ def test_key_configured_true_false_per_provider(
     assert "sk-ant-secret" not in resp.content.decode()
 
 
+@pytest.mark.parametrize(
+    "provider_name,settings_attr,env_var_name",
+    [
+        ("anthropic", "LLM_API_KEY_ENV_VAR", "MATRIX_ANTHROPIC_KEY_151"),
+        ("openai", "LLM_OPENAI_API_KEY_ENV_VAR", "MATRIX_OPENAI_KEY_151"),
+        ("grok", "LLM_GROK_API_KEY_ENV_VAR", "MATRIX_GROK_KEY_151"),
+        ("opencode-zen", "LLM_OPENCODE_ZEN_API_KEY_ENV_VAR", "MATRIX_ZEN_KEY_151"),
+    ],
+)
+@pytest.mark.parametrize(
+    "env_state,expected",
+    [
+        ("set", True),
+        ("unset", False),
+        ("whitespace", False),
+    ],
+)
+def test_key_configured_matrix_custom_env_var_names(
+    client,
+    llm_config_url,
+    token,
+    monkeypatch,
+    settings,
+    provider_name,
+    settings_attr,
+    env_var_name,
+    env_state,
+    expected,
+):
+    """Issue #151: ``llm_config()`` now reads ``key_env_resolver`` straight
+    off the ``PROVIDER_CATALOG`` entry instead of ``_PROVIDER_SPECS``.
+    This proves settings/env equivalence still holds across a custom
+    ``LLM_*_API_KEY_ENV_VAR`` name x env set/unset/whitespace-only matrix,
+    for every visible provider including ``opencode-zen`` once
+    registered, mirroring ``test_key_configured_true_false_per_provider``.
+    """
+    if provider_name == "opencode-zen":
+        providers = dict(llm_module._PROVIDERS)
+        providers["opencode-zen"] = llm_module.OpenAICompatibleProvider
+        monkeypatch.setattr(llm_module, "_PROVIDERS", providers)
+
+    setattr(settings, settings_attr, env_var_name)
+
+    if env_state == "set":
+        monkeypatch.setenv(env_var_name, "sk-matrix-secret-151")
+    elif env_state == "unset":
+        monkeypatch.delenv(env_var_name, raising=False)
+    else:
+        monkeypatch.setenv(env_var_name, "   ")
+
+    resp = client.get(llm_config_url, **auth_header(token))
+    assert resp.status_code == 200
+    by_name = {p["name"]: p["key_configured"] for p in resp.json()["providers"]}
+    assert by_name[provider_name] is expected
+    # Presence boolean only: no key material anywhere in the response.
+    assert "sk-matrix-secret-151" not in resp.content.decode()
+
+
 def test_no_provider_construction_or_network(client, llm_config_url, token, monkeypatch):
     monkeypatch.setattr(
         llm_module,
@@ -269,3 +327,15 @@ def test_cors_header_absent_when_extension_id_unset(
     settings.EXTENSION_ID = ""
     resp = client.get(llm_config_url, **auth_header(token))
     assert "Access-Control-Allow-Origin" not in resp
+
+
+def test_no_provider_specs_reference_in_extension_api():
+    """Issue #151: ``llm_config()`` reads ``key_env_resolver`` straight off
+    the catalog entry it is already iterating over; the parallel
+    ``_PROVIDER_SPECS`` lookup is gone entirely from this module."""
+    import inspect
+
+    from submissions import extension_api
+
+    source = inspect.getsource(extension_api)
+    assert "_PROVIDER_SPECS" not in source
