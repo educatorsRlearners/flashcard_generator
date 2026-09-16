@@ -23,7 +23,7 @@
 ![Python](https://img.shields.io/badge/Python-4338CA?style=flat-square)
 ![Django](https://img.shields.io/badge/Django-6366F1?style=flat-square)
 ![SQLite](https://img.shields.io/badge/SQLite-4338CA?style=flat-square)
-![Anthropic Claude](https://img.shields.io/badge/Anthropic%20Claude-7C3AED?style=flat-square)
+![LLM Anthropic • OpenAI • Grok • Gemini • OpenRouter • Zen](https://img.shields.io/badge/LLM_Anthropic_%E2%80%A2_OpenAI_%E2%80%A2_Grok_%E2%80%A2_Gemini_%E2%80%A2_OpenRouter_%E2%80%A2_Zen-7C3AED?style=flat-square)
 ![Huey](https://img.shields.io/badge/Huey-4338CA?style=flat-square)
 ![Playwright](https://img.shields.io/badge/Playwright-6366F1?style=flat-square)
 ![Sentence Transformers](https://img.shields.io/badge/Sentence%20Transformers-7C3AED?style=flat-square)
@@ -77,7 +77,9 @@ Nothing reaches Anki without going through review first. See
 2. Confirm the popup (provider/model selection).
 3. The backend generates Q&A + cloze cards with images from the page text.
 4. Review each card in the review tab — Accept or Reject per card.
-5. Sync the accepted cards to Anki via AnkiConnect.
+5. Pick the Anki deck on the review page and Finish — the accepted cards
+   are pushed to that batch's stored deck via AnkiConnect (per-batch deck,
+   never a single global deck).
 
 ## Requirements
 
@@ -164,8 +166,12 @@ in #43):
    and attaches an image to each (see [Card images](#card-images)).
 5. The popup opens the batch's review grid. Accept, reject, or edit each
    card — see [Review grid](#review-grid).
-6. Click **Finish** to push the accepted cards into a single Anki deck —
-   see [Push to Anki](#push-to-anki).
+6. Pick the Anki deck on the review page (dropdown of live Anki decks plus
+   free-text new name; typed name wins) and click **Finish**. This stores
+   the deck on the batch and enqueues a background push of the accepted
+   cards to that deck — see [Push to Anki](#push-to-anki). The outcome
+   (in progress / pushed / unreachable / failed) is shown as a banner on
+   the review page.
 
 If anything above doesn't behave as described, the full manual
 verification checklist (cold start, error cases, review-tab regression)
@@ -575,7 +581,12 @@ per URL". A per-URL upper bound (`MAX_CARDS_PER_URL` in
 prompt-size limits) is a safety cap only.
 
 Cards are saved in one transaction (`bulk_create`) - a mid-run LLM failure
-never leaves half-written cards. Every card is tagged with the source URL,
+never leaves half-written cards. `generation.generate_for()` persists the
+cards first, then delegates all post-generation work (local dedup,
+live-deck Anki dedup, image attachment) to
+`submissions/post_generation.py:run_post_generation` (each stage
+best-effort with its own try/except, so one failing stage never aborts the
+others). Every card is tagged with the source URL,
 an ISO date, and a topic when one can be inferred (blank otherwise). A
 card's `batch` is a copy of its `SubmittedURL`'s originating batch (may be
 null); `submitted_url` is the authoritative link.
@@ -623,8 +634,9 @@ batch, and inline on the `SubmittedURL` page).
 ## Deduplicate cards
 
 Like the two sections above, the commands here are contributor/diagnostic
-tools — in the normal extension flow dedup runs automatically as the final
-step of card generation. After generation, each new `Card` is embedded locally (no API calls) and
+tools — in the normal extension flow dedup runs automatically as a
+post-generation stage (`submissions/post_generation.py`, after the cards
+are persisted). After generation, each new `Card` is embedded locally (no API calls) and
 compared by cosine similarity against (a) cards already stored as `unique`
 from previous runs and (b) the other new cards in the same run. A card at
 or above `DEDUP_SIMILARITY_THRESHOLD` (in `submissions/dedup.py`, the single
@@ -634,8 +646,18 @@ pointing at the card it matched, and is hidden from the default review grid
 the lowest-pk card is kept `unique`. With nothing to compare against, every
 card is `unique` and its embedding is recorded.
 
-This runs automatically as the final step of `generate_cards`. It is also a
-standalone command:
+The post-generation pipeline (`DEFAULT_STAGES` in
+`submissions/post_generation.py`: local semantic dedup, then live-deck Anki
+dedup against the batch's stored deck, then image attachment) runs
+automatically as the final step of `generate_cards`. Local dedup can be
+skipped with `DEDUP_ENABLED=0` (still marks `dedup_ready` so the status
+endpoint's `terminal` gating behaves as before); the live-deck Anki stage
+compares against the notes currently in the batch's stored deck (never
+`ANKI_DECK_NAME`) and degrades to local-only with a warning when no deck is
+chosen or Anki is unreachable. A custom `stages` list replaces the default
+pipeline entirely (injection seam, no edit to `generation.py`).
+
+Local dedup is also a standalone command:
 
 ```
 uv run python manage.py dedup_cards --batch 1     # every card in a batch
@@ -655,7 +677,8 @@ admin.
 
 ## Card images
 
-As the final step of `generate_cards`, each new `Card` gets **at most one**
+As a post-generation stage (`image_attachment_stage` in
+`submissions/post_generation.py`), each new `Card` gets **at most one**
 image (`submissions/images.py`):
 
 1. **Extension candidates first.** For extension submissions, the
@@ -713,7 +736,7 @@ and the card records the file plus `image_source` (`source_page` /
 ## Review feedback (durable) + few-shot injection
 
 Every time a card is accepted or rejected in the review grid, a `Feedback`
-row is written (`submissions/models.py`). It is a **snapshot**: the card
+row is written (`submissions/models.py`, via `submissions/feedback.py`). It is a **snapshot**: the card
 front/back (or cloze text), note type, source URL, the decision, the
 optional rejection reason, and a timestamp are copied in as plain values.
 `Feedback` has no foreign key to `Card`, `SubmittedURL` or `Batch`, so
@@ -722,7 +745,8 @@ are read-only in the Django admin (`Feedback`, filterable by decision and
 note type); a raw query works too, e.g.
 `sqlite3 db.sqlite3 "select decision, reason, front from submissions_feedback"`.
 
-When a new batch generates cards, `submissions/generation.py` prepends a
+When a new batch generates cards, `submissions/feedback.py`
+(`build_fewshot_section`, called from `submissions/generation.py`) prepends a
 few-shot section to the generation system prompt, built from stored
 `Feedback`. Default strategy is relevance-ranked and token-budgeted
 (`FEWSHOT_SELECTION_MODE=relevance`); `recency` reproduces the original
@@ -742,7 +766,7 @@ most-recent-N-per-category pick:
 - **recency fallback:** the most recent `FEWSHOT_EXAMPLES_PER_CATEGORY`
   accepted rows and, separately, the most recent
   `FEWSHOT_EXAMPLES_PER_CATEGORY` rejected rows (named constant in
-  `submissions/generation.py`, currently 3) — capped at
+  `submissions/feedback.py`, currently 3) — capped at
   `2 x FEWSHOT_EXAMPLES_PER_CATEGORY` examples however much feedback
   accumulates; ordered oldest-first so the prompt string is deterministic.
 - Each example shows the card; rejected examples also show the reason, or
@@ -780,13 +804,27 @@ page reload:
   remove, or revert to the automatic pick (`image_manually_set` /
   `original_image` / `original_image_source` track state). Placement
   follows `Card.image_placement` (cloze → question, basic → answer).
-- **Finish** → push accepted cards to Anki below.
+- **Finish** → pick the Anki deck (dropdown of live decks + free-text new
+  name; typed name wins, stored as `batch.deck_name`), confirm when cards
+  are still undecided, then push accepted cards to Anki below. The deck
+  choice is required — Finish with no deck re-renders the page with an
+  error and enqueues nothing.
+
+The review page shows the latest push outcome as a banner whenever Finish
+has been clicked (`batch.push_status` / `batch.push_outcome_message`):
+`pending` (push in flight), `done` (counts pushed / already-synced /
+failed into the snapshot deck name), `unreachable` (Anki/AnkiConnect was
+down, nothing pushed), or `failed` (unexpected task error). Only the
+latest attempt is kept — each write overwrites absolute counts, so
+overlapping Finish clicks end with whichever task completes last.
 
 ## Push to Anki
 
-Accepted cards from the review grid are pushed into a single Anki deck over
-the [AnkiConnect](https://foosoft.net/projects/anki-connect/) HTTP API
-(standard library only, no extra dependency).
+Accepted cards from the review grid are pushed to the batch's stored deck
+(`batch.deck_name`, chosen on the review page) over the
+[AnkiConnect](https://foosoft.net/projects/anki-connect/) HTTP API
+(standard library only, no extra dependency). There is no single global
+deck — each batch pushes to its own stored deck.
 
 **Anki must be running with the AnkiConnect add-on installed** and listening
 at `ANKI_CONNECT_URL` (default `http://127.0.0.1:8765`).
@@ -795,15 +833,26 @@ at `ANKI_CONNECT_URL` (default `http://127.0.0.1:8765`).
 uv run python manage.py push_to_anki
 ```
 
+- Finish on the review page (`card_review_finish`) stores the deck choice,
+  marks the batch push `pending` synchronously, and enqueues the Huey task
+  `push_accepted_cards_task(batch.pk)` — the push runs in the background
+  and the page redirects back to show the outcome banner above.
+- `push_to_anki` (manual/CLI path) pushes every deck-assigned batch grouped
+  per deck via the same `push_accepted_cards()` orchestration.
 - Sends only cards with `review_status == accepted` that have not been synced
   yet. Other states are ignored.
+- Batches with no stored deck (NULL/empty) are skipped and never fall back
+  to `ANKI_DECK_NAME`.
 - Creates the deck (AnkiConnect `createDeck`) if it does not exist.
 - `basic` cards → the "Basic" note type, `cloze` cards → "Cloze".
 - Every note is tagged with its source URL, ISO date added, and topic.
 - On success a card records `anki_note_id` + `synced_at`, so re-running adds
-  zero new notes for already-synced cards.
-- If Anki is unreachable the command aborts with a message naming the problem
-  and the configured URL; nothing is marked synced. A per-note AnkiConnect
+  zero new notes for already-synced cards. The batch records the terminal
+  outcome (`push_status`, `push_deck_name`, pushed/skipped/failed counts,
+  `push_finished_at`).
+- If Anki is unreachable the batch records `unreachable` (review page shows
+  the retry hint; CLI aborts naming the problem and the configured URL)
+  and nothing is marked synced. A per-note AnkiConnect
   error (bad note type, etc.) fails just that card; an Anki duplicate is
   reported as skipped-duplicate. The command prints counts of
   added / skipped / failed with reasons.
@@ -812,13 +861,15 @@ Settings (`config/settings.py`, each also an env var of the same name):
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `ANKI_DECK_NAME` | `Flashcard Generator` | the single deck cards are pushed into |
 | `ANKI_CONNECT_URL` | `http://127.0.0.1:8765` | AnkiConnect base URL |
 | `ANKI_CONNECT_TIMEOUT` | `10` | seconds before Anki is treated as unreachable |
+| `ANKI_DECK_NAME` | `Flashcard Generator` | legacy default; never used as a push target (pushes always use the batch's stored `deck_name`) |
 
 The AnkiConnect transport lives in `submissions/anki.py`
-(`AnkiConnectClient`), behind which `push_accepted_cards()` does the
-orchestration; both are fakeable in tests without a live Anki.
+(`AnkiConnectClient`), behind which `push_accepted_cards()` /
+`push_batch_accepted_cards()` / `push_all_deck_batches()` do the
+orchestration and `submissions/tasks.py:push_accepted_cards_task` is the
+background entrypoint; all are fakeable in tests without a live Anki.
 
 ## LLM client
 
@@ -834,22 +885,28 @@ bad-request errors are not.
 
 Which provider and model are used is configuration, read from Django
 settings (each falls back to an environment variable of the same name).
-Backend-supported providers (`SUPPORTED_PROVIDERS` in `submissions/llm.py`;
-update this table when adding a provider):
+Backend-supported providers (`PROVIDER_CATALOG` in `submissions/llm.py` is
+the single source of truth — update that table when adding a provider;
+`SUPPORTED_PROVIDERS`, `EXTENSION_LLM_PROVIDER_ORDER`,
+`EXTENSION_LLM_CURATED_MODELS`, and `EXTENSION_LLM_REGISTRY_KEYS` are all
+derived from it, and `_PROVIDER_SPECS` drives both `get_provider()`
+construction and llm-config key resolution):
 
-| Provider (`LLM_PROVIDER`) | Key env var | Notes |
-| --- | --- | --- |
-| `anthropic` (default) | `ANTHROPIC_API_KEY` | Default provider |
-| `openai` / `openai-compatible` | `OPENAI_API_KEY` via `LLM_OPENAI_API_KEY_ENV_VAR` | `openai` is an alias for `openai-compatible`; base URL via `LLM_OPENAI_BASE_URL` |
-| `grok` (xAI) | `XAI_API_KEY` | xAI's OpenAI-compatible endpoint |
-| `openrouter` | `OPENROUTER_API_KEY` | Origin-prefixed model ids (e.g. `anthropic/claude-3.5-sonnet`, `openai/gpt-4o`) |
-| `gemini` | `GOOGLE_API_KEY` via `LLM_GEMINI_API_KEY_ENV_VAR` | Google's Generative Language API; no default key-var name is hardcoded — pair with `LLM_GEMINI_API_KEY_ENV_VAR=GOOGLE_API_KEY` |
-| `opencode-zen` | `OPENCODE_ZEN_API_KEY` | Per-provider overrides follow the generic `LLM_OPENCODE_ZEN_*` pattern (see `config/settings.py` + `submissions/llm.py`) |
+| Provider (`LLM_PROVIDER`) | Curated popup models | Key env var | Notes |
+| --- | --- | --- | --- |
+| `anthropic` (default) | `claude-sonnet-4-6`, `claude-haiku-4-5` | `ANTHROPIC_API_KEY` | Default provider |
+| `openai` | `gpt-4o`, `gpt-4o-mini` | `OPENAI_API_KEY` via `LLM_OPENAI_API_KEY_ENV_VAR` | Display name for registry key `openai-compatible`; base URL via `LLM_OPENAI_BASE_URL` |
+| `grok` (xAI) | `grok-4`, `grok-3-mini` | `XAI_API_KEY` | xAI's OpenAI-compatible endpoint |
+| `opencode-zen` | `claude-sonnet-4-5`, `gpt-5.1`, `grok-code` | `OPENCODE_ZEN_API_KEY` | Per-provider overrides follow the generic `LLM_OPENCODE_ZEN_*` pattern (see `config/settings.py` + `submissions/llm.py`) |
+| `openai-compatible` (backend-only) | — | `OPENAI_API_KEY` via `LLM_OPENAI_API_KEY_ENV_VAR` | Generic OpenAI-compatible endpoint (Ollama, vLLM, gateways) |
+| `gemini` (backend-only) | — | `GOOGLE_API_KEY` via `LLM_GEMINI_API_KEY_ENV_VAR` | Google's Generative Language API; no default key-var name is hardcoded — pair with `LLM_GEMINI_API_KEY_ENV_VAR=GOOGLE_API_KEY` |
+| `openrouter` (backend-only) | — | `OPENROUTER_API_KEY` | Origin-prefixed model ids (e.g. `anthropic/claude-3.5-sonnet`, `openai/gpt-4o`) |
 
-The extension popup (`GET /api/extension/llm-config/`) currently exposes only
-`anthropic` / `openai` / `grok` / `opencode-zen` with backend-curated
-models (`EXTENSION_LLM_CURATED_MODELS` in `submissions/llm.py` is the
-source of truth); `openrouter` and `gemini` are backend-only. The popup's
+The extension popup (`GET /api/extension/llm-config/`) exposes only the
+`extension_visible` catalog entries in catalog order (currently
+`anthropic` / `openai` / `grok` / `opencode-zen`), each with its curated
+models and a `key_configured` presence boolean (never the key itself);
+`openai-compatible`, `openrouter` and `gemini` are backend-only. The popup's
 per-generation `provider` / `model` selection (`chosenLlm()` /
 `submitContent()` in `extension/popup.js`) is stored as a per-submission
 override (`llm_provider_override` / `llm_model_override`) and never mutates
@@ -926,22 +983,27 @@ uv run python manage.py llm_usage --limit 10
 
 ## Current Limitations
 
-- Single Anki deck (`ANKI_DECK_NAME`) — all accepted cards sync into one deck.
+- Per-batch Anki deck (chosen on the review page, stored as
+  `batch.deck_name`) — `ANKI_DECK_NAME` is never used as a push target.
 - One page at a time — each extension submission handles the page being viewed.
 - macOS/Apple Silicon-gated setup and local image generation.
-- Curated popup model lists are hand-maintained in `submissions/llm.py`
-  (`EXTENSION_LLM_CURATED_MODELS`).
+- Curated popup model lists live in `submissions/llm.py` (`PROVIDER_CATALOG`;
+  `EXTENSION_LLM_CURATED_MODELS` is derived from it, not hand-maintained
+  separately).
 
 ## Architecture
 
 | Module | Responsibility |
 | --- | --- |
 | `submissions/generation.py` | Turns extracted text into basic/cloze cards via the LLM client, applies safety caps and the verbatim-copy check, prepends few-shot examples |
+| `submissions/post_generation.py` | Post-generation pipeline after cards are persisted (local semantic dedup, live-deck Anki dedup, image attachment; `DEDUP_ENABLED` / `dedup_ready` bookkeeping) |
+| `submissions/feedback.py` | Durable `Feedback` snapshots plus relevance-ranked, token-budgeted few-shot selection/rendering |
 | `submissions/dedup.py` | Embeds cards locally and marks near-duplicates against prior `unique` cards and same-run siblings |
 | `submissions/images.py` | Picks or generates each card's single image (extension/source-page candidates, relevance ranking, Draw Things fallback) |
-| `submissions/llm.py` | Provider-agnostic LLM client (`generate()`), typed errors, retry/backoff, per-call usage recording |
-| `submissions/anki.py` | AnkiConnect HTTP transport (`AnkiConnectClient`) and the accepted-cards push orchestration |
-| `submissions/extension_api.py` | Browser-extension submit/status API endpoints, CORS allowlisting by `EXTENSION_ID` |
+| `submissions/llm.py` | Provider-agnostic LLM client (`generate()`), `PROVIDER_CATALOG` source of truth, typed errors, retry/backoff, per-call usage recording |
+| `submissions/anki.py` | AnkiConnect HTTP transport (`AnkiConnectClient`) and the per-batch-deck push orchestration (`push_batch_accepted_cards` / `push_all_deck_batches`) |
+| `submissions/tasks.py` | Background Huey entrypoint (`push_accepted_cards_task`) that records the terminal `Batch.push_status` outcome |
+| `submissions/extension_api.py` | Browser-extension submit/status/llm-config/decks API endpoints, CORS allowlisting by `EXTENSION_ID` |
 | `native_host/host.py` | Brave/Chrome native messaging host process; readiness probe and backend auto-spawn for the extension |
 | `config/settings.py` | Single source of Django settings; every setting also reads from an env var of the same name |
 
