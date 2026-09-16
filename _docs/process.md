@@ -31,6 +31,7 @@ Lifecycle
 Rules
 
 - Do not skip step 2
+- Tasks should run in parallel when possible
 - The engineer does not close the issue
 - QA and the UI/UX expert do not fix the code, only output PASS or FAIL
 - The orchestrator closes the issue only after every reviewer that ran
