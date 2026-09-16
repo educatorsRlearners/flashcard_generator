@@ -38,6 +38,8 @@
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
 - [Getting started](#getting-started)
+  - [First time: one-time install (do once)](#first-time-one-time-install-do-once)
+  - [Every time after: each later visit](#every-time-after-each-later-visit)
 - [Extension internals](#extension-internals)
 - [Configuration & providers](#configuration--providers)
 - [Setup](#setup)
@@ -93,14 +95,38 @@ Nothing reaches Anki without going through review first. See
 
 ## Getting started
 
-One-time install, then every-day use — top to bottom, no other section
-needed to finish this once.
+Two labeled paths — pick yours:
 
-**Install** (macOS only — this repo's development and documented setup are
-macOS-only; Linux/Windows native-messaging support is tracked separately
-in #43):
+- [First time](#first-time-one-time-install-do-once): one-time install, done
+  once (steps 1–5 below, top to bottom, no other section needed).
+- [Every time after](#every-time-after-each-later-visit): the steps for each
+  later visit (short — no setup, no terminal).
 
-1. ```
+### First time: one-time install (do once)
+
+Follow steps 1–5 top to bottom — no other section needed to finish this
+once.
+
+1. Install `uv` (the only prerequisite tool) if you don't have it yet:
+   ```
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+   then verify with `uv --version`. (macOS only — this repo's development
+   and documented setup are macOS-only; Linux/Windows native-messaging
+   support is tracked separately in #43.)
+2. Install Anki, add the
+   [AnkiConnect](https://foosoft.net/projects/anki-connect/) add-on, and
+   keep Anki running — cards can't reach Anki without it.
+3. Copy the settings template and put in your LLM key:
+   ```
+   cp .env.example .env
+   # then edit .env and set ANTHROPIC_API_KEY=sk-ant-...
+   ```
+   `ANTHROPIC_API_KEY` is the exact `.env` variable holding the key
+   (matching `.env.example`; other providers use their own key vars — see
+   [LLM client](#llm-client)). Step 4 presence-checks it and fails fast
+   naming the variable when it is empty — no network call.
+4. ```
    make setup
    ```
    One command takes a fresh checkout to extension-ready: installs deps
@@ -113,37 +139,19 @@ in #43):
    key (fails fast naming the exact env var — no network call), and
    finishes with `make check`. Re-running is safe: present artifacts are
    skipped, the key/token are never regenerated, and the `.env` line is
-   updated in place. Start the backend day to day with `make run` (same
-   fast ensure, then `runserver` + Huey consumer together).
+   updated in place.
    Heavier optional pieces (Playwright/Chromium, sentence-transformer
    weights, Tesseract) aren't required for this basic flow — see
    [Setup](#setup) if a feature later asks for one of them.
-   Manual fallback (the same steps by hand, no `make`):
-   ```
-   uv sync
-   uv run python manage.py migrate
-   uv run python manage.py generate_signing_key
-   uv run python manage.py install_native_host
-   ```
-   Re-running `generate_signing_key` once a real key is already pinned
-   fails unless you pass `--force` (which regenerates both keys and gives
-   the extension a new ID — repeat step 2 and re-run
-   `install_native_host` if you do this); `make setup` never passes
-   `--force`.
-2. Load the extension unpacked: `brave://extensions` (or
+5. Load the extension unpacked: `brave://extensions` (or
    `chrome://extensions`) → enable Developer mode → "Load unpacked" →
-   select the `extension/` directory. Because the key is pinned in step 1,
+   select the `extension/` directory. Because the key is pinned in step 4,
    the ID Brave/Chrome assigns stays stable across future reloads — you
-   don't need to copy it down, step 1 already derived it itself (printed
+   don't need to copy it down, step 4 already derived it itself (printed
    as `Extension ID derived from extension/manifest.json: <id>` so you
    can cross-check it against the ID shown on
-   `brave://extensions`/`chrome://extensions`). Full detail on what step 1
+   `brave://extensions`/`chrome://extensions`). Full detail on what step 4
    wires up lives in [Extension internals](#extension-internals).
-
-   Pass `--extension-id <id>` to `install_native_host` explicitly only to
-   override the derived ID (e.g. testing/multi-profile setups) — if it
-   disagrees with the ID derived from the manifest, a warning naming both
-   is printed but the explicit value still wins.
 
    **Restart any already-running backend** (`manage.py dev`, or
    `runserver`/`run_huey` started manually) after this — `.env` is only
@@ -154,24 +162,42 @@ in #43):
    If Brave/Chrome was already open when the manifest was written, reload
    the extension once more before using it.
 
-**Use:**
+### Every time after: each later visit
 
-3. Click the extension's popup on any regular webpage you're reading
-   (`brave://` and `chrome://` and extension pages themselves are unreadable). This
-   extracts the page and hands it to the backend — see
-   [Extract content](#extract-content).
-4. The backend turns the extracted text into flashcards (see
-   [Generate cards](#generate-cards)), filters out ones that duplicate
-   cards you already have (see [Deduplicate cards](#deduplicate-cards)),
-   and attaches an image to each (see [Card images](#card-images)).
-5. The popup opens the batch's review grid. Accept, reject, or edit each
-   card — see [Review grid](#review-grid).
-6. Pick the Anki deck on the review page (dropdown of live Anki decks plus
-   free-text new name; typed name wins) and click **Finish**. This stores
-   the deck on the batch and enqueues a background push of the accepted
-   cards to that deck — see [Push to Anki](#push-to-anki). The outcome
-   (in progress / pushed / unreachable / failed) is shown as a banner on
-   the review page.
+1. Make sure Anki is running (cards push to it via AnkiConnect).
+2. Click the extension's popup on any regular webpage you're reading
+   (`brave://`, `chrome://`, and extension pages themselves are unreadable),
+   hit **Generate**, then accept, reject, or edit each card in the review
+   grid and **Finish** to push the accepted ones to Anki.
+3. Start nothing by hand: the popup gets its token + `base_url` from the
+   native host (`native_host/host.py`), which probes the backend and spawns
+   `manage.py dev` itself when it is down (`extension/popup.js`) — `make
+   run` is only for contributors who want the backend in their own terminal
+   (logs, backend work); see [Run](#run).
+
+What happens between Generate and Finish (extract → generate → dedupe →
+image → review → push) is summarized in [How it works](#how-it-works);
+detail lives in the feature sections below.
+
+### Setup detail for power users (optional, skip on first run)
+
+Manual fallback (the same steps by hand, no `make`):
+```
+uv sync
+uv run python manage.py migrate
+uv run python manage.py generate_signing_key
+uv run python manage.py install_native_host
+```
+Re-running `generate_signing_key` once a real key is already pinned
+fails unless you pass `--force` (which regenerates both keys and gives
+the extension a new ID — repeat step 5 and re-run
+`install_native_host` if you do this); `make setup` never passes
+`--force`.
+
+Pass `--extension-id <id>` to `install_native_host` explicitly only to
+override the derived ID (e.g. testing/multi-profile setups) — if it
+disagrees with the ID derived from the manifest, a warning naming both
+is printed but the explicit value still wins.
 
 If anything above doesn't behave as described, the full manual
 verification checklist (cold start, error cases, review-tab regression)
