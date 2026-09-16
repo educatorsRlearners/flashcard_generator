@@ -141,12 +141,16 @@ class Batch(models.Model):
         if self.push_status == self.PushStatus.UNREACHABLE:
             return (
                 "Anki push failed: Anki/AnkiConnect was unreachable. "
-                "Accepted cards were not pushed; try again once Anki is running."
+                "Accepted cards were not pushed. No action needed — we're "
+                "quietly retrying in the background, and this tab will "
+                "update and close on its own if it succeeds."
             )
         if self.push_status == self.PushStatus.FAILED:
             return (
                 "Anki push failed: an unexpected error occurred. "
-                "Accepted cards may not have been pushed; try finishing again."
+                "Accepted cards may not have been pushed. No action needed — "
+                "we're quietly retrying in the background, and this tab will "
+                "update and close on its own if it succeeds."
             )
         if self.push_status == self.PushStatus.DONE:
             pushed = self.push_pushed_count
