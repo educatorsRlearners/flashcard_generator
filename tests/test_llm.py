@@ -1194,8 +1194,15 @@ def test_unknown_provider_still_unaffected_by_grok_openrouter_additions():
 # --- named OpenAI-compatible provider: opencode-zen (issue #104) ---------
 # OpenAICompatibleProvider pointed at Zen's OpenAI-compatible route, with
 # LLM_OPENCODE_ZEN_* overrides following the same override-wins/empty-falls-
-# back pattern as grok/openrouter above. Mocked/fake client only - no live
-# Zen credentials exist in this environment (live verification is #114).
+# back pattern as grok/openrouter above. Mocked/fake client only - live
+# verification for #114 (check_llm --provider opencode-zen, 2026-09-16)
+# never reached a 200: paid chat-completions ids (deepseek-v4-pro,
+# deepseek-v4-flash) answer 401 CreditsError, no payment method on the
+# workspace, and the free chat-completions id big-pickle answers 400
+# MissingSessionID (free tier only usable inside OpenCode). Neither error
+# indicates a request-shape problem, so no adapter change was made; the
+# shape (Bearer auth, max_tokens, choices[0].message.content) is still
+# unverified and #114 stays open.
 
 
 def test_get_provider_opencode_zen_builds_openai_compatible_with_hardcoded_defaults():

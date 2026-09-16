@@ -1125,7 +1125,15 @@ _OPENAI_PROVIDER_NAMES = frozenset({"openai-compatible", "openai"})
 #: ``response_format`` round-tripped into ``LLMResult.parsed`` with no
 #: schema/parse error. No adapter change was needed. For ``openrouter`` this
 #: remains doc-based only - no live credentials available in this
-#: environment; live-credential verification is tracked in #119.
+#: environment; live-credential verification is tracked in #119. For
+#: ``opencode-zen`` (issue #114) no 200 has been observed yet, so this
+#: remains doc-based too: on 2026-09-16 ``check_llm --provider opencode-zen``
+#: with paid chat-completions ids (``deepseek-v4-pro``,
+#: ``deepseek-v4-flash``) answered 401 ``CreditsError`` (no payment method
+#: on the workspace) and the free chat-completions id ``big-pickle``
+#: answered 400 ``MissingSessionID`` (free tier only usable inside
+#: OpenCode). Neither error points at the request shape, so no adapter
+#: change was made; re-run the live check once the workspace is funded.
 _NAMED_OPENAI_COMPATIBLE_DEFAULTS: dict[str, dict[str, str]] = {
     "grok": {
         "base_url": "https://api.x.ai/v1",
