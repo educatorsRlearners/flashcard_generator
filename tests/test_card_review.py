@@ -229,12 +229,40 @@ def test_decision_submit_js_branches_on_response_ok():
 
     assert "res.ok" in submit_fn or ".ok" in submit_fn
     assert "decision-error" in submit_fn
-    assert "showError" in submit_fn
+    assert "setMessage" in submit_fn
     # The regression: applyCard must not run unconditionally on the raw
     # fetch response - it must be gated on success.
     applied_at = submit_fn.index("applyCard(")
     ok_check_at = submit_fn.index("res.ok")
     assert ok_check_at < applied_at
+
+
+def test_card_review_js_has_one_shared_inline_message_helper():
+    """#164: decision-error, edit-error, and image-message must all route
+    through a single shared helper (``setMessage``), not two separate
+    helpers (the old ``showError``/``imageMessage`` split)."""
+    from pathlib import Path
+
+    from django.conf import settings
+
+    template = Path(
+        settings.BASE_DIR,
+        "submissions/templates/submissions/card_review.html",
+    ).read_text()
+
+    assert template.count("function setMessage(") == 1
+    assert "function showError(" not in template
+    assert "function imageMessage(" not in template
+
+    # Every call site for all three message areas routes through it.
+    assert template.count("setMessage(") > template.count("function setMessage(")
+    for role_call in (
+        'errorEl.hidden = true',  # decision-error success path (unchanged)
+        "setMessage(errorEl,",
+        'setMessage(wrap.querySelector(\'[data-role="edit-error"]\'),',
+        'setMessage(li.querySelector(\'[data-role="image-message"]\'),',
+    ):
+        assert role_call in template
 
 
 def test_decision_submit_js_catch_does_not_navigate(client):
@@ -259,8 +287,8 @@ def test_decision_submit_js_catch_does_not_navigate(client):
     catch_start = submit_fn.index(".catch(")
     catch_block = submit_fn[catch_start:]
     # The catch block must surface the failure inline via the existing
-    # showError()/decision-error pattern, not navigate or reload.
-    assert "showError" in catch_block
+    # setMessage()/decision-error pattern, not navigate or reload.
+    assert "setMessage" in catch_block
     assert "decision-error" in catch_block
 
 
@@ -810,16 +838,16 @@ def test_edit_save_js_catch_does_not_navigate():
     catch_start = edit_save_branch.index(".catch(")
     catch_block = edit_save_branch[catch_start:]
     # The catch block must surface the failure inline via the existing
-    # showError()/edit-error pattern, not navigate or reload, and must
+    # setMessage()/edit-error pattern, not navigate or reload, and must
     # still re-enable the button so the user can retry manually.
-    assert "showError" in catch_block
+    assert "setMessage" in catch_block
     assert "edit-error" in catch_block
     assert "btn.disabled = false" in catch_block
 
 
 def test_edit_revert_js_catch_does_not_navigate():
     """#145: a failed edit-revert request must re-enable the button and
-    surface the failure inline via the existing showError()/edit-error
+    surface the failure inline via the existing setMessage()/edit-error
     pattern, never navigating."""
     from pathlib import Path
 
@@ -838,7 +866,7 @@ def test_edit_revert_js_catch_does_not_navigate():
 
     catch_start = branch.index(".catch(")
     catch_block = branch[catch_start:]
-    assert "showError" in catch_block
+    assert "setMessage" in catch_block
     assert "edit-error" in catch_block
     assert "btn.disabled = false" in catch_block
     # Button is disabled before the request and re-enabled on settle.
@@ -850,7 +878,7 @@ def test_edit_revert_js_catch_does_not_navigate():
 def test_image_choose_js_catch_does_not_navigate():
     """#145: a failed candidates fetch must re-enable the button and
     surface the failure inline via the existing
-    imageMessage()/image-message pattern, never navigating."""
+    setMessage()/image-message pattern, never navigating."""
     from pathlib import Path
 
     from django.conf import settings
@@ -868,11 +896,11 @@ def test_image_choose_js_catch_does_not_navigate():
 
     catch_start = branch.index(".catch(")
     catch_block = branch[catch_start:]
-    assert "imageMessage" in catch_block
-    # The branch surfaces failures through the imageMessage() helper,
-    # which owns the [data-role="image-message"] lookup (defined once
-    # alongside applyImage); the per-card element itself still exists.
-    assert "imageMessage" in branch
+    assert "setMessage" in catch_block
+    # The branch surfaces failures through the shared setMessage() helper,
+    # resolving the [data-role="image-message"] element itself at the call
+    # site; the per-card element itself still exists.
+    assert "setMessage" in branch
     assert 'data-role="image-message"' in template
     assert "btn.disabled = false" in catch_block
     assert "btn.disabled = true" in branch
@@ -881,7 +909,7 @@ def test_image_choose_js_catch_does_not_navigate():
 def test_image_remove_js_catch_does_not_navigate():
     """#145: a failed image-remove request must re-enable the button and
     surface the failure inline via the existing
-    imageMessage()/image-message pattern, never navigating."""
+    setMessage()/image-message pattern, never navigating."""
     from pathlib import Path
 
     from django.conf import settings
@@ -899,10 +927,10 @@ def test_image_remove_js_catch_does_not_navigate():
 
     catch_start = branch.index(".catch(")
     catch_block = branch[catch_start:]
-    assert "imageMessage" in catch_block
-    # Same helper indirection as image-choose: the branch calls
-    # imageMessage(), which owns the [data-role="image-message"] lookup.
-    assert "imageMessage" in branch
+    assert "setMessage" in catch_block
+    # Same helper indirection as image-choose: the branch calls the shared
+    # setMessage(), resolving the [data-role="image-message"] element itself.
+    assert "setMessage" in branch
     assert 'data-role="image-message"' in template
     assert "btn.disabled = false" in catch_block
     assert "btn.disabled = true" in branch
@@ -913,7 +941,7 @@ def test_image_remove_js_catch_does_not_navigate():
 def test_image_revert_js_disables_and_catches():
     """#159: a failed image-revert request must disable the button before
     the request, re-enable it in both .then and .catch, and surface the
-    failure inline via imageMessage(), matching the image-remove pattern
+    failure inline via setMessage(), matching the image-remove pattern
     from #145."""
     from pathlib import Path
 
@@ -938,13 +966,16 @@ def test_image_revert_js_disables_and_catches():
     assert "btn.disabled = false" in then_block
     # And re-enabled again in .catch.
     assert "btn.disabled = false" in catch_block
-    assert 'imageMessage(li, "Something went wrong. Please try again.")' in catch_block
+    assert (
+        'setMessage(li.querySelector(\'[data-role="image-message"]\'), '
+        '"Something went wrong. Please try again.")' in catch_block
+    )
 
 
 def test_image_regen_js_catch_shows_message():
     """#159: image-regen's existing .catch already restored the button's
     disabled state and text, but silently swallowed the failure; it must
-    now also call imageMessage() so the user sees something went wrong."""
+    now also call setMessage() so the user sees something went wrong."""
     from pathlib import Path
 
     from django.conf import settings
@@ -963,14 +994,17 @@ def test_image_regen_js_catch_shows_message():
 
     assert "btn.disabled = false" in catch_block
     assert "btn.textContent = orig" in catch_block
-    assert 'imageMessage(li, "Something went wrong. Please try again.")' in catch_block
+    assert (
+        'setMessage(li.querySelector(\'[data-role="image-message"]\'), '
+        '"Something went wrong. Please try again.")' in catch_block
+    )
 
 
 def test_candidate_select_js_guards_double_submit_and_catches():
     """#159: the thumbnail click handler (candidate-select) has no native
     .disabled since its target is an <img>, so it needs an in-flight guard
     (set before the request, cleared in both .then and .catch) plus a
-    .catch that surfaces failures via imageMessage()."""
+    .catch that surfaces failures via setMessage()."""
     from pathlib import Path
 
     from django.conf import settings
@@ -1003,7 +1037,10 @@ def test_candidate_select_js_guards_double_submit_and_catches():
     # ...and cleared in both .then and .catch.
     assert "removeAttribute" in then_block or "setAttribute" in then_block
     assert "removeAttribute" in catch_block or "setAttribute" in catch_block
-    assert 'imageMessage(li, "Something went wrong. Please try again.")' in catch_block
+    assert (
+        'setMessage(li.querySelector(\'[data-role="image-message"]\'), '
+        '"Something went wrong. Please try again.")' in catch_block
+    )
 
 
 def test_feedback_stores_edited_content_and_notes_edited(client):

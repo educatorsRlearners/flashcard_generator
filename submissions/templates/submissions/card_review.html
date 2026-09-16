@@ -246,11 +246,11 @@
                 applyCard(li, res.data.review_status, res.data.rejection_reason);
                 setTally(res.data.tally);
             } else if (errorEl) {
-                showError(errorEl, res.data.error);
+                setMessage(errorEl, res.data.error, "Something went wrong.");
             }
         }).catch(function () {
             var errorEl = li.querySelector('[data-role="decision-error"]');
-            if (errorEl) { showError(errorEl, "Something went wrong. Please try again."); }
+            if (errorEl) { setMessage(errorEl, "Something went wrong. Please try again."); }
         });
     }
 
@@ -297,8 +297,19 @@
         });
     }
 
-    function showError(el, msg) {
-        el.textContent = msg || "Something went wrong.";
+    /* Shared inline-feedback helper for decision-error, edit-error, and
+       image-message. Callers resolve their own target element and pass it
+       in. A falsy msg with no fallback hides the element and clears its
+       text (image-message's "clear before proceeding" usage); a falsy msg
+       with a fallback shows the fallback text instead of hiding
+       (decision-error/edit-error's default-text usage). */
+    function setMessage(el, msg, fallback) {
+        if (!msg && !fallback) {
+            el.hidden = true;
+            el.textContent = "";
+            return;
+        }
+        el.textContent = msg || fallback;
         el.hidden = false;
     }
 
@@ -354,11 +365,11 @@
                     wrap.hidden = true;
                     applyEdit(li, res.data);
                 } else {
-                    showError(wrap.querySelector('[data-role="edit-error"]'), res.data.error);
+                    setMessage(wrap.querySelector('[data-role="edit-error"]'), res.data.error, "Something went wrong.");
                 }
             }).catch(function () {
                 btn.disabled = false;
-                showError(wrap.querySelector('[data-role="edit-error"]'), "Something went wrong. Please try again.");
+                setMessage(wrap.querySelector('[data-role="edit-error"]'), "Something went wrong. Please try again.");
             });
         }
         else if (role === "edit-revert") {
@@ -369,11 +380,11 @@
                     wrap.hidden = true;
                     applyEdit(li, res.data);
                 } else {
-                    showError(wrap.querySelector('[data-role="edit-error"]'), res.data.error);
+                    setMessage(wrap.querySelector('[data-role="edit-error"]'), res.data.error, "Something went wrong.");
                 }
             }).catch(function () {
                 btn.disabled = false;
-                showError(wrap.querySelector('[data-role="edit-error"]'), "Something went wrong. Please try again.");
+                setMessage(wrap.querySelector('[data-role="edit-error"]'), "Something went wrong. Please try again.");
             });
         }
     });
@@ -409,13 +420,6 @@
         setTally(data.tally);
     }
 
-    function imageMessage(li, msg) {
-        var el = li.querySelector('[data-role="image-message"]');
-        if (!msg) { el.hidden = true; el.textContent = ""; return; }
-        el.textContent = msg;
-        el.hidden = false;
-    }
-
     grid.addEventListener("click", function (e) {
         var btn = e.target.closest("button[data-role]");
         if (!btn) { return; }
@@ -434,13 +438,13 @@
                 btn.disabled = false;
                 box.textContent = "";
                 if (!data.candidates || !data.candidates.length) {
-                    imageMessage(li, data.draw_things_enabled
+                    setMessage(li.querySelector('[data-role="image-message"]'), data.draw_things_enabled
                         ? "No other source images found; you can still Regenerate or Remove."
                         : "No other source images found and Draw Things is disabled; you can still Remove.");
                     box.hidden = true;
                     return;
                 }
-                imageMessage(li, "");
+                setMessage(li.querySelector('[data-role="image-message"]'), "");
                 data.candidates.forEach(function (url) {
                     var thumb = document.createElement("img");
                     thumb.src = url;
@@ -455,7 +459,7 @@
             }).catch(function () {
                 btn.disabled = false;
                 box.hidden = true;
-                imageMessage(li, "Something went wrong. Please try again.");
+                setMessage(li.querySelector('[data-role="image-message"]'), "Something went wrong. Please try again.");
             });
         }
         else if (role === "image-regen") {
@@ -465,34 +469,34 @@
             postForm(ctl.getAttribute("data-regen-url"), {}).then(function (res) {
                 btn.disabled = false;
                 btn.textContent = orig;
-                if (res.ok) { imageMessage(li, ""); applyImage(li, res.data); }
-                else { imageMessage(li, res.data.error); }
+                if (res.ok) { setMessage(li.querySelector('[data-role="image-message"]'), ""); applyImage(li, res.data); }
+                else { setMessage(li.querySelector('[data-role="image-message"]'), res.data.error); }
             }).catch(function () {
                 btn.disabled = false;
                 btn.textContent = orig;
-                imageMessage(li, "Something went wrong. Please try again.");
+                setMessage(li.querySelector('[data-role="image-message"]'), "Something went wrong. Please try again.");
             });
         }
         else if (role === "image-remove") {
             btn.disabled = true;
             postForm(ctl.getAttribute("data-remove-url"), {}).then(function (res) {
                 btn.disabled = false;
-                if (res.ok) { imageMessage(li, ""); applyImage(li, res.data); }
-                else { imageMessage(li, res.data.error); }
+                if (res.ok) { setMessage(li.querySelector('[data-role="image-message"]'), ""); applyImage(li, res.data); }
+                else { setMessage(li.querySelector('[data-role="image-message"]'), res.data.error); }
             }).catch(function () {
                 btn.disabled = false;
-                imageMessage(li, "Something went wrong. Please try again.");
+                setMessage(li.querySelector('[data-role="image-message"]'), "Something went wrong. Please try again.");
             });
         }
         else if (role === "image-revert") {
             btn.disabled = true;
             postForm(ctl.getAttribute("data-revert-url"), {}).then(function (res) {
                 btn.disabled = false;
-                if (res.ok) { imageMessage(li, ""); applyImage(li, res.data); }
-                else { imageMessage(li, res.data.error); }
+                if (res.ok) { setMessage(li.querySelector('[data-role="image-message"]'), ""); applyImage(li, res.data); }
+                else { setMessage(li.querySelector('[data-role="image-message"]'), res.data.error); }
             }).catch(function () {
                 btn.disabled = false;
-                imageMessage(li, "Something went wrong. Please try again.");
+                setMessage(li.querySelector('[data-role="image-message"]'), "Something went wrong. Please try again.");
             });
         }
     });
@@ -509,15 +513,15 @@
         }).then(function (res) {
             thumb.removeAttribute("data-selecting");
             if (res.ok) {
-                imageMessage(li, "");
+                setMessage(li.querySelector('[data-role="image-message"]'), "");
                 li.querySelector('[data-role="image-candidates"]').hidden = true;
                 applyImage(li, res.data);
             } else {
-                imageMessage(li, res.data.error);
+                setMessage(li.querySelector('[data-role="image-message"]'), res.data.error);
             }
         }).catch(function () {
             thumb.removeAttribute("data-selecting");
-            imageMessage(li, "Something went wrong. Please try again.");
+            setMessage(li.querySelector('[data-role="image-message"]'), "Something went wrong. Please try again.");
         });
     });
 
