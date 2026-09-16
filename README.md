@@ -210,6 +210,7 @@ is in `_docs/extension_manual_checklist.md`.
 | `make setup` | One-command extension-ready setup: deps, migrations, signing key, native host + token + `EXTENSION_ID`, LLM-key presence check, then `make check` (idempotent; primary path) |
 | `make run` | Fast-ensure the same artifacts, then start `runserver` + the Huey consumer together, prefixed logs (`[web]` / `[worker]`), Ctrl-C stops both (primary path) |
 | `make check` | Verify non-pip prerequisites (Anki / local image gen warn only) |
+| `make doctor` | Diagnose setup artifacts read-only (PASS/FAIL per check, each FAIL names its fix) — run after a `make setup` failure, or on stale-ID / CORS-blocked popup symptoms |
 | `make install` | Deps + migrations only (`make setup` covers this and more) |
 | `uv sync` | Install dependencies (manual fallback for the `make setup` step) |
 | `uv run pytest` | Run the whole test suite |
@@ -373,8 +374,23 @@ are the manual fallback:
 ```
 make setup    # deps, migrations, signing key, native host + token + EXTENSION_ID, LLM-key check, then check prerequisites
 make check    # verify non-pip prerequisites (Anki / local image gen warn only)
+make doctor   # diagnose setup artifacts read-only (per-check PASS/FAIL, each FAIL names its fix)
 make run      # fast-ensure the same artifacts, then start runserver + Huey consumer together (same as manage.py dev)
 ```
+
+If `make setup` (or the extension handshake) fails, run `make doctor`:
+it re-checks every setup artifact above read-only — `openssl`, the pinned
+signing key, the private key, the extension token, the wrapper script, the
+per-browser native-messaging manifests, the `EXTENSION_ID` three-way match
+(manifest-derived vs `.env` vs shell), the configured LLM key, and `.env`
+itself — printing one `[PASS]` / `[FAIL]` line per check (`[SKIP]` for a
+browser that isn't installed), each `[FAIL]` naming the exact fix command
+or env var. It never writes, mints, or regenerates anything, makes no
+network calls, and never launches a browser, so it is safe to run headless
+or in CI. Run it again on stale-ID symptoms (popup CORS-blocked or
+reporting it cannot reach the backend): a stale `.env` line or a shadowing
+shell `$EXTENSION_ID` is the usual cause. It never duplicates `make check`
+— venv / Anki / AnkiConnect / Draw Things stay in `check`.
 
 Then load the extension unpacked: `brave://extensions` (or
 `chrome://extensions`) → enable Developer mode → "Load unpacked" → select
