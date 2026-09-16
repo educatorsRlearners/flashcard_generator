@@ -525,6 +525,14 @@
         });
     });
 
+    grid.addEventListener("keydown", function (e) {
+        var thumb = e.target.closest("[data-candidate-url]");
+        if (!thumb) { return; }
+        if (e.key !== "Enter" && e.key !== " ") { return; }
+        e.preventDefault();
+        thumb.click();
+    });
+
     var finish = document.getElementById("review-finish");
     if (finish) {
         finish.addEventListener("submit", function (e) {

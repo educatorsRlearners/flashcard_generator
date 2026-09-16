@@ -1043,6 +1043,41 @@ def test_candidate_select_js_guards_double_submit_and_catches():
     )
 
 
+def test_candidate_select_keydown_activates_via_click_not_duplicated_logic():
+    """#166: candidate thumbnails are focus-reachable (role=button,
+    tabindex=0) but had no keydown handler. Enter/Space should trigger the
+    same select action as a real click by dispatching a synthetic click,
+    not by duplicating the postForm/data-selecting logic."""
+    from pathlib import Path
+
+    from django.conf import settings
+
+    template = Path(
+        settings.BASE_DIR,
+        "submissions/templates/submissions/card_review.html",
+    ).read_text()
+
+    start = template.index('grid.addEventListener("keydown"')
+    branch = template[start:]
+    end = branch.index("\n    });\n")
+    branch = branch[: end + len("\n    });\n")]
+
+    # Reacts only to Enter and Space...
+    assert '"Enter"' in branch
+    assert '" "' in branch
+
+    # ...calls preventDefault() before doing anything else...
+    assert "preventDefault()" in branch
+    prevent_start = branch.index("preventDefault()")
+    click_start = branch.index(".click()")
+    assert prevent_start < click_start
+
+    # ...and triggers activation via a synthetic click, not a second,
+    # duplicated postForm(...) call.
+    assert ".click()" in branch
+    assert "postForm(" not in branch
+
+
 def test_feedback_stores_edited_content_and_notes_edited(client):
     from submissions.models import Feedback
 
