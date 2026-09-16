@@ -41,6 +41,8 @@ def test_pending_status(client):
     data = resp.json()
     assert data["push_status"] == "pending"
     assert "in progress" in data["message"]
+    # UX fix (#155 follow-up): pending banner warns the tab will close.
+    assert "close automatically" in data["message"].lower()
 
 
 def test_done_status_reports_pushed_count(client):
@@ -51,6 +53,8 @@ def test_done_status_reports_pushed_count(client):
     data = resp.json()
     assert data["push_status"] == "done"
     assert "3 card(s) pushed to deck 'My Deck'" in data["message"]
+    # UX fix (#155 follow-up): done banner warns the tab will close.
+    assert "close automatically" in data["message"].lower()
 
 
 def test_unreachable_status(client):
@@ -98,6 +102,10 @@ def test_pending_page_exposes_poll_hook_and_close_script(client):
     assert "window.close" in content
     assert "POLL_INTERVAL_MS = 1000" in content
     assert "CLOSE_DELAY_MS = 3000" in content
+    # UX fix (#155 follow-up): live region + in-UI auto-close warning.
+    assert 'id="push-outcome"' in content
+    assert 'aria-live="polite"' in content
+    assert "close automatically" in content.lower()
 
 
 def test_done_page_exposes_close_hook(client):
@@ -107,6 +115,19 @@ def test_done_page_exposes_close_hook(client):
     assert 'data-push-status="done"' in content
     assert f'data-push-status-url="{_status_url(batch)}"' in content
     assert "window.close" in content
+    # UX fix (#155 follow-up): live region + in-UI auto-close warning.
+    assert 'aria-live="polite"' in content
+    assert "close automatically" in content.lower()
+
+
+def test_failure_banner_never_warns_about_autoclose(client):
+    """Unreachable/failed never close, so they must not promise auto-close."""
+    for record in (Batch.record_push_unreachable, Batch.record_push_failed):
+        batch = Batch.objects.create()
+        record(batch)
+        content = _review_page(client, batch).content.decode()
+        assert 'aria-live="polite"' in content
+        assert "close automatically" not in content.lower()
 
 
 def test_failed_page_never_closes(client):

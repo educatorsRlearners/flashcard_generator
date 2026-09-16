@@ -7,6 +7,7 @@
 
     {% if batch.push_status %}
         <p class="push-outcome push-outcome--{{ batch.push_status }}" id="push-outcome"
+           aria-live="polite"
            data-push-status="{{ batch.push_status }}"
            data-push-status-url="{% url 'submissions:card_review_push_status' batch.pk %}">
             <strong>Anki push:</strong> {{ batch.push_outcome_message }}
