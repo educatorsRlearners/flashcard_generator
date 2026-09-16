@@ -95,6 +95,8 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # image - batch generation never aborts.
 DRAW_THINGS_URL = os.environ.get("DRAW_THINGS_URL", "http://127.0.0.1:7860")
 DRAW_THINGS_ENABLED = os.environ.get("DRAW_THINGS_ENABLED", "1") == "1"
+DEDUP_ENABLED = os.environ.get("DEDUP_ENABLED", "1") == "1"  # issue #149: master switch for local semantic dedup
+
 
 # --- Background batch processing (Huey, issue #8) -----------------------
 # One task per submitted URL runs the extraction path in a background
