@@ -362,13 +362,18 @@
             });
         }
         else if (role === "edit-revert") {
+            btn.disabled = true;
             postForm(wrap.getAttribute("data-revert-url"), {}).then(function (res) {
+                btn.disabled = false;
                 if (res.ok) {
                     wrap.hidden = true;
                     applyEdit(li, res.data);
                 } else {
                     showError(wrap.querySelector('[data-role="edit-error"]'), res.data.error);
                 }
+            }).catch(function () {
+                btn.disabled = false;
+                showError(wrap.querySelector('[data-role="edit-error"]'), "Something went wrong. Please try again.");
             });
         }
     });
@@ -422,9 +427,11 @@
         if (role === "image-choose") {
             var box = li.querySelector('[data-role="image-candidates"]');
             if (!box.hidden && box.childNodes.length) { box.hidden = true; return; }
+            btn.disabled = true;
             fetch(ctl.getAttribute("data-candidates-url"), {
                 headers: { "X-Requested-With": "XMLHttpRequest" },
             }).then(function (r) { return r.json(); }).then(function (data) {
+                btn.disabled = false;
                 box.textContent = "";
                 if (!data.candidates || !data.candidates.length) {
                     imageMessage(li, data.draw_things_enabled
@@ -445,6 +452,10 @@
                     box.appendChild(thumb);
                 });
                 box.hidden = false;
+            }).catch(function () {
+                btn.disabled = false;
+                box.hidden = true;
+                imageMessage(li, "Something went wrong. Please try again.");
             });
         }
         else if (role === "image-regen") {
@@ -459,9 +470,14 @@
             }).catch(function () { btn.disabled = false; btn.textContent = orig; });
         }
         else if (role === "image-remove") {
+            btn.disabled = true;
             postForm(ctl.getAttribute("data-remove-url"), {}).then(function (res) {
+                btn.disabled = false;
                 if (res.ok) { imageMessage(li, ""); applyImage(li, res.data); }
                 else { imageMessage(li, res.data.error); }
+            }).catch(function () {
+                btn.disabled = false;
+                imageMessage(li, "Something went wrong. Please try again.");
             });
         }
         else if (role === "image-revert") {

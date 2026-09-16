@@ -817,6 +817,99 @@ def test_edit_save_js_catch_does_not_navigate():
     assert "btn.disabled = false" in catch_block
 
 
+def test_edit_revert_js_catch_does_not_navigate():
+    """#145: a failed edit-revert request must re-enable the button and
+    surface the failure inline via the existing showError()/edit-error
+    pattern, never navigating."""
+    from pathlib import Path
+
+    from django.conf import settings
+
+    template = Path(
+        settings.BASE_DIR,
+        "submissions/templates/submissions/card_review.html",
+    ).read_text()
+
+    start = template.index('role === "edit-revert"')
+    end = template.index("/* --- image replacement", start)
+    branch = template[start:end]
+
+    assert "submit(" not in branch
+
+    catch_start = branch.index(".catch(")
+    catch_block = branch[catch_start:]
+    assert "showError" in catch_block
+    assert "edit-error" in catch_block
+    assert "btn.disabled = false" in catch_block
+    # Button is disabled before the request and re-enabled on settle.
+    assert "btn.disabled = true" in branch
+    # Success path unchanged: hide wrap + apply reverted text.
+    assert "applyEdit" in branch
+
+
+def test_image_choose_js_catch_does_not_navigate():
+    """#145: a failed candidates fetch must re-enable the button and
+    surface the failure inline via the existing
+    imageMessage()/image-message pattern, never navigating."""
+    from pathlib import Path
+
+    from django.conf import settings
+
+    template = Path(
+        settings.BASE_DIR,
+        "submissions/templates/submissions/card_review.html",
+    ).read_text()
+
+    start = template.index('role === "image-choose"')
+    end = template.index('role === "image-regen"', start)
+    branch = template[start:end]
+
+    assert "submit(" not in branch
+
+    catch_start = branch.index(".catch(")
+    catch_block = branch[catch_start:]
+    assert "imageMessage" in catch_block
+    # The branch surfaces failures through the imageMessage() helper,
+    # which owns the [data-role="image-message"] lookup (defined once
+    # alongside applyImage); the per-card element itself still exists.
+    assert "imageMessage" in branch
+    assert 'data-role="image-message"' in template
+    assert "btn.disabled = false" in catch_block
+    assert "btn.disabled = true" in branch
+
+
+def test_image_remove_js_catch_does_not_navigate():
+    """#145: a failed image-remove request must re-enable the button and
+    surface the failure inline via the existing
+    imageMessage()/image-message pattern, never navigating."""
+    from pathlib import Path
+
+    from django.conf import settings
+
+    template = Path(
+        settings.BASE_DIR,
+        "submissions/templates/submissions/card_review.html",
+    ).read_text()
+
+    start = template.index('role === "image-remove"')
+    end = template.index('role === "image-revert"', start)
+    branch = template[start:end]
+
+    assert "submit(" not in branch
+
+    catch_start = branch.index(".catch(")
+    catch_block = branch[catch_start:]
+    assert "imageMessage" in catch_block
+    # Same helper indirection as image-choose: the branch calls
+    # imageMessage(), which owns the [data-role="image-message"] lookup.
+    assert "imageMessage" in branch
+    assert 'data-role="image-message"' in template
+    assert "btn.disabled = false" in catch_block
+    assert "btn.disabled = true" in branch
+    # Success path unchanged: clear message + update image.
+    assert "applyImage" in branch
+
+
 def test_feedback_stores_edited_content_and_notes_edited(client):
     from submissions.models import Feedback
 
