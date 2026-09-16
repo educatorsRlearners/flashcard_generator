@@ -264,8 +264,8 @@ failure.
 
 ## See also
 
-- Root `README.md`'s ["Browser extension setup (native messaging
-  host)"](../README.md#browser-extension-setup-native-messaging-host)
+- Root `README.md`'s ["First time: one-time install (do
+  once)"](../README.md#first-time-one-time-install-do-once)
   section — the canonical prose for the one-time setup steps summarized
   above.
 - `extension/README.md` — the `manifest.json` `"key"` placeholder note.
