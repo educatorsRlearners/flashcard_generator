@@ -244,6 +244,22 @@ still shows as rejected after the reload — persisted exactly as they are
 for the pre-existing URL-submission review flow. This confirms the
 extension path reuses the review UI without regressing it.
 
+### F. Review tab auto-closes ~3s after a successful push (#155)
+
+In the opened review tab from case B: choose a deck and click
+**Finish review**.
+
+**Pass**: the review page first shows the pending state ("Anki push in
+progress…"), then the pushed-count outcome (e.g. "N card(s) pushed to
+deck 'X'") — and ~3s after that outcome appears, the tab closes itself
+(via `window.close()`, permitted because the tab was opened script-side
+via `chrome.tabs.create`). If the push fails instead (Anki not running),
+the tab never closes: the failure banner and the Finish retry path stay
+visible. Note: if you opened the review URL by manual navigation rather
+than via the extension, the browser may block `window.close()` — in that
+case the done banner simply stays visible, which is expected and not a
+failure.
+
 ---
 
 ## See also

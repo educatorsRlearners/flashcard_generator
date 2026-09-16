@@ -48,6 +48,11 @@ urlpatterns = [
         name="card_review_image_revert",
     ),
     path(
+        "batch/<int:pk>/review/push-status/",
+        views.card_review_push_status,
+        name="card_review_push_status",
+    ),
+    path(
         "batch/<int:pk>/review/finish/",
         views.card_review_finish,
         name="card_review_finish",

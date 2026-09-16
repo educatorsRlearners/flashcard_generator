@@ -789,6 +789,24 @@ def card_review_image_revert(request, batch_pk, card_pk):
     return redirect("submissions:card_review", pk=batch_pk)
 
 
+def card_review_push_status(request, pk):
+    """Lightweight push-status read for the review tab's auto-close poll (#155).
+
+    Returns the batch's current ``push_status`` plus the same human-readable
+    outcome text the review page renders, so the page's inline script can
+    refresh the banner in place and close the tab ~3s after ``done`` without
+    a full-page reload. Read-only: nothing is enqueued or mutated here, and
+    ``card_review_finish`` / the push task logic are untouched.
+    """
+    batch = get_object_or_404(Batch, pk=pk)
+    return JsonResponse(
+        {
+            "push_status": batch.push_status,
+            "message": batch.push_outcome_message,
+        }
+    )
+
+
 @require_POST
 def card_review_finish(request, pk):
     try:

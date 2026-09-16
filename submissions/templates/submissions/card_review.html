@@ -7,7 +7,8 @@
 
     {% if batch.push_status %}
         <p class="push-outcome push-outcome--{{ batch.push_status }}" id="push-outcome"
-           data-push-status="{{ batch.push_status }}">
+           data-push-status="{{ batch.push_status }}"
+           data-push-status-url="{% url 'submissions:card_review_push_status' batch.pk %}">
             <strong>Anki push:</strong> {{ batch.push_outcome_message }}
         </p>
     {% endif %}
@@ -504,6 +505,95 @@
                 finish.appendChild(h);
             }
         });
+    }
+})();
+</script>
+<script>
+(function () {
+    /* --- push auto-close (#155): poll push status, close tab ~3s after done --- */
+    var el = document.getElementById("push-outcome");
+    if (!el) { return; }
+    var status = el.getAttribute("data-push-status") || "";
+    /* Only pending (in flight) and done (already finished on load) need a
+       timer. Blank (Finish never clicked), unreachable and failed never
+       poll and never close. */
+    if (status !== "pending" && status !== "done") { return; }
+    var url = el.getAttribute("data-push-status-url");
+    if (!url) { return; }
+
+    var POLL_INTERVAL_MS = 1000; /* matches extension/popup.js */
+    var CLOSE_DELAY_MS = 3000;
+    var finished = false; /* terminal state reached or page unloading */
+    var pollTimer = null;
+    var closeTimer = null;
+
+    function stopPolling() {
+        if (pollTimer) { window.clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    function cancelAll() {
+        finished = true;
+        stopPolling();
+        if (closeTimer) { window.clearTimeout(closeTimer); closeTimer = null; }
+    }
+
+    function render(nextStatus, message) {
+        el.setAttribute("data-push-status", nextStatus);
+        el.className = "push-outcome push-outcome--" + nextStatus;
+        el.textContent = "";
+        var label = document.createElement("strong");
+        label.textContent = "Anki push:";
+        el.appendChild(label);
+        el.appendChild(document.createTextNode(" " + message));
+    }
+
+    function scheduleClose() {
+        stopPolling();
+        if (finished) { return; }
+        closeTimer = window.setTimeout(function () {
+            if (finished) { return; }
+            finished = true;
+            /* No-op when the browser blocks it (e.g. tab opened by manual
+               navigation): the done banner simply stays visible. */
+            try { window.close(); } catch (e) { /* keep banner */ }
+        }, CLOSE_DELAY_MS);
+    }
+
+    function onStatus(nextStatus, message) {
+        if (finished) { return; }
+        if (nextStatus === "done") {
+            render("done", message);
+            scheduleClose();
+        } else if (nextStatus === "unreachable" || nextStatus === "failed") {
+            render(nextStatus, message);
+            finished = true;
+            stopPolling();
+        }
+        /* pending: keep polling. Anything else: ignore, keep polling. */
+    }
+
+    function poll() {
+        if (finished) { return; }
+        /* Background status read: low priority so it never contends with
+           user-initiated requests (per modern-web-guidance
+           deprioritize-background-fetches). */
+        fetch(url, {
+            headers: { "X-Requested-With": "XMLHttpRequest" },
+            priority: "low",
+        }).then(function (r) { return r.json(); }).then(function (data) {
+            if (finished || !data) { return; }
+            onStatus(data.push_status || "", data.message || "");
+        }).catch(function () { /* transient error: keep polling */ });
+    }
+
+    /* Stop cleanly on navigate-away/reload: no errors, no close after unload. */
+    window.addEventListener("pagehide", cancelAll);
+    window.addEventListener("beforeunload", cancelAll);
+
+    if (status === "done") {
+        scheduleClose();
+    } else {
+        pollTimer = window.setInterval(poll, POLL_INTERVAL_MS);
     }
 })();
 </script>
