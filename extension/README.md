@@ -1,24 +1,17 @@
 # Flashcard Generator extension
 
-This directory is an unpacked Chrome/Brave (MV3) extension. See the root
-`README.md`'s [Getting started](../README.md#getting-started) section (and
-[Extension internals](../README.md#extension-internals) for reference
-detail) for the full setup sequence.
+This directory is an unpacked Chrome/Brave (MV3) extension. For setup, follow the root
+`README.md`'s [First time: one-time install (do once)](../README.md#first-time-one-time-install-do-once)
+section (and [Extension internals](../README.md#extension-internals) for reference
+detail).
 
 ## `manifest.json`'s `"key"` field
 
 `manifest.json`'s `"key"` field currently contains the placeholder value
 `"REPLACE_WITH_YOUR_OWN_OPENSSL_GENERATED_KEY"`. **This does not work as
-committed.** Chrome/Brave will refuse to derive a stable extension ID from
-it (or may refuse to load the extension at all). Before loading this
-extension, follow the root `README.md`'s [Getting started](../README.md#getting-started)
-section, step 1:
-```
-uv run python manage.py generate_signing_key
-```
-This generates your own `openssl` signing keypair and replaces this
-placeholder with that keypair's base64 public key (pass `--force` to
-regenerate an already-real key). Do this first - the rest of that
-section's steps (loading the extension, running `install_native_host`)
-depend on the extension having a stable ID, which only a real pinned key
-provides.
+committed** — Chrome/Brave will refuse to derive a stable extension ID from
+it (or may refuse to load the extension at all). See the root `README.md`'s
+[First time: one-time install (do once)](../README.md#first-time-one-time-install-do-once)
+for the setup step that replaces it, then load the extension unpacked
+(`brave://extensions` → enable Developer mode → "Load unpacked" → select
+the `extension/` directory).
