@@ -134,23 +134,20 @@ class Batch(models.Model):
         """Human-readable push-outcome text for the review page, or ``""``
         when Finish has never been clicked (nothing to show)."""
         if self.push_status == self.PushStatus.PENDING:
-            return (
-                "Anki push in progress… "
-                "This tab will close automatically once the push completes."
-            )
+            return "Anki push in progress…"
         if self.push_status == self.PushStatus.UNREACHABLE:
             return (
                 "Anki push failed: Anki/AnkiConnect was unreachable. "
                 "Accepted cards were not pushed. No action needed — we're "
-                "quietly retrying in the background, and this tab will "
-                "update and close on its own if it succeeds."
+                "quietly retrying in the background, and this banner will "
+                "update on its own if it succeeds."
             )
         if self.push_status == self.PushStatus.FAILED:
             return (
                 "Anki push failed: an unexpected error occurred. "
                 "Accepted cards may not have been pushed. No action needed — "
-                "we're quietly retrying in the background, and this tab will "
-                "update and close on its own if it succeeds."
+                "we're quietly retrying in the background, and this banner "
+                "will update on its own if it succeeds."
             )
         if self.push_status == self.PushStatus.DONE:
             pushed = self.push_pushed_count
@@ -173,7 +170,7 @@ class Batch(models.Model):
                 base = f"{skipped} card(s) already synced, nothing new to push."
             else:
                 base = "No accepted cards to push."
-            return f"{base} This tab will close automatically."
+            return f"{base} It is now safe to close this tab."
         return ""
 
     class Meta:

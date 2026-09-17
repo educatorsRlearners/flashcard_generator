@@ -554,7 +554,11 @@
 </script>
 <script>
 (function () {
-    /* --- push auto-close (#155): poll push status, close tab ~3s after done --- */
+    /* --- push status live-update (#168): poll push status and refresh the
+       banner in place. The tab is never closed automatically -- #168
+       removed the close-on-done logic that used to call the browser's
+       tab-close API, which is silently blocked in most real browsing
+       contexts, so the promised close never happened. --- */
     var el = document.getElementById("push-outcome");
     if (!el) { return; }
     var status = el.getAttribute("data-push-status") || "";
@@ -570,11 +574,9 @@
 
     var POLL_INTERVAL_MS = 1000; /* matches extension/popup.js */
     var SLOW_POLL_INTERVAL_MS = 30000; /* unreachable/failed: #58 retries every 10 min */
-    var CLOSE_DELAY_MS = 3000;
     var finished = false; /* terminal state reached or page unloading */
     var pollTimer = null;
     var currentIntervalMs = null;
-    var closeTimer = null;
 
     function stopPolling() {
         if (pollTimer) { window.clearInterval(pollTimer); pollTimer = null; }
@@ -591,7 +593,6 @@
     function cancelAll() {
         finished = true;
         stopPolling();
-        if (closeTimer) { window.clearTimeout(closeTimer); closeTimer = null; }
     }
 
     function render(nextStatus, message) {
@@ -604,24 +605,13 @@
         el.appendChild(document.createTextNode(" " + message));
     }
 
-    function scheduleClose() {
-        stopPolling();
-        if (finished) { return; }
-        closeTimer = window.setTimeout(function () {
-            if (finished) { return; }
-            finished = true;
-            /* No-op when the browser blocks it (e.g. tab opened by manual
-               navigation): the done banner simply stays visible. */
-            try { window.close(); } catch (e) { /* keep banner */ }
-        }, CLOSE_DELAY_MS);
-    }
-
     function onStatus(nextStatus, message) {
         if (finished) { return; }
         var currentStatus = el.getAttribute("data-push-status") || "";
         if (nextStatus === "done") {
             render("done", message);
-            scheduleClose();
+            finished = true;
+            stopPolling();
         } else if (nextStatus === "unreachable" || nextStatus === "failed") {
             /* Only re-render on an actual status change so repeated slow
                polls that return the same failure status never flicker. */
@@ -652,7 +642,8 @@
     window.addEventListener("beforeunload", cancelAll);
 
     if (status === "done") {
-        scheduleClose();
+        finished = true;
+        stopPolling();
     } else if (status === "unreachable" || status === "failed") {
         startPolling(SLOW_POLL_INTERVAL_MS);
     } else {

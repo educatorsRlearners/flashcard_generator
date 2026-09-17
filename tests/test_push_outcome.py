@@ -88,6 +88,8 @@ def test_newly_pushed_count_outcome(client, monkeypatch):
     content = page.content.decode()
     assert "2 card(s) pushed to deck &#x27;Flashcard Generator&#x27;." in content \
         or "2 card(s) pushed to deck 'Flashcard Generator'." in content
+    assert "it is now safe to close this tab" in content.lower()
+    assert "close automatically" not in content.lower()
 
 
 # --- unreachable ------------------------------------------------------
@@ -114,6 +116,8 @@ def test_unreachable_outcome_shown(client, monkeypatch):
     content = page.content.decode()
     assert "unreachable" in content.lower()
     assert "push-outcome--unreachable" in content
+    assert "no action needed" in content.lower()
+    assert "close on its own" not in content.lower()
 
 
 # --- partial failure ----------------------------------------------------
@@ -359,6 +363,8 @@ def test_failed_banner_shown_and_persists(client, monkeypatch):
     assert "push-outcome--failed" in first
     assert "failed" in first.lower()
     assert "in progress" not in first.lower()
+    assert "no action needed" in first.lower()
+    assert "close on its own" not in first.lower()
 
     second = _review_page(client, batch).content.decode()
     third = _review_page(client, batch).content.decode()
