@@ -73,17 +73,13 @@ class CardAdmin(admin.ModelAdmin):
         "source_term",
         "submitted_url",
         "batch",
-        "dedup_status",
-        "duplicate_of",
-        "similarity_score",
         "image_source",
         "created_at",
     )
-    list_filter = ("note_type", "batch", "dedup_status", "review_status", "image_source")
+    list_filter = ("note_type", "batch", "review_status", "image_source")
     search_fields = ("source_term", "front", "back", "submitted_url__url")
-    readonly_fields = ("created_at", "similarity_score", "embedding", "image_source")
-    list_select_related = ("submitted_url", "batch", "duplicate_of")
-    raw_id_fields = ("duplicate_of",)
+    readonly_fields = ("created_at", "image_source")
+    list_select_related = ("submitted_url", "batch")
 
 
 @admin.register(LLMCall)

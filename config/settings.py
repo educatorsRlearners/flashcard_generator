@@ -260,13 +260,6 @@ FEWSHOT_MIN_FEEDBACK_CHARS = int(os.environ.get("FEWSHOT_MIN_FEEDBACK_CHARS", "2
 FEWSHOT_CHARS_PER_TOKEN = int(os.environ.get("FEWSHOT_CHARS_PER_TOKEN", "4"))
 FEWSHOT_EMBED_FN = os.environ.get("FEWSHOT_EMBED_FN", "")
 
-# --- Local semantic dedup master switch (submissions/post_generation.py, issue #78)
-# DEDUP_ENABLED: master switch (default on). Set DEDUP_ENABLED=0 to skip the
-# local-dedup embedding call while still marking dedup_ready. Parsed with the
-# same shared helper as FEWSHOT_ENABLED above (issue #149), so "0"/"false"/
-# "no"/"off"/"" (case-insensitive, whitespace tolerated) disable and unset
-# (or "1"/"true") leaves dedup on.
-DEDUP_ENABLED = parse_bool_setting(os.environ.get("DEDUP_ENABLED", "1"))
 
 # --- Image OCR (submissions/extraction.py, issue #19) ----------------------
 # URLs that *are* an image (PNG/JPEG/WebP/TIFF) or an image-only (scanned)

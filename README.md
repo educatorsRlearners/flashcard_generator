@@ -47,7 +47,6 @@
 - [Background processing (Huey)](#background-processing-huey)
 - [Extract content](#extract-content)
 - [Generate cards](#generate-cards)
-- [Deduplicate cards](#deduplicate-cards)
 - [Card images](#card-images)
 - [Review feedback (durable) + few-shot injection](#review-feedback-durable--few-shot-injection)
 - [Review grid](#review-grid)
@@ -67,9 +66,9 @@ front/back pair, find an image, load it into your spaced-repetition tool —
 one at a time, for every source. This app automates that end to end: a
 Brave/Chrome browser extension is the front end — click its popup on a
 page you're reading, and a Django backend (reached through a native
-messaging host, never a browser tab) extracts the text, generates
-flashcards, dedupes and images them, and lets you accept, reject, or edit
-every card in a review grid before pushing the accepted ones into Anki.
+messaging host, never a browser tab) extracts the text, generates and
+images the flashcards, and lets you accept, reject, or edit every card in
+a review grid before pushing the accepted ones into Anki.
 Nothing reaches Anki without going through review first. See
 [Getting started](#getting-started) below to install and try it.
 
@@ -175,8 +174,8 @@ once.
    run` is only for contributors who want the backend in their own terminal
    (logs, backend work); see [Run](#run).
 
-What happens between Generate and Finish (extract → generate → dedupe →
-image → review → push) is summarized in [How it works](#how-it-works);
+What happens between Generate and Finish (extract → generate → image →
+review → push) is summarized in [How it works](#how-it-works);
 detail lives in the feature sections below.
 
 ### Setup detail for power users (optional, skip on first run)
@@ -345,7 +344,7 @@ cp .env.example .env
 ```
 
 Which LLM provider and model are used, and every other per-feature setting
-(dedup threshold, image fallback, Anki deck name, few-shot budget, and so
+(image fallback, Anki deck name, few-shot budget, and so
 on), is documented alongside the feature it configures below — see
 [LLM client](#llm-client) for the provider/model settings table, or jump to
 any section's own settings table.
@@ -397,16 +396,10 @@ Then load the extension unpacked: `brave://extensions` (or
 the `extension/` directory. The full one-time flow (signing key, native
 host, extension ID) is [Getting started](#getting-started) above.
 
-Optional heavier pieces (sentence-transformer weights for semantic dedup,
-Tesseract for OCR, Draw Things for fallback images) are not required for
-the basic extension flow — see the feature sections below if one of them
-asks for it. When needed:
+Optional heavier pieces (Tesseract for OCR, Draw Things for fallback
+images) are not required for the basic extension flow — see the feature
+sections below if one of them asks for it.
 
-```
-uv run python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
-```
-
-(one-time weights download for semantic dedup; tests stub the encoder).
 Per-card images use `pillow` + `httpx` (installed by `uv sync`); fallback
 generation additionally assumes a running **Draw Things** with its HTTP API
 server enabled (Draw Things → Settings → API Server). If Draw Things is
@@ -624,8 +617,7 @@ prompt-size limits) is a safety cap only.
 
 Cards are saved in one transaction (`bulk_create`) - a mid-run LLM failure
 never leaves half-written cards. `generation.generate_for()` persists the
-cards first, then delegates all post-generation work (local dedup,
-live-deck Anki dedup, image attachment) to
+cards first, then delegates post-generation work (image attachment) to
 `submissions/post_generation.py:run_post_generation` (each stage
 best-effort with its own try/except, so one failing stage never aborts the
 others). Every card is tagged with the source URL,
@@ -673,50 +665,6 @@ Behaviour on trouble:
 `Card` rows are visible in the Django admin (filterable by note type and
 batch, and inline on the `SubmittedURL` page).
 
-## Deduplicate cards
-
-Like the two sections above, the commands here are contributor/diagnostic
-tools — in the normal extension flow dedup runs automatically as a
-post-generation stage (`submissions/post_generation.py`, after the cards
-are persisted). After generation, each new `Card` is embedded locally (no API calls) and
-compared by cosine similarity against (a) cards already stored as `unique`
-from previous runs and (b) the other new cards in the same run. A card at
-or above `DEDUP_SIMILARITY_THRESHOLD` (in `submissions/dedup.py`, the single
-place to tune it) to another card is marked `duplicate`, with `duplicate_of`
-pointing at the card it matched, and is hidden from the default review grid
-(`Card.objects.for_review()`). Duplicates are never deleted. Within one run
-the lowest-pk card is kept `unique`. With nothing to compare against, every
-card is `unique` and its embedding is recorded.
-
-The post-generation pipeline (`DEFAULT_STAGES` in
-`submissions/post_generation.py`: local semantic dedup, then live-deck Anki
-dedup against the batch's stored deck, then image attachment) runs
-automatically as the final step of `generate_cards`. Local dedup can be
-skipped with `DEDUP_ENABLED=0` (still marks `dedup_ready` so the status
-endpoint's `terminal` gating behaves as before); the live-deck Anki stage
-compares against the notes currently in the batch's stored deck (never
-`ANKI_DECK_NAME`) and degrades to local-only with a warning when no deck is
-chosen or Anki is unreachable. A custom `stages` list replaces the default
-pipeline entirely (injection seam, no edit to `generation.py`).
-
-Local dedup is also a standalone command:
-
-```
-uv run python manage.py dedup_cards --batch 1     # every card in a batch
-uv run python manage.py dedup_cards --id 42       # one card
-uv run python manage.py dedup_cards --all         # every card
-uv run python manage.py dedup_cards --all --force # ignore cached embeddings
-uv run python manage.py dedup_cards --all --include-duplicates  # also re-check duplicates
-```
-
-It prints one line per card (`unique` / `duplicate of card N`) and reuses
-each card's cached embedding unless `--force` is given. The embedding model
-(`all-MiniLM-L6-v2`) is loaded once per run; if its weights are missing the
-command exits non-zero and tells you to run the one-time download above
-(post-generation dedup instead logs a warning and is skipped). `dedup_status`,
-`duplicate_of` and `similarity_score` are shown and filterable in the Django
-admin.
-
 ## Card images
 
 As a post-generation stage (`image_attachment_stage` in
@@ -727,7 +675,7 @@ image (`submissions/images.py`):
    `extension_image_urls` stored at submit time (live-DOM article images —
    the only candidates on authenticated / JS-rendered pages) come first,
    in received order, followed by the server-refetched candidates below.
-   Deduplicated across both lists, capped at `MAX_IMAGE_CANDIDATES` (25)
+   Duplicate URLs are removed across both lists, capped at `MAX_IMAGE_CANDIDATES` (25)
    total. Both sources pass the same chrome-marker / usability filter.
 2. **Source page refetch.** The card's source page is re-fetched (reusing
    the extraction fetch stack — politeness, size cap, retries) and its
@@ -1045,9 +993,8 @@ uv run python manage.py llm_usage --limit 10
 | Module | Responsibility |
 | --- | --- |
 | `submissions/generation.py` | Turns extracted text into basic/cloze cards via the LLM client, applies safety caps and the verbatim-copy check, prepends few-shot examples |
-| `submissions/post_generation.py` | Post-generation pipeline after cards are persisted (local semantic dedup, live-deck Anki dedup, image attachment; `DEDUP_ENABLED` / `dedup_ready` bookkeeping) |
+| `submissions/post_generation.py` | Post-generation pipeline after cards are persisted (image attachment) |
 | `submissions/feedback.py` | Durable `Feedback` snapshots plus relevance-ranked, token-budgeted few-shot selection/rendering |
-| `submissions/dedup.py` | Embeds cards locally and marks near-duplicates against prior `unique` cards and same-run siblings |
 | `submissions/images.py` | Picks or generates each card's single image (extension/source-page candidates, relevance ranking, Draw Things fallback) |
 | `submissions/llm.py` | Provider-agnostic LLM client (`generate()`), `PROVIDER_CATALOG` source of truth, typed errors, retry/backoff, per-call usage recording |
 | `submissions/anki.py` | AnkiConnect HTTP transport (`AnkiConnectClient`) and the per-batch-deck push orchestration (`push_batch_accepted_cards` / `push_all_deck_batches`) |

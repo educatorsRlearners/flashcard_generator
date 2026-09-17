@@ -2,12 +2,10 @@
 
 Covers the backend half: ``Batch.deck_name`` storage, the shared
 ``submissions.anki`` deck validator/normalizer, per-deck push grouping
-(never falling back to ``ANKI_DECK_NAME``), the background task's optional
-batch id, the ``push_to_anki`` CLI grouping, and live-deck dedup following
-the batch's stored deck.
+(never falling back to ``ANKI_DECK_NAME``), and the background task's
+optional batch id / the ``push_to_anki`` CLI grouping.
 """
 
-import numpy as _np
 import pytest
 from django.contrib import admin
 from django.core.management import call_command
@@ -23,13 +21,6 @@ from submissions.anki import (
 from submissions.models import Batch, Card, SubmittedURL
 
 pytestmark = pytest.mark.django_db
-
-
-@pytest.fixture(autouse=True)
-def _clear_deck_cache():
-    anki.clear_deck_notes_cache()
-    yield
-    anki.clear_deck_notes_cache()
 
 
 # --- fakes ------------------------------------------------------------
@@ -61,28 +52,6 @@ class FakeAnki:
 
     def notes_added(self):
         return [p["note"] for (a, p) in self.calls if a == "addNote"]
-
-
-class DeckFakeAnki(FakeAnki):
-    """FakeAnki plus the #29 read path (findNotes + notesInfo)."""
-
-    def __init__(self, notes=(), **kw):
-        super().__init__(**kw)
-        self._notes = list(notes)
-
-    def invoke(self, action, **params):
-        if action == "findNotes":
-            self.calls.append((action, params))
-            if self.unreachable:
-                raise anki.AnkiUnreachableError("unreachable")
-            return [n["noteId"] for n in self._notes]
-        if action == "notesInfo":
-            self.calls.append((action, params))
-            if self.unreachable:
-                raise anki.AnkiUnreachableError("unreachable")
-            wanted = set(params["notes"])
-            return [n for n in self._notes if n["noteId"] in wanted]
-        return super().invoke(action, **params)
 
 
 _counter = 0
@@ -177,15 +146,6 @@ def test_resolve_deck_choice_typed_wins_over_dropdown():
     assert resolve_deck_choice() == ""
 
 
-# --- deck query escaping ----------------------------------------------
-
-
-def test_findnotes_query_escapes_embedded_quote():
-    fake = DeckFakeAnki()
-    notes, from_cache = anki.fetch_deck_note_texts(fake, 'Pre "quoted" deck')
-    assert notes == [] and from_cache is False
-    (action, params), = [c for c in fake.calls if c[0] == "findNotes"]
-    assert params["query"] == 'deck:"Pre \\"quoted\\" deck"'
 
 
 # --- per-deck push ----------------------------------------------------
@@ -351,132 +311,3 @@ def test_cli_skipped_zero_line_when_all_decked(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "added 1" in out
     assert "skipped 0 card(s) with no deck chosen" in out
-
-
-# --- live-deck dedup follows the stored deck --------------------------
-
-
-class _LenModel:
-    """Deterministic encoder: identical texts -> cosine exactly 1.0."""
-
-    def encode(self, texts):
-        return _np.asarray([[float(len(t)), 1.0] for t in texts], dtype=float)
-
-
-def _deck_note(note_id, text):
-    return {
-        "noteId": note_id,
-        "fields": {"Front": {"value": text}, "Back": {"value": ""}},
-    }
-
-
-def test_live_dedup_infers_batch_deck(monkeypatch):
-    from submissions import dedup as _dedup
-
-    monkeypatch.setattr(_dedup, "load_embedding_model", lambda: _LenModel())
-    batch = Batch.objects.create(deck_name="Infer Deck")
-    card = _mkcard(batch, front="Q?", back="A.", term="T")
-    fake = DeckFakeAnki(notes=[_deck_note(5, "Q? A. T")])
-
-    result = anki.dedup_cards_against_anki([card], client=fake)
-
-    (action, params), = [c for c in fake.calls if c[0] == "findNotes"]
-    assert params["query"] == 'deck:"Infer Deck"'
-    card.refresh_from_db()
-    assert result.duplicates == 1
-    assert card.dedup_status == Card.DedupStatus.DUPLICATE
-
-
-def test_live_dedup_no_deck_skips_with_warning_local_only(monkeypatch):
-    from submissions import dedup as _dedup
-
-    monkeypatch.setattr(_dedup, "load_embedding_model", lambda: _LenModel())
-    batch = Batch.objects.create()
-    card = _mkcard(batch, front="Q?", back="A.", term="T")
-    fake = DeckFakeAnki(notes=[_deck_note(5, "Q? A. T")])
-
-    result = anki.dedup_cards_against_anki([card], client=fake)
-
-    assert result.warning  # local-only fallback surfaced
-    assert fake.calls == []  # Anki never contacted
-    card.refresh_from_db()
-    assert card.dedup_status == Card.DedupStatus.UNIQUE
-
-
-def test_generation_passes_batch_stored_deck(monkeypatch):
-    from submissions import generation, llm as _llm
-
-    seen = {}
-
-    def fake_fetch(client, deck_name, *, use_cache=True):
-        seen["deck"] = deck_name
-        return [], False
-
-    monkeypatch.setattr(anki, "fetch_deck_note_texts", fake_fetch)
-
-    def fake_llm(*, system, prompt, response_format=None, max_tokens=None):
-        payload = {
-            "cards": [
-                {
-                    "note_type": "basic",
-                    "front": "What is chlorophyll?",
-                    "back": "The green pigment.",
-                    "source_term": "chlorophyll",
-                    "topic": "",
-                }
-            ]
-        }
-        return _llm.LLMResult(text="{}", parsed=payload)
-
-    monkeypatch.setattr(generation.llm, "generate", fake_llm)
-
-    batch = Batch.objects.create(deck_name="Gen Deck")
-    su = SubmittedURL.objects.create(
-        url="https://example.com/gen-deck",
-        batch=batch,
-        status=SubmittedURL.Status.OK,
-        extracted_text="Photosynthesis and chlorophyll. " * 30,
-    )
-    result = generation.generate_for(su)
-
-    assert result.outcome == "created"
-    assert seen["deck"] == "Gen Deck"
-
-
-def test_generation_without_deck_skips_live_dedup_with_warning(monkeypatch):
-    from submissions import generation, llm as _llm
-
-    called = []
-
-    def fake_fetch(client, deck_name, *, use_cache=True):
-        called.append(deck_name)
-        return [], False
-
-    monkeypatch.setattr(anki, "fetch_deck_note_texts", fake_fetch)
-
-    def fake_llm(*, system, prompt, response_format=None, max_tokens=None):
-        payload = {
-            "cards": [
-                {
-                    "note_type": "basic",
-                    "front": "What is chlorophyll?",
-                    "back": "The green pigment.",
-                    "source_term": "chlorophyll",
-                    "topic": "",
-                }
-            ]
-        }
-        return _llm.LLMResult(text="{}", parsed=payload)
-
-    monkeypatch.setattr(generation.llm, "generate", fake_llm)
-
-    su = SubmittedURL.objects.create(
-        url="https://example.com/gen-nodeck",
-        status=SubmittedURL.Status.OK,
-        extracted_text="Photosynthesis and chlorophyll. " * 30,
-    )
-    result = generation.generate_for(su)
-
-    assert result.outcome == "created"
-    assert called == []  # live deck never consulted
-    assert result.anki_warnings  # local-only warning surfaced

@@ -231,7 +231,7 @@ def llm_usage(request):
 
 
 def _batch_review_cards(batch):
-    """Cards from *batch* shown in the review grid, dedup duplicates excluded."""
+    """Cards from *batch* shown in the review grid."""
     return (
         Card.objects.for_review()
         .filter(submitted_url__requests__batch=batch)
@@ -261,50 +261,18 @@ def _batch_cards_ready(batch):
     return not ok_pending_generation.exists()
 
 
-#: Message shown when a per-card review action targets a card whose
-#: ``dedup_status`` flipped to ``duplicate`` after the review grid was
-#: rendered (issue #78) - the dedup-timing race, not a real 404.
-_DEDUP_RACE_MESSAGE = (
-    "This card was just identified as a duplicate of another card and is "
-    "no longer part of the review; no action was taken. You can continue "
-    "with the rest of the batch."
-)
-
-
 def _review_card_or_error(request, batch, card_pk):
-    """Look up one card for a per-card review action (issue #78).
+    """Look up one card for a per-card review action.
 
     Returns ``(card, None)`` when the card is still reviewable. Returns
-    ``(None, response)`` when it is not - either it never existed / isn't
-    part of *batch* (a genuine 404, raised here exactly like
-    ``get_object_or_404`` would), or it did exist in the review grid but its
-    ``dedup_status`` has since flipped to ``duplicate`` (the #78 race
-    between the review page rendering and semantic dedup finishing): that
-    case gets a clear, handled response - JSON for the grid's XHR calls, an
-    error message + redirect otherwise - instead of letting a raw
-    ``Http404`` propagate, so the reviewer can keep working the rest of the
-    batch without a blank error page or a full page reload.
+    ``(None, response)`` when it never existed / isn't part of *batch* - a
+    genuine 404, raised here exactly like ``get_object_or_404`` would.
     """
     card = _batch_review_cards(batch).filter(pk=card_pk).first()
     if card is not None:
         return card, None
 
-    is_dedup_race = Card.objects.filter(
-        pk=card_pk,
-        submitted_url__requests__batch=batch,
-        dedup_status=Card.DedupStatus.DUPLICATE,
-    ).exists()
-    if not is_dedup_race:
-        raise Http404("No Card matches the given query.")
-
-    if _wants_json(request):
-        response = JsonResponse(
-            {"error": _DEDUP_RACE_MESSAGE, "dedup_duplicate": True}, status=409
-        )
-    else:
-        messages.error(request, _DEDUP_RACE_MESSAGE)
-        response = redirect("submissions:card_review", pk=batch.pk)
-    return None, response
+    raise Http404("No Card matches the given query.")
 
 
 def _review_tally(cards):

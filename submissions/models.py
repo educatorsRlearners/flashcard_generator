@@ -326,18 +326,6 @@ class SubmittedURL(models.Model):
     #: skip reason for a URL that produced no cards). Cleared on success.
     generation_error = models.TextField(blank=True, default="")
 
-    #: True once ``dedup.dedup_cards()`` has been attempted (successfully or
-    #: not - it is best-effort, see ``generation.generate_for``) for this
-    #: URL's most recently generated cards (issue #78). Meaningless while
-    #: ``generation_status != "ok"``; reset to ``False`` whenever generation
-    #: (re)runs so the extension status endpoint
-    #: (``extension_api.submission_status``) can gate ``terminal`` on dedup
-    #: completion, not just generation completion - closing the race where
-    #: the review grid could render (and be acted on) while
-    #: ``dedup_cards()`` was still flipping a card's ``dedup_status`` in the
-    #: same Huey worker process.
-    dedup_ready = models.BooleanField(default=False)
-
     #: Short human-readable forms of ``FailureKind`` for use in running
     #: prose (e.g. the batch by-kind breakdown). The full ``.label`` values
     #: are used verbatim for per-row display via ``get_failure_kind_display``.
@@ -380,17 +368,12 @@ class SubmittedURL(models.Model):
 class CardQuerySet(models.QuerySet):
     """Custom queryset for :class:`Card`.
 
-    ``for_review`` is the default scope the review grid (#9) consumes: it
-    hides cards that semantic dedup (#7) flagged as duplicates. Duplicates
-    are never deleted - ``Card.objects.all()`` (or ``include_duplicates``)
-    still returns them for an engineer / admin filter.
+    ``for_review`` is the default scope the review grid (#9) consumes: all
+    cards, not rejected.
     """
 
     def for_review(self):
-        return self.exclude(dedup_status=Card.DedupStatus.DUPLICATE)
-
-    def duplicates(self):
-        return self.filter(dedup_status=Card.DedupStatus.DUPLICATE)
+        return self.all()
 
 
 class Card(models.Model):
@@ -427,19 +410,6 @@ class Card(models.Model):
         ACCEPTED = "accepted", "Accepted"
         REJECTED = "rejected", "Rejected"
 
-    class DedupStatus(models.TextChoices):
-        """Semantic-dedup verdict for this card (issue #7).
-
-        ``unique`` is the default and also the value for a card that has not
-        been checked yet. ``duplicate`` means the card is at or above
-        :data:`submissions.dedup.DEDUP_SIMILARITY_THRESHOLD` cosine
-        similarity to another card (``duplicate_of``) and is hidden from the
-        default review grid.
-        """
-
-        UNIQUE = "unique", "Unique"
-        DUPLICATE = "duplicate", "Duplicate"
-
     submitted_url = models.ForeignKey(
         SubmittedURL, on_delete=models.CASCADE, related_name="cards"
     )
@@ -457,30 +427,6 @@ class Card(models.Model):
     #: JSON dict: {"source_url": ..., "date_added": <ISO date>, "topic": ...}.
     tags = models.JSONField(default=dict)
     created_at = models.DateTimeField(auto_now_add=True)
-
-    # --- Semantic dedup fields (issue #7) -----------------------------
-    #: Verdict from :func:`submissions.dedup.dedup_cards`.
-    dedup_status = models.CharField(
-        max_length=16,
-        choices=DedupStatus.choices,
-        default=DedupStatus.UNIQUE,
-    )
-    #: The card this one duplicates (lowest-pk kept as unique). Null unless
-    #: ``dedup_status == "duplicate"``.
-    duplicate_of = models.ForeignKey(
-        "self",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="duplicates",
-    )
-    #: Highest observed cosine similarity for this card (for inspection).
-    #: Null until the card has been checked, or if its text was empty.
-    similarity_score = models.FloatField(null=True, blank=True)
-    #: Cached embedding as a serialized list of floats (JSON). Reused by a
-    #: re-run of ``dedup_cards`` unless ``--force`` is passed. Empty list
-    #: means "not embedded yet".
-    embedding = models.JSONField(default=list, blank=True)
 
     # --- Review-state fields (issue #9) -----------------------------
     #: The reviewer's inline Accept / Reject decision.

@@ -393,10 +393,6 @@ def test_status_generation_ok_review_url_from_latest_batch_request(client, token
         batch=origin_batch,
         status=SubmittedURL.Status.OK,
         generation_status=SubmittedURL.GenerationStatus.OK,
-        # dedup (#78) has already finished for this URL's cards - otherwise
-        # terminal/review_url stay gated regardless of batch-request wiring,
-        # which is what this test is actually about.
-        dedup_ready=True,
     )
     BatchRequest.objects.create(batch=origin_batch, submitted_url=submitted_url)
 
@@ -452,36 +448,15 @@ def test_status_extraction_failed_terminal_no_review_url(client, token):
     assert payload["review_url"] is None
 
 
-# --- Dedup-gated terminal (issue #78) -----------------------------------
-
-
-def test_status_generation_ok_dedup_not_ready_terminal_false(client, token):
-    """generation_status == "ok" alone must not report terminal (#78)."""
+def test_status_generation_ok_terminal_true_immediately(client, token):
+    """generation_status == "ok" alone is now sufficient for terminal
+    (issue #169: dedup-readiness gating removed)."""
     batch = Batch.objects.create()
     submitted_url = SubmittedURL.objects.create(
-        url="https://example.com/dedup-pending",
+        url="https://example.com/gen-ok",
         batch=batch,
         status=SubmittedURL.Status.OK,
         generation_status=SubmittedURL.GenerationStatus.OK,
-        dedup_ready=False,
-    )
-    BatchRequest.objects.create(batch=batch, submitted_url=submitted_url)
-
-    resp = client.get(status_url(submitted_url.pk), **auth_header(token))
-    payload = resp.json()
-    assert payload["terminal"] is False
-    assert payload["review_url"] is None
-
-
-def test_status_generation_ok_dedup_ready_terminal_true(client, token):
-    """Once dedup_ready flips True, terminal/review_url appear (#78)."""
-    batch = Batch.objects.create()
-    submitted_url = SubmittedURL.objects.create(
-        url="https://example.com/dedup-done",
-        batch=batch,
-        status=SubmittedURL.Status.OK,
-        generation_status=SubmittedURL.GenerationStatus.OK,
-        dedup_ready=True,
     )
     BatchRequest.objects.create(batch=batch, submitted_url=submitted_url)
 
@@ -491,37 +466,9 @@ def test_status_generation_ok_dedup_ready_terminal_true(client, token):
     assert payload["review_url"] is not None
 
 
-def test_status_dedup_ready_transition_flips_terminal(client, token):
-    """Reproduces the real timing: same object, before and after dedup_ready
-    flips - matching how generation.generate_for calls _mark_dedup_ready
-    once dedup.dedup_cards() (blocking / delayed) returns (#78)."""
-    batch = Batch.objects.create()
-    submitted_url = SubmittedURL.objects.create(
-        url="https://example.com/dedup-race",
-        batch=batch,
-        status=SubmittedURL.Status.OK,
-        generation_status=SubmittedURL.GenerationStatus.OK,
-        dedup_ready=False,
-    )
-    BatchRequest.objects.create(batch=batch, submitted_url=submitted_url)
-
-    # "still running" window.
-    resp = client.get(status_url(submitted_url.pk), **auth_header(token))
-    assert resp.json()["terminal"] is False
-
-    # dedup_cards() has now returned for this URL's cards.
-    submitted_url.dedup_ready = True
-    submitted_url.save(update_fields=["dedup_ready"])
-
-    resp = client.get(status_url(submitted_url.pk), **auth_header(token))
-    payload = resp.json()
-    assert payload["terminal"] is True
-    assert payload["review_url"] is not None
-
-
-def test_status_zero_cards_generation_failed_terminal_unaffected(client, token):
-    """A URL with generation_status == "failed" (zero valid cards) never
-    waits on dedup - dedup never even runs for it (#78)."""
+def test_status_zero_cards_generation_failed_terminal(client, token):
+    """A URL with generation_status == "failed" (zero valid cards) is
+    terminal with no review_url."""
     batch = Batch.objects.create()
     submitted_url = SubmittedURL.objects.create(
         url="https://example.com/no-cards",
@@ -529,7 +476,6 @@ def test_status_zero_cards_generation_failed_terminal_unaffected(client, token):
         status=SubmittedURL.Status.OK,
         generation_status=SubmittedURL.GenerationStatus.FAILED,
         generation_error="no valid cards produced",
-        dedup_ready=False,
     )
     BatchRequest.objects.create(batch=batch, submitted_url=submitted_url)
 
@@ -540,30 +486,28 @@ def test_status_zero_cards_generation_failed_terminal_unaffected(client, token):
 
 
 def test_status_gating_is_per_submitted_url(client, token):
-    """One URL's slow dedup never blocks another URL's terminal/review_url,
-    even within the same batch (#78)."""
+    """Each URL's terminal/review_url is independent of other URLs in the
+    same batch."""
     batch = Batch.objects.create()
-    slow_url = SubmittedURL.objects.create(
-        url="https://example.com/slow-dedup",
+    pending_url = SubmittedURL.objects.create(
+        url="https://example.com/pending",
+        batch=batch,
+        status=SubmittedURL.Status.OK,
+        generation_status=SubmittedURL.GenerationStatus.NOT_STARTED,
+    )
+    done_url = SubmittedURL.objects.create(
+        url="https://example.com/done",
         batch=batch,
         status=SubmittedURL.Status.OK,
         generation_status=SubmittedURL.GenerationStatus.OK,
-        dedup_ready=False,
     )
-    fast_url = SubmittedURL.objects.create(
-        url="https://example.com/fast-dedup",
-        batch=batch,
-        status=SubmittedURL.Status.OK,
-        generation_status=SubmittedURL.GenerationStatus.OK,
-        dedup_ready=True,
-    )
-    BatchRequest.objects.create(batch=batch, submitted_url=slow_url)
-    BatchRequest.objects.create(batch=batch, submitted_url=fast_url)
+    BatchRequest.objects.create(batch=batch, submitted_url=pending_url)
+    BatchRequest.objects.create(batch=batch, submitted_url=done_url)
 
-    slow_payload = client.get(status_url(slow_url.pk), **auth_header(token)).json()
-    fast_payload = client.get(status_url(fast_url.pk), **auth_header(token)).json()
+    pending_payload = client.get(status_url(pending_url.pk), **auth_header(token)).json()
+    done_payload = client.get(status_url(done_url.pk), **auth_header(token)).json()
 
-    assert slow_payload["terminal"] is False
-    assert slow_payload["review_url"] is None
-    assert fast_payload["terminal"] is True
-    assert fast_payload["review_url"] is not None
+    assert pending_payload["terminal"] is False
+    assert pending_payload["review_url"] is None
+    assert done_payload["terminal"] is True
+    assert done_payload["review_url"] is not None

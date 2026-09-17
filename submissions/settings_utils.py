@@ -1,9 +1,8 @@
 """Shared boolean-setting parsing helpers (issue #149).
 
 :func:`parse_bool_setting` implements the isinstance/None/string-normalization
-logic previously duplicated in :func:`submissions.post_generation.dedup_enabled`
-and :func:`submissions.feedback.fewshot_enabled`, so both default-on master
-switches share identical falsy forms.
+logic shared by default-on master switches such as
+:func:`submissions.feedback.fewshot_enabled`.
 
 Dependency-free on purpose: imported by ``config/settings.py`` (which loads
 before the Django app registry) as well as by the ``submissions`` call sites.

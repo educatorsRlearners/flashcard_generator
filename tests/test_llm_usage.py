@@ -133,14 +133,13 @@ def test_generation_run_attributes_call_to_batch_and_url(
     monkeypatch, anthropic_key
 ):
     """End-to-end: generate_for -> real client (stubbed transport) records
-    an attributed row. Dedup/images are best-effort side steps, stubbed out
-    so this test needs no model weights or network."""
+    an attributed row. Images are a best-effort side step, stubbed out so
+    this test needs no network."""
     _install_client(
         monkeypatch,
         [_response('{"cards": [{"note_type": "basic", "front": "Q?", '
                     '"back": "A.", "source_term": "T", "topic": ""}]}')],
     )
-    monkeypatch.setattr(generation.dedup, "dedup_cards", lambda cards: None)
     monkeypatch.setattr(
         generation.images, "attach_images", lambda *a, **k: None
     )

@@ -2,7 +2,7 @@
 
 This module turns already-extracted page text into ``Card`` rows via the
 provider-agnostic LLM client in :mod:`submissions.llm` (issue #5). It does
-generation only: no dedup (#7), no review UI (#9), no Anki push (#11).
+generation only: no review UI (#9), no Anki push (#11).
 
 Note-type auto-detection rule
 -----------------------------
@@ -47,14 +47,10 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-# ``dedup`` / ``images`` stay imported (no direct use below) so existing
-# patch points keep working.
-from submissions import dedup, feedback, images, llm, post_generation
+# ``images`` stays imported (no direct use below) so existing patch points
+# keep working.
+from submissions import feedback, images, llm, post_generation
 from submissions.models import Card, SubmittedURL
-
-# Backward-compat alias: the dedup-ready mark moved to the post-generation
-# stage runner (issue #130); it is still importable from here.
-from submissions.post_generation import _mark_dedup_ready  # noqa: F401,E402
 
 logger = logging.getLogger(__name__)
 
@@ -399,12 +395,7 @@ def mark_generation_failed(submitted_url: SubmittedURL, reason: str) -> None:
 def _mark_generation_ok(submitted_url: SubmittedURL) -> None:
     submitted_url.generation_status = SubmittedURL.GenerationStatus.OK
     submitted_url.generation_error = ""
-    # Reset for #78: a force-regeneration must not keep a stale True from an
-    # earlier run - the status endpoint should gate on *this* run's dedup work.
-    submitted_url.dedup_ready = False
-    submitted_url.save(
-        update_fields=["generation_status", "generation_error", "dedup_ready"]
-    )
+    submitted_url.save(update_fields=["generation_status", "generation_error"])
 
 
 def _call_llm(
@@ -563,8 +554,7 @@ def generate_for(
         Card.objects.bulk_create(cards)
         _mark_generation_ok(submitted_url)
 
-    # Post-generation work (local semantic dedup plus the ready flag,
-    # live-deck Anki dedup, image attachment) runs through the stage runner
+    # Post-generation work (image attachment) runs through the stage runner
     # (issue #130), so a stage can be disabled or replaced without editing
     # this function. Persistence above always runs first.
     post = post_generation.run_post_generation(submitted_url, cards, stages=stages)

@@ -343,7 +343,6 @@ def test_generation_still_succeeds_when_image_step_raises(monkeypatch):
     monkeypatch.setattr(
         generation.llm, "generate", lambda **kw: _Result()
     )
-    monkeypatch.setattr(generation.dedup, "dedup_cards", lambda cards: None)
     su = make_url()
 
     result = generation.generate_for(su)
@@ -365,7 +364,7 @@ def test_merged_candidates_without_extension_images_matches_server_list(
     assert images._merged_candidates(su) == ["https://example.com/a.png"]
 
 
-def test_attach_images_merges_extension_first_with_dedup(monkeypatch):
+def test_attach_images_merges_extension_first_with_deduped_urls(monkeypatch):
     su = make_url()
     ext_only = "https://example.com/ext-only.png"
     shared = "https://example.com/shared.png"
@@ -389,8 +388,8 @@ def test_attach_images_merges_extension_first_with_dedup(monkeypatch):
     monkeypatch.setattr(images, "_fetch_image", _fetch)
     card = make_card(su)
 
-    # The merge itself stays extension-first with cross-source dedup
-    # (issue #42, unchanged by #48 ranking).
+    # The merge itself stays extension-first with cross-source URL
+    # de-duplication (issue #42, unchanged by #48 ranking).
     assert images._merged_candidates(su) == [ext_only, shared, server_only]
 
     images.attach_images(su, [card], draw_things=FakeDrawThings(None))

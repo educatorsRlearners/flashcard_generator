@@ -1,15 +1,13 @@
 """Tests for the shared boolean-setting parser (issue #149).
 
-``DEDUP_ENABLED`` was documented in the README but never defined in
-``config/settings.py``, so the switch was silently ignored in real
-deployments. It is now defined there (mirroring ``FEWSHOT_ENABLED``), and
-both ``dedup_enabled()`` and ``fewshot_enabled()`` parse through the one
-shared ``submissions.settings_utils.parse_bool_setting`` helper.
+``submissions.settings_utils.parse_bool_setting`` is the shared
+isinstance/None/string-normalization helper used by default-on boolean
+settings such as ``FEWSHOT_ENABLED``.
 """
 
 import pytest
 
-from submissions import feedback, post_generation, settings_utils
+from submissions import feedback, settings_utils
 
 pytestmark = pytest.mark.django_db
 
@@ -42,41 +40,33 @@ def test_parse_bool_setting_non_string_raw():
     assert settings_utils.parse_bool_setting(1) is True
 
 
-# --- both call sites honor the shared helper ---------------------------
+# --- the fewshot call site honors the shared helper ---------------------
 
 
 @pytest.mark.parametrize(
     "raw",
     [False, "0", "false", "no", "off", "", "  False  "],
 )
-def test_dedup_and_fewshot_call_sites_disable_on_falsy_forms(settings, raw):
-    settings.DEDUP_ENABLED = raw
+def test_fewshot_call_site_disables_on_falsy_forms(settings, raw):
     settings.FEWSHOT_ENABLED = raw
-    assert post_generation.dedup_enabled() is False
     assert feedback.fewshot_enabled() is False
 
 
 @pytest.mark.parametrize("raw", [True, "1", "true", "yes", "on", "  True  "])
-def test_dedup_and_fewshot_call_sites_enable_on_truthy_forms(settings, raw):
-    settings.DEDUP_ENABLED = raw
+def test_fewshot_call_site_enables_on_truthy_forms(settings, raw):
     settings.FEWSHOT_ENABLED = raw
-    assert post_generation.dedup_enabled() is True
     assert feedback.fewshot_enabled() is True
 
 
-def test_dedup_and_fewshot_default_on_when_absent_or_none(settings):
-    del settings.DEDUP_ENABLED
+def test_fewshot_default_on_when_absent_or_none(settings):
     del settings.FEWSHOT_ENABLED
-    assert post_generation.dedup_enabled() is True
     assert feedback.fewshot_enabled() is True
-    settings.DEDUP_ENABLED = None
     settings.FEWSHOT_ENABLED = None
-    assert post_generation.dedup_enabled() is True
     assert feedback.fewshot_enabled() is True
 
 
-def test_both_call_sites_delegate_to_the_shared_helper(settings, monkeypatch):
-    """No duplicated parser: both switches call the one shared helper."""
+def test_fewshot_call_site_delegates_to_the_shared_helper(settings, monkeypatch):
+    """No duplicated parser: the switch calls the one shared helper."""
     calls = []
 
     def spy(raw, *, default=True):
@@ -84,11 +74,9 @@ def test_both_call_sites_delegate_to_the_shared_helper(settings, monkeypatch):
         return "parsed"
 
     monkeypatch.setattr(settings_utils, "parse_bool_setting", spy)
-    settings.DEDUP_ENABLED = "raw-dedup"
     settings.FEWSHOT_ENABLED = "raw-fewshot"
-    assert post_generation.dedup_enabled() == "parsed"
     assert feedback.fewshot_enabled() == "parsed"
-    assert calls == [("raw-dedup", True), ("raw-fewshot", True)]
+    assert calls == [("raw-fewshot", True)]
 
 
 # --- real env -> Django settings wiring --------------------------------
@@ -123,24 +111,6 @@ def _reload_settings_with_env(monkeypatch, env):
             django.conf.settings._wrapped = django.conf.empty
 
     return _ctx()
-
-
-@pytest.mark.parametrize("value", ["0", "false", "no", "off", "  OFF  "])
-def test_dedup_enabled_env_disables_through_real_settings_pipeline(
-    monkeypatch, value
-):
-    with _reload_settings_with_env(monkeypatch, {"DEDUP_ENABLED": value}) as s:
-        assert s.DEDUP_ENABLED is False
-        assert post_generation.dedup_enabled() is False
-
-
-@pytest.mark.parametrize("value", [None, "1", "true", "  True  "])
-def test_dedup_enabled_env_leaves_dedup_on_through_real_settings_pipeline(
-    monkeypatch, value
-):
-    with _reload_settings_with_env(monkeypatch, {"DEDUP_ENABLED": value}) as s:
-        assert s.DEDUP_ENABLED is True
-        assert post_generation.dedup_enabled() is True
 
 
 def test_fewshot_enabled_env_still_wires_through_real_settings_pipeline(

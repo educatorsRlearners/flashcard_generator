@@ -119,86 +119,23 @@ def test_cards_not_ready_state(client):
     assert b'<ul class="review-grid">' not in page.content
 
 
-def test_dedup_duplicates_excluded_from_grid(client):
+def test_for_review_shows_all_non_dedup_filtered_cards(client):
+    """Issue #169: ``for_review()`` no longer excludes anything by dedup
+    status - a plain card created with no dedup fields involved at all
+    shows up in the review queryset (and grid) normally."""
     batch = Batch.objects.create()
     su = _url(batch)
-    keep = _card(su, batch)
-    _card(su, batch, dedup_status=Card.DedupStatus.DUPLICATE, duplicate_of=keep)
+    _card(su, batch)
+
+    assert Card.objects.for_review().filter(submitted_url=su).count() == 1
 
     page = client.get(reverse("submissions:card_review", args=[batch.pk]))
     assert page.context["tally"]["total"] == 1
 
 
-# --- issue #78: graceful handling of the dedup-timing race -------------
-
-
-def test_decision_on_now_duplicate_card_is_graceful_not_404(client):
-    """A card whose dedup_status is (or becomes) "duplicate" must get a
-    handled response from card_review_decision, not a raw 404 (#78)."""
-    batch = Batch.objects.create()
-    su = _url(batch)
-    keep = _card(su, batch)
-    duplicate = _card(
-        su, batch, front="Q2", source_term="Y",
-        dedup_status=Card.DedupStatus.DUPLICATE, duplicate_of=keep,
-    )
-
-    resp = _decide(client, batch, duplicate, "accepted")
-
-    assert resp.status_code != 404
-    assert resp.status_code == 409
-    payload = resp.json()
-    assert "error" in payload
-    assert payload["dedup_duplicate"] is True
-
-    # No decision was recorded on the duplicate card.
-    duplicate.refresh_from_db()
-    assert duplicate.review_status == Card.ReviewStatus.UNDECIDED
-
-
-def test_decision_on_now_duplicate_card_non_xhr_is_graceful_not_404(client):
-    """The non-XHR fallback (a plain form POST) also gets a handled
-    response - an error message + redirect - not a raw 404 (#78)."""
-    batch = Batch.objects.create()
-    su = _url(batch)
-    keep = _card(su, batch)
-    duplicate = _card(
-        su, batch, front="Q2", source_term="Y",
-        dedup_status=Card.DedupStatus.DUPLICATE, duplicate_of=keep,
-    )
-
-    resp = client.post(
-        reverse("submissions:card_review_decision", args=[batch.pk, duplicate.pk]),
-        {"decision": "accepted"},
-    )
-
-    assert resp.status_code != 404
-    assert resp.status_code in (302, 200)
-
-
-def test_decision_on_other_cards_unaffected_by_one_dedup_race(client):
-    """The reviewer can keep acting on the rest of the batch after a #78
-    dedup-race error on one card - no other card's state is disturbed."""
-    batch = Batch.objects.create()
-    su = _url(batch)
-    keep = _card(su, batch)
-    other = _card(su, batch, front="Q2", source_term="Y")
-    duplicate = _card(
-        su, batch, front="Q3", source_term="Z",
-        dedup_status=Card.DedupStatus.DUPLICATE, duplicate_of=keep,
-    )
-
-    _decide(client, batch, duplicate, "accepted")
-    resp = _decide(client, batch, other, "accepted")
-
-    assert resp.status_code == 200
-    other.refresh_from_db()
-    assert other.review_status == Card.ReviewStatus.ACCEPTED
-
-
 def test_review_grid_renders_decision_error_element(client):
-    """The Accept/Reject form has somewhere to surface a dedup-race error
-    (#78 QA follow-up) - mirrors the edit/image controls' error elements."""
+    """The Accept/Reject form has somewhere to surface an error - mirrors
+    the edit/image controls' error elements."""
     batch = Batch.objects.create()
     su = _url(batch)
     _card(su, batch)
@@ -210,8 +147,8 @@ def test_review_grid_renders_decision_error_element(client):
 def test_decision_submit_js_branches_on_response_ok():
     """The Accept/Reject JS must check ``res.ok`` and surface ``data.error``
     (like the edit/image controls already do) instead of blindly calling
-    ``applyCard`` with fields that are ``undefined`` on a 409 dedup-race
-    response (#78 QA follow-up)."""
+    ``applyCard`` with fields that are ``undefined`` on an error
+    response."""
     from pathlib import Path
 
     from django.conf import settings
@@ -349,85 +286,12 @@ def test_decision_failure_on_one_card_leaves_other_cards_decided(client):
 
 
 def test_decision_on_truly_nonexistent_card_still_404s(client):
-    """A card that never existed / isn't in this batch is still a real
-    404 - only the dedup-race case is special-cased (#78)."""
+    """A card that never existed / isn't in this batch is a real 404."""
     batch = Batch.objects.create()
     _url(batch)
 
     resp = _decide(client, batch, type("C", (), {"pk": 999999})(), "accepted")
     assert resp.status_code == 404
-
-
-def test_edit_on_now_duplicate_card_is_graceful_not_404(client):
-    batch = Batch.objects.create()
-    su = _url(batch)
-    keep = _card(su, batch)
-    duplicate = _card(
-        su, batch, front="Q2", source_term="Y",
-        dedup_status=Card.DedupStatus.DUPLICATE, duplicate_of=keep,
-    )
-
-    resp = client.post(
-        reverse("submissions:card_review_edit", args=[batch.pk, duplicate.pk]),
-        {"front": "New front", "back": "New back"},
-        HTTP_X_REQUESTED_WITH="XMLHttpRequest",
-    )
-
-    assert resp.status_code != 404
-    assert resp.status_code == 409
-    assert "error" in resp.json()
-
-
-def test_revert_edit_on_now_duplicate_card_is_graceful_not_404(client):
-    batch = Batch.objects.create()
-    su = _url(batch)
-    keep = _card(su, batch)
-    duplicate = _card(
-        su, batch, front="Q2", source_term="Y",
-        dedup_status=Card.DedupStatus.DUPLICATE, duplicate_of=keep,
-    )
-
-    resp = client.post(
-        reverse("submissions:card_review_revert_edit", args=[batch.pk, duplicate.pk]),
-        {},
-        HTTP_X_REQUESTED_WITH="XMLHttpRequest",
-    )
-
-    assert resp.status_code != 404
-    assert resp.status_code == 409
-
-
-@pytest.mark.parametrize(
-    "view_name,method,extra",
-    [
-        ("submissions:card_review_image_candidates", "get", {}),
-        ("submissions:card_review_image_select", "post", {"candidate_url": "https://example.com/x.png"}),
-        ("submissions:card_review_image_regenerate", "post", {}),
-        ("submissions:card_review_image_remove", "post", {}),
-        ("submissions:card_review_image_revert", "post", {}),
-    ],
-)
-def test_image_endpoints_on_now_duplicate_card_are_graceful_not_404(
-    client, view_name, method, extra
-):
-    batch = Batch.objects.create()
-    su = _url(batch)
-    keep = _card(su, batch)
-    duplicate = _card(
-        su, batch, front="Q2", source_term="Y",
-        dedup_status=Card.DedupStatus.DUPLICATE, duplicate_of=keep,
-    )
-
-    do_request = getattr(client, method)
-    resp = do_request(
-        reverse(view_name, args=[batch.pk, duplicate.pk]),
-        extra,
-        HTTP_X_REQUESTED_WITH="XMLHttpRequest",
-    )
-
-    assert resp.status_code != 404
-    assert resp.status_code == 409
-    assert "error" in resp.json()
 
 
 def test_finish_with_undecided_requires_confirm(client, monkeypatch):
