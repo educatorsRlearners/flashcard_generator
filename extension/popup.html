@@ -1,25 +1,55 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
 <title>Flashcard Generator</title>
 <style>
+    :root {
+        --color-bg: #ffffff;
+        --color-text: #333333;
+        --color-text-muted: #666666;
+        --color-error: #b00020;
+        --color-border: #cccccc;
+        --color-focus: #2f6fed;
+        --color-spinner-track: #cccccc;
+        --color-spinner-active: #333333;
+        color-scheme: light dark;
+    }
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --color-bg: #1e1e1e;
+            --color-text: #e8e8e8;
+            --color-text-muted: #a8a8a8;
+            --color-error: #ff6b6b;
+            --color-border: #555555;
+            --color-focus: #6ea0ff;
+            --color-spinner-track: #555555;
+            --color-spinner-active: #e8e8e8;
+        }
+    }
     body {
-        font: 14px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
+        font: 0.875rem/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
         width: 260px;
         margin: 0;
         padding: 12px;
+        background: var(--color-bg);
+        color: var(--color-text);
     }
     button {
         box-sizing: border-box;
         width: 100%;
         padding: 8px;
-        font-size: 14px;
+        font-size: 0.875rem;
         cursor: pointer;
     }
     button:disabled {
         cursor: default;
         opacity: 0.6;
+    }
+    button:focus-visible {
+        outline: 2px solid var(--color-focus);
+        outline-offset: 2px;
     }
     .status-row {
         margin-top: 10px;
@@ -37,20 +67,26 @@
         width: 12px;
         height: 12px;
         margin: 3px 8px 0 0;
-        border: 2px solid #ccc;
-        border-top-color: #333;
+        border: 2px solid var(--color-spinner-track);
+        border-top-color: var(--color-spinner-active);
         border-radius: 50%;
         animation: spin 0.8s linear infinite;
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .spinner {
+            animation: none;
+            opacity: 0.6;
+        }
     }
     @keyframes spin {
         to { transform: rotate(360deg); }
     }
     #status {
         margin: 0;
-        color: #333;
+        color: var(--color-text);
     }
     #status.status--error {
-        color: #b00020;
+        color: var(--color-error);
     }
     label.deck-label {
         display: block;
@@ -62,27 +98,30 @@
         width: 100%;
         margin-top: 4px;
         padding: 6px;
-        font-size: 13px;
+        font-size: 0.8125rem;
+        background: var(--color-bg);
+        color: var(--color-text);
+        border: 1px solid var(--color-border);
     }
     #deck-note {
         margin: 4px 0 0;
-        font-size: 12px;
-        color: #666;
+        font-size: 0.75rem;
+        color: var(--color-text-muted);
     }
     .deck-hint {
         margin: 4px 0 0;
-        font-size: 12px;
-        color: #666;
+        font-size: 0.75rem;
+        color: var(--color-text-muted);
     }
     #deck-select:focus-visible, #deck-new:focus-visible,
     #provider-select:focus-visible, #model-select:focus-visible {
-        outline: 2px solid #2f6fed;
+        outline: 2px solid var(--color-focus);
         outline-offset: 2px;
     }
     #llm-key-banner {
         margin: 8px 0 0;
-        font-size: 12px;
-        color: #b00020;
+        font-size: 0.75rem;
+        color: var(--color-error);
     }
 </style>
 </head>
