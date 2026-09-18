@@ -77,7 +77,8 @@
 
     function ensureBackend() {
         if (!backendPromise) {
-            backendPromise = connectNativeHost().then(function (reply) {
+            backendPromise = (async function () {
+                var reply = await connectNativeHost();
                 if (!reply || !reply.ok) {
                     throw { kind: "native-error", message: (reply && reply.detail) || "native host error" };
                 }
@@ -85,7 +86,7 @@
                     throw { kind: "native-error", message: "invalid base_url from native host" };
                 }
                 return { token: reply.token, baseUrl: reply.base_url };
-            });
+            }());
             // A failed handshake must not poison later retries (the Generate
             // click reconnects instead of reusing the rejection).
             backendPromise.catch(function () { backendPromise = null; });
@@ -106,38 +107,41 @@
         }
     }
 
-    function loadDecks() {
+    async function loadDecks() {
         if (!deckSelect) { return; }
-        ensureBackend().then(function (backend) {
-            return fetchOrNetworkError(backend.baseUrl + "/api/extension/decks/", {
-                headers: { Authorization: "Bearer " + backend.token },
-            }).then(function (response) {
-                if (!response.ok) { throw { kind: "http" }; }
-                return response.json();
-            }).then(function (data) {
-                deckSelect.textContent = "";
-                var decks = (data && data.decks) || [];
-                var placeholder = document.createElement("option");
-                placeholder.value = "";
-                placeholder.textContent = decks.length ? "Select a deck…" : "No decks yet — type a name";
-                deckSelect.appendChild(placeholder);
-                decks.forEach(function (name) {
-                    var opt = document.createElement("option");
-                    opt.value = name;
-                    opt.textContent = name;
-                    deckSelect.appendChild(opt);
-                });
-                deckSelect.disabled = false;
-                if (data && data.unavailable) { setDecksUnavailable(); }
-            }).catch(function () {
-                // Any deck-list failure (backend down, Anki unreachable,
-                // CORS/HTTP) degrades to free-text only, never blocks submit.
-                setDecksUnavailable();
-            });
-        }).catch(function () {
+        var backend;
+        try {
+            backend = await ensureBackend();
+        } catch (err) {
             // Native-host handshake failed: leave the loading placeholder;
             // runFlow() will surface the real error on Generate click.
-        });
+            return;
+        }
+        try {
+            var response = await fetchOrNetworkError(backend.baseUrl + "/api/extension/decks/", {
+                headers: { Authorization: "Bearer " + backend.token },
+            });
+            if (!response.ok) { throw { kind: "http" }; }
+            var data = await response.json();
+            deckSelect.textContent = "";
+            var decks = (data && data.decks) || [];
+            var placeholder = document.createElement("option");
+            placeholder.value = "";
+            placeholder.textContent = decks.length ? "Select a deck…" : "No decks yet — type a name";
+            deckSelect.appendChild(placeholder);
+            decks.forEach(function (name) {
+                var opt = document.createElement("option");
+                opt.value = name;
+                opt.textContent = name;
+                deckSelect.appendChild(opt);
+            });
+            deckSelect.disabled = false;
+            if (data && data.unavailable) { setDecksUnavailable(); }
+        } catch (err) {
+            // Any deck-list failure (backend down, Anki unreachable,
+            // CORS/HTTP) degrades to free-text only, never blocks submit.
+            setDecksUnavailable();
+        }
     }
 
     function chosenDeckName() {
@@ -383,33 +387,32 @@
     // fetchOrNetworkError(), GETs the #105 config endpoint, and applies
     // the stored-beats-default decision once config + storage both
     // resolve (read concurrently on popup open).
-    function loadLlmConfig() {
+    async function loadLlmConfig() {
         // Defensive (#109): absent dropdown DOM no-ops without throwing
         // and leaves Generate enabled.
         if (!providerSelect || !modelSelect) { return; }
+        // Kicked off before the native-host handshake is awaited below, so
+        // the stored-selection read runs concurrently with it (and with the
+        // config fetch that follows) rather than being serialized after.
         var storedPromise = readStoredLlmSelection();
-        ensureBackend().then(function (backend) {
-            return fetchOrNetworkError(backend.baseUrl + "/api/extension/llm-config/", {
+        try {
+            var backend = await ensureBackend();
+            var response = await fetchOrNetworkError(backend.baseUrl + "/api/extension/llm-config/", {
                 headers: { Authorization: "Bearer " + backend.token },
-            }).then(function (response) {
-                if (!response.ok) { throw { kind: "http" }; }
-                return response.json();
-            }).then(function (data) {
-                return storedPromise.then(function (stored) {
-                    return { data: data, stored: stored };
-                });
             });
-        }).then(function (combined) {
-            if (!combined.data || !Array.isArray(combined.data.providers)) {
+            if (!response.ok) { throw { kind: "http" }; }
+            var data = await response.json();
+            var stored = await storedPromise;
+            if (!data || !Array.isArray(data.providers)) {
                 degradeLlmConfig();
                 return;
             }
-            applyLlmConfig(combined.data, combined.stored);
-        }).catch(function () {
+            applyLlmConfig(data, stored);
+        } catch (err) {
             // Network error, non-2xx, unusable data, or native-host
             // handshake failure: degrade, never block submit (fail-open).
             degradeLlmConfig();
-        });
+        }
     }
 
     // Currently selected provider/model for the submit body (#106 field
@@ -451,83 +454,76 @@
     // extractPageContent() in the page. Two separate executeScript calls
     // because the isolated-world execution context persists across calls
     // to the same frame (see #39's Context section).
-    function extractTabContent(tabId) {
-        return chrome.scripting
-            .executeScript({
-                target: { tabId: tabId },
-                files: ["lib/Readability.js", "content_extract.js"],
-            })
-            .then(function () {
-                return chrome.scripting.executeScript({
-                    target: { tabId: tabId },
-                    func: function () { return extractPageContent(); },
-                });
-            })
-            .then(function (results) {
-                var content = results && results[0] && results[0].result;
-                if (!content || typeof content.text !== "string" || !content.text) {
-                    throw new Error("no extractable content");
-                }
-                return content;
-            });
+    async function extractTabContent(tabId) {
+        await chrome.scripting.executeScript({
+            target: { tabId: tabId },
+            files: ["lib/Readability.js", "content_extract.js"],
+        });
+        var results = await chrome.scripting.executeScript({
+            target: { tabId: tabId },
+            func: function () { return extractPageContent(); },
+        });
+        var content = results && results[0] && results[0].result;
+        if (!content || typeof content.text !== "string" || !content.text) {
+            throw new Error("no extractable content");
+        }
+        return content;
     }
 
     // Reads {"error": "..."} out of a non-2xx response body, falling back
     // to the HTTP status if the body isn't JSON or has no `error` field.
-    function errorFromResponse(response) {
-        return response
-            .json()
-            .then(function (body) {
-                return body && typeof body.error === "string" ? body.error : String(response.status);
-            })
-            .catch(function () { return String(response.status); });
+    async function errorFromResponse(response) {
+        try {
+            var body = await response.json();
+            return body && typeof body.error === "string" ? body.error : String(response.status);
+        } catch (err) {
+            return String(response.status);
+        }
     }
 
     // A fetch() call that rejects (network refused, DNS failure, CORS
     // preflight rejected, etc.) is distinguished from a non-2xx HTTP
     // response: the former means "could not reach the backend at all",
     // the latter carries a real error body from the server.
-    function fetchOrNetworkError(url, options) {
-        return fetch(url, options).catch(function () {
+    async function fetchOrNetworkError(url, options) {
+        try {
+            return await fetch(url, options);
+        } catch (err) {
             throw { kind: "network" };
-        });
+        }
     }
 
-    function pollStatus(submittedUrlId, token, baseUrl) {
+    async function pollStatus(submittedUrlId, token, baseUrl) {
         // NOTE (CORS gotcha): both endpoints below only answer this
         // extension's origin when the backend's EXTENSION_ID setting is
         // set to this extension's actual loaded ID. If it isn't, every
         // fetch here fails its CORS preflight with an opaque network
         // error indistinguishable from the backend being unreachable -
         // see README.md's "Browser extension setup" section.
-        return fetchOrNetworkError(
+        var response = await fetchOrNetworkError(
             baseUrl + "/api/extension/submit/" + submittedUrlId + "/status/",
             { headers: { Authorization: "Bearer " + token } }
-        ).then(function (response) {
-            if (!response.ok) {
-                return errorFromResponse(response).then(function (message) {
-                    throw { kind: "http", message: message };
-                });
-            }
-            return response.json();
-        }).then(function (data) {
-            if (!data.terminal) {
-                return sleep(POLL_INTERVAL_MS).then(function () {
-                    return pollStatus(submittedUrlId, token, baseUrl);
-                });
-            }
-            if (data.review_url) {
-                setBusy(false);
-                setStatus("Done — review tab opened.");
-                flowRunning = false;
-                chrome.tabs.create({ url: data.review_url });
-                return; // leave the button disabled - nothing left to retry
-            }
-            throw { kind: "http", message: data.generation_error || "card generation failed" };
-        });
+        );
+        if (!response.ok) {
+            var errorMessage = await errorFromResponse(response);
+            throw { kind: "http", message: errorMessage };
+        }
+        var data = await response.json();
+        if (!data.terminal) {
+            await sleep(POLL_INTERVAL_MS);
+            return pollStatus(submittedUrlId, token, baseUrl);
+        }
+        if (data.review_url) {
+            setBusy(false);
+            setStatus("Done — review tab opened.");
+            flowRunning = false;
+            chrome.tabs.create({ url: data.review_url });
+            return; // leave the button disabled - nothing left to retry
+        }
+        throw { kind: "http", message: data.generation_error || "card generation failed" };
     }
 
-    function submitContent(content, tabUrl, token, baseUrl) {
+    async function submitContent(content, tabUrl, token, baseUrl) {
         // See the CORS note in pollStatus() above - it applies to this
         // fetch too.
         var payload = { url: tabUrl, title: content.title || "", text: content.text, images: content.images ?? [] };
@@ -538,56 +534,59 @@
         var llm = chosenLlm();
         if (llm.provider) { payload.provider = llm.provider; }
         if (llm.model) { payload.model = llm.model; }
-        return fetchOrNetworkError(baseUrl + "/api/extension/submit/", {
+        var response = await fetchOrNetworkError(baseUrl + "/api/extension/submit/", {
             method: "POST",
             headers: {
                 Authorization: "Bearer " + token,
                 "Content-Type": "application/json",
             },
             body: JSON.stringify(payload),
-        }).then(function (response) {
-            if (!response.ok) {
-                return errorFromResponse(response).then(function (message) {
-                    throw { kind: "http", message: message };
-                });
-            }
-            return response.json();
-        }).then(function (data) {
-            return pollStatus(data.submitted_url_id, token, baseUrl);
         });
+        if (!response.ok) {
+            var errorMessage = await errorFromResponse(response);
+            throw { kind: "http", message: errorMessage };
+        }
+        var data = await response.json();
+        return pollStatus(data.submitted_url_id, token, baseUrl);
     }
 
-    function runFlow() {
+    async function runFlow() {
         button.disabled = true;
         flowRunning = true;
         setBusy(true);
         setStatus("Connecting to backend…");
 
-        return ensureBackend().catch(function (err) {
-            // ensureBackend() rejects for two different reasons: a real
-            // connectNative failure (a plain Error, no .kind - e.g. the
-            // native host manifest is missing/broken), or a native-error
-            // it already tagged itself (the host replied {ok: false, ...},
-            // e.g. a spawn/readiness timeout). Only the former is a true
-            // "can't reach the native host" situation - the latter has its
-            // own message and must not be collapsed into the generic text.
-            if (err && err.kind === "native-error") { throw err; }
-            throw { kind: "native-connect", message: err && err.message };
-        }).then(function (backend) {
+        try {
+            var backend;
+            try {
+                backend = await ensureBackend();
+            } catch (err) {
+                // ensureBackend() rejects for two different reasons: a real
+                // connectNative failure (a plain Error, no .kind - e.g. the
+                // native host manifest is missing/broken), or a native-error
+                // it already tagged itself (the host replied {ok: false, ...},
+                // e.g. a spawn/readiness timeout). Only the former is a true
+                // "can't reach the native host" situation - the latter has its
+                // own message and must not be collapsed into the generic text.
+                if (err && err.kind === "native-error") { throw err; }
+                throw { kind: "native-connect", message: err && err.message };
+            }
+
             var token = backend.token;
             var baseUrl = backend.baseUrl;
 
             setStatus("Reading page…");
-            return chrome.tabs.query({ active: true, currentWindow: true }).then(function (tabs) {
-                var tab = tabs[0];
-                return extractTabContent(tab.id).catch(function () {
-                    throw { kind: "extract" };
-                }).then(function (content) {
-                    setStatus("Generating cards…");
-                    return submitContent(content, tab.url, token, baseUrl);
-                });
-            });
-        }).catch(function (err) {
+            var tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+            var tab = tabs[0];
+            var content;
+            try {
+                content = await extractTabContent(tab.id);
+            } catch (err) {
+                throw { kind: "extract" };
+            }
+            setStatus("Generating cards…");
+            await submitContent(content, tab.url, token, baseUrl);
+        } catch (err) {
             if (err && err.kind === "native-connect") {
                 showError("Error: could not reach native host — is the extension registered? See README.md.");
             } else if (err && err.kind === "native-error") {
@@ -611,7 +610,7 @@
                 // leaving the button stuck disabled.
                 showError("Error: " + (err && err.message ? err.message : "something went wrong."));
             }
-        });
+        }
     }
 
     button.addEventListener("click", function () {
