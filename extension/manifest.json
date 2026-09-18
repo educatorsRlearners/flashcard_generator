@@ -3,9 +3,16 @@
   "name": "Flashcard Generator",
   "version": "1.0.0",
   "description": "Generate flashcards from the page you're viewing.",
-  "key": "REPLACE_WITH_YOUR_OWN_OPENSSL_GENERATED_KEY",
-  "permissions": ["nativeMessaging", "activeTab", "scripting", "storage"],
-  "host_permissions": ["http://127.0.0.1:8000/*"],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnx2s3y5+LLicoqRfacY15qwKK4McVeUSVFhA46DRVWTUwklDWBfZ/lktAGtLCwaaaF+qJgoU12ecfJFc0XGvs+bcl3kNXz0zoBoD5hGS6IBvkMU1PEaowE6o/wmirpXH5bcL+sVTyxykhAwcESWrLMdlAwHtdl8U98bIjUWBHnbxj4H9CnW25AsUS+sN2YyrLYawBtogN4L6g8hcSycyb2adpu4rXn8dRxsmTiW8QhpLNCQau/PCn+o0c+Gla+njy9fP0xXiCoUc7yqZvrEn5xdx6iB0p8KNYRwa/HkKq9pKMSg4eaazJqkXdi6AzHJ4aIKyIPsY3H/9lj4RM1dwhwIDAQAB",
+  "permissions": [
+    "nativeMessaging",
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8000/*"
+  ],
   "action": {
     "default_popup": "popup.html"
   }
