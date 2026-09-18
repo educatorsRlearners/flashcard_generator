@@ -36,7 +36,10 @@ def test_popup_stays_260px_and_reuses_deck_select_rules():
     html = _html()
     assert "width: 260px" in html
     assert "#deck-select, #deck-new, #provider-select, #model-select" in html
-    assert "outline: 2px solid #2f6fed" in html
+    # Focus-visible outlines share a single `--color-focus` custom property
+    # (light/dark-mode aware, see #170) rather than a hardcoded hex literal.
+    assert "--color-focus: #2f6fed" in html
+    assert "outline: 2px solid var(--color-focus)" in html
     assert "#provider-select:focus-visible" in html
     assert "#model-select:focus-visible" in html
 
